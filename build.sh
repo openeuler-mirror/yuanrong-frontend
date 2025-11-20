@@ -16,8 +16,8 @@
 set -e
 
 BASE_DIR=$(cd "$(dirname "$0")"; pwd)
-PROJECT_DIR=$(cd "$(dirname "$0")"/..; pwd)
-OUTPUT_DIR="${BASE_DIR}/../output/pattern/pattern_faas"
+PROJECT_DIR=$(cd "$(dirname "$0")"; pwd)
+OUTPUT_DIR="${BASE_DIR}/output/pattern/pattern_faas"
 TAR_OUT_DIR="${PROJECT_DIR}/build/_output"
 TAR_OUT_FILE="faasfunctions.tar.gz"
 EXECUTOR_DIR="${PROJECT_DIR}/build/faas/executor-meta"
@@ -25,23 +25,51 @@ TEST_CERT_PATH="${GOROOT}/src/net/http/internal/testcert.go"
 BUILD_TAG_FUNCTION="function"
 echo LD_LIBRARY_PATH=$LD_LIBRARY_PATH
 MODULE_NAME_LIST=("faasfrontend")
-
+BUILD_VERSION=v0.5.0
 # go module prepare
 export GO111MODULE=on
 export GONOSUMDB=*
 export CGO_ENABLED=1
-
+mkdir -p ${OUTPUT_DIR}
 # resolve missing go.sum entry
 go env -w "GOFLAGS"="-mod=mod"
 
 # remove hard coded cert file in net/http
 [ -f "${TEST_CERT_PATH}" ] && rm -f "${TEST_CERT_PATH}"
 
+function parse_args () {
+    getopt_cmd=$(getopt -o v:h -l help -- "$@")
+    [ $? -ne 0 ] && exit 1
+    eval set -- "$getopt_cmd"
+    while true; do
+        case "$1" in
+        -v|--version) BUILD_VERSION=$2 && shift 2 ;;
+        -h|--help) SHOW_HELP="true" && shift ;;
+        --) shift && break ;;
+        *) die "Invalid option: $1" && exit 1 ;;
+        esac
+    done
+    if [ "$SHOW_HELP" != "" ]; then
+        cat <<EOF
+Usage:
+    -v|--version             the version (=${BUILD_VERSION})
+    -h|--help                show this help info
+EOF
+        exit 1
+    fi
+}
+
+function main () {
+    parse_args "$@"
+}
+
+main $@
+
 # clean build history
-bash "${BASE_DIR}"/clean.sh
+bash "${BASE_DIR}"/build/clean.sh
 
 cd "${PROJECT_DIR}"
-. "${BASE_DIR}"/compile_functions.sh
+. "${BASE_DIR}"/build/compile_functions.sh
 
 # zip function file
 FLAGS='-extldflags "-fPIC -fstack-protector-strong -Wl,-z,now,-z,relro,-z,noexecstack,-s -Wall -Werror"'
@@ -84,4 +112,4 @@ cp -arf "${PROJECT_DIR}/build/faasfrontend-function-meta.yaml" "${OUTPUT_DIR}/te
 cp -arf "${PROJECT_DIR}/build/fassfrontend-service.yaml" "${OUTPUT_DIR}/templates/fassfrontend-service.yaml"
 chmod -R 700 "${OUTPUT_DIR}"
 cd ${OUTPUT_DIR}/../../
-tar -czvf yr-frontend-v0.5.0.tar.gz pattern
+tar -czvf yr-frontend-${BUILD_VERSION}.tar.gz pattern
