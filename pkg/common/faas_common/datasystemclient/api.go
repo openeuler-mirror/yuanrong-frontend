@@ -734,28 +734,6 @@ func kvDelMulti(req *data.KvDelRequest, tenantID string) ([]string, error) {
 	return localClientLibruntime.KVDelMulti(req.Keys)
 }
 
-// GReleaseGRefs - release global ref
-func GReleaseGRefs(remoteClientID string, config *Config, traceID string) api.ErrorInfo {
-	if localClientLibruntime == nil {
-		return api.ErrorInfo{Code: errRPCUnavailable, Err: fmt.Errorf("dsclient is nil")}
-	}
-	var status api.ErrorInfo
-	runtime.LockOSThread()
-	localClientLibruntime.SetTraceID(traceID)
-	err := localClientLibruntime.ReleaseGRefs(remoteClientID)
-	if err != nil {
-		status.Code = err.(api.ErrorInfo).Code
-		status.Err = err
-	}
-	runtime.UnlockOSThread()
-	if status.IsError() {
-		log.GetLogger().Warnf("dsClient(nodeIP: %s) is unavailable, code: %d, err: %s, traceID: %s",
-			config.NodeIP, status.Code, status.Err, traceID)
-		return status
-	}
-	return status
-}
-
 // SubscribeStream -
 func SubscribeStream(param SubscribeParam, ctx StreamCtx) error {
 	var subscriptionConfig api.SubscriptionConfig

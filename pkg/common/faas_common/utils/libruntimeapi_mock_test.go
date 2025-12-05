@@ -105,9 +105,6 @@ func TestFakeLibruntimeSdkClient(t *testing.T) {
 	_, err = fakeLibruntimeSdkClient.CreateClient(api.ConnectArguments{})
 	assert.Equal(t, nil, err)
 
-	err = fakeLibruntimeSdkClient.ReleaseGRefs("")
-	assert.Equal(t, nil, err)
-
 	credential := fakeLibruntimeSdkClient.GetCredential()
 	assert.NotEqual(t, nil, credential)
 }

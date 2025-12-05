@@ -233,11 +233,6 @@ func (f *FakeLibruntimeSdkClient) CreateClient(config api.ConnectArguments) (api
 	return nil, nil
 }
 
-// ReleaseGRefs -
-func (f *FakeLibruntimeSdkClient) ReleaseGRefs(remoteClientID string) error {
-	return nil
-}
-
 // GetCredential -
 func (f *FakeLibruntimeSdkClient) GetCredential() api.Credential {
 	return api.Credential{}

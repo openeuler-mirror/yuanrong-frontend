@@ -988,10 +988,6 @@ func (f *invokerLibruntimeMock) GDecreaseRef(objectIDs []string, remoteClientID 
 	return []string{}, nil
 }
 
-func (f *invokerLibruntimeMock) ReleaseGRefs(remoteClientID string) error {
-	return nil
-}
-
 func (f *invokerLibruntimeMock) GetAsync(objectID string, cb api.GetAsyncCallback) {
 	return
 }
@@ -1267,21 +1263,6 @@ func TestDel(t *testing.T) {
 		})
 	})
 
-}
-
-func TestGReleaseGRefs(t *testing.T) {
-	convey.Convey("GReleaseGRefs", t, func() {
-		convey.Convey("dsclient is nil", func() {
-			localClientLibruntime = nil
-			put := GReleaseGRefs("test-ID", &Config{}, "test-trace-ID")
-			convey.So(put.Code, convey.ShouldEqual, errRPCUnavailable)
-		})
-		convey.Convey("success", func() {
-			localClientLibruntime = &invokerLibruntimeMock{setTenantIDSuccessfully: true}
-			status := GReleaseGRefs("test-ID", &Config{}, "test-trace-ID")
-			convey.So(status.Code, convey.ShouldEqual, 0)
-		})
-	})
 }
 
 func Test_downloadArray(t *testing.T) {
