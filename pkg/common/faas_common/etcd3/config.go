@@ -28,7 +28,6 @@ import (
 
 	"go.etcd.io/etcd/client/v3"
 
-	commonCrypto "frontend/pkg/common/crypto"
 	"frontend/pkg/common/faas_common/crypto"
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/log"
@@ -194,10 +193,11 @@ func (c *clientTLSAuth) getTLSConfig(encryptedKeyPEM []byte, keyPwd []byte,
 		log.GetLogger().Errorf("failed to decode key PEM block")
 		return nil, fmt.Errorf("failed to decode key PEM block")
 	}
-	keyDER, err := commonCrypto.DecryptPEMBlock(keyBlock, keyPwd)
-	if err != nil {
-		log.GetLogger().Errorf("failed to decrypt key: err: %s", err.Error())
-		return nil, err
+
+	keyDER := keyBlock.Bytes
+	if len(keyDER) == 0 {
+	    log.GetLogger().Errorf("keyDER is empty")
+	    return nil, fmt.Errorf("keyDER is empty")
 	}
 
 	key, err := x509.ParsePKCS1PrivateKey(keyDER)

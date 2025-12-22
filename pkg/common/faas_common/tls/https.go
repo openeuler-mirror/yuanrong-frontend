@@ -28,8 +28,6 @@ import (
 	"strings"
 	"sync"
 
-	commonCrypto "frontend/pkg/common/crypto"
-	"frontend/pkg/common/faas_common/crypto"
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/utils"
@@ -177,7 +175,7 @@ func loadHTTPSConfig(config InternalHTTPSConfig) error {
 		CACertFile:              loadCerts(config.SSLBasePath, config.RootCAFile),
 		CertFile:                loadCerts(config.SSLBasePath, config.ModuleCertFile),
 		SecretKeyFile:           loadCerts(config.SSLBasePath, config.ModuleKeyFile),
-		PwdFilePath:             loadCerts(config.SSLBasePath, config.PwdFile),
+		PwdFilePath:             "",
 		KeyPassPhase:            "",
 		SecretName:              config.SecretName,
 		DecryptTool:             config.SSLDecryptTool,
@@ -197,14 +195,6 @@ func loadHTTPSConfig(config InternalHTTPSConfig) error {
 		return errors.New("invalid TLS ciphers")
 	}
 	httpsConfigs.CipherSuite = cipherSuites
-
-	keyPassPhase, err := ioutil.ReadFile(httpsConfigs.PwdFilePath)
-	if err != nil {
-		log.GetLogger().Errorf("failed to read file cert_pwd: %s", err.Error())
-		return err
-	}
-	httpsConfigs.KeyPassPhase = string(keyPassPhase)
-	utils.ClearByteMemory(keyPassPhase)
 
 	return nil
 }
@@ -282,41 +272,11 @@ func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
 		return nil, errors.New("failed to decode key file")
 	}
 
-	if commonCrypto.IsEncryptedPEMBlock(keyBlock) {
-		var plainPassPhase []byte
-		var err error
-		var decrypted string
-		if len(passPhase) > 0 {
-			if decryptTool == "SCC" {
-				decrypted, err = crypto.SCCDecrypt([]byte(passPhase))
-				plainPassPhase = []byte(decrypted)
-			} else if decryptTool == "LOCAL" {
-				plainPassPhase, err = localauth.Decrypt(passPhase)
-			}
-			if err != nil {
-				log.GetLogger().Errorf("failed to decrypt the ssl passPhase(%d): %s", len(passPhase),
-					err.Error())
-				return nil, err
-			}
-		}
-
-		keyData, err := commonCrypto.DecryptPEMBlock(keyBlock, plainPassPhase)
-		clearByteMemory(plainPassPhase)
-		utils.ClearStringMemory(decrypted)
-
-		if err != nil {
-			log.GetLogger().Errorf("failed to decrypt key file, error: %s", err.Error())
-			return nil, err
-		}
-
-		// The decryption is successful, then the file is re-encoded to a PEM file
-		plainKeyBlock := &pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: keyData,
-		}
-
-		keyContent = pem.EncodeToMemory(plainKeyBlock)
+	plainKeyBlock := &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: keyBlock.Bytes,
 	}
+	keyContent = pem.EncodeToMemory(plainKeyBlock)
 	return keyContent, nil
 
 }

@@ -73,7 +73,7 @@
       "instanceExceptionRetry": true
     },
     "httpsConfig": {
-      "httpsEnable": {sslEnable},
+      "httpsEnable": {frontendSslEnable},
       "tlsProtocol": "TLSv1.2",
       "tlsCiphers": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
       "sslBasePath": "{sslBasePath}",
@@ -97,7 +97,7 @@
       "cafile": "{etcdCAFile}",
       "certfile": "{etcdCertFile}",
       "keyfile": "{etcdKeyFile}",
-      "passphraseFile": "{passphraseFile}",
+      "passphraseFile": "",
       "azPrefix": "{azPrefix}"
     },
     "metaEtcd": {
@@ -113,7 +113,7 @@
       "cafile": "{etcdCAFile}",
       "certfile": "{etcdCertFile}",
       "keyfile": "{etcdKeyFile}",
-      "passphraseFile": "{passphraseFile}",
+      "passphraseFile": "",
       "azPrefix": "{azPrefix}"
     },
     "tlsConfig": {
