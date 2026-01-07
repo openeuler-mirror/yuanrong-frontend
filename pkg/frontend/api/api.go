@@ -27,10 +27,10 @@ import (
 	commonJob "frontend/pkg/common/job"
 	"frontend/pkg/frontend/api/app"
 	"frontend/pkg/frontend/api/datasystem"
-	"frontend/pkg/frontend/api/functionsystem"
+	frontend "frontend/pkg/frontend/api/functionsystem"
 	"frontend/pkg/frontend/api/job"
 	"frontend/pkg/frontend/api/lease"
-	"frontend/pkg/frontend/api/v1"
+	v1 "frontend/pkg/frontend/api/v1"
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/frontendsdkadapter/handler"
 )
@@ -39,6 +39,7 @@ const (
 	// naming convention: url + method + description
 	urlPostInvoke = "/serverless/v1/functions/" + common.GinUrnParamMark +
 		common.FunctionUrnParam + "/invocations"
+	urlShortInvoke     = "/:tenant-id/:namespace/:function/"
 	urlStreamSubscribe = "/serverless/v1/stream/subscribe"
 	urlGetHealthCheck  = "/healthz"
 	urlClusterHealthy  = "/serverless/v1/componentshealth"
@@ -80,9 +81,10 @@ const (
 // InitRoute -
 func InitRoute(r *gin.Engine) {
 	r.GET(urlGetHealthCheck, v1.HealthzHandler)
-	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)              // Health check
-	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler)) // Invocation
-	r.GET(urlStreamSubscribe, v1.SubscribeHandler)                 // Subscribe Stream
+	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)                    // Health check
+	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))       // Invocation
+	r.POST(urlShortInvoke, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Invocation
+	r.GET(urlStreamSubscribe, v1.SubscribeHandler)                       // Subscribe Stream
 	r.PUT(urlLease, lease.NewLeaseHandler)
 	r.DELETE(urlLease, lease.DelLeaseHandler)
 	r.POST(urlLeaseKeepAlive, lease.KeepAliveHandler)

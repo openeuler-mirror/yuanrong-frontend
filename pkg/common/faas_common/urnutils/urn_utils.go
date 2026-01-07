@@ -90,7 +90,9 @@ const (
 	// DefaultURNRegion is the default region of a URN
 	DefaultURNRegion = "cn"
 	// DefaultURNFuncSign is the default function sign of a URN
-	DefaultURNFuncSign  = "function"
+	DefaultURNFuncSign = "function"
+	// DefaultURNVersion is the default version of a URN
+	DefaultURNVersion   = "latest"
 	defaultURNLayerSign = "layer"
 	anonymization       = "****"
 	anonymizeLen        = 3
@@ -141,6 +143,7 @@ const (
 	// URNIndexThirteen URN index 13
 	URNIndexThirteen
 )
+
 const (
 	k8sLabelLen   = 63
 	otherStrLen   = 4
@@ -157,9 +160,7 @@ const (
 	CertMode = 384 // 600:rw- --- ---
 )
 
-var (
-	functionGraphFuncNameRegexp = regexp.MustCompile("^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$")
-)
+var functionGraphFuncNameRegexp = regexp.MustCompile("^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$")
 
 // FunctionURN contains elements of a product URN. It can expand to FunctionURN, LayerURN and WorkerURN
 type FunctionURN struct {
@@ -558,4 +559,16 @@ func BuildStandardFunctionName(functionName string) string {
 		standardFunctionName = funcNamePrefix + standardFunctionName
 	}
 	return standardFunctionName
+}
+
+// BuildFunctionShortURN - build urn from short format
+func BuildFunctionShortURN(tenantID, namespace, functionName string) string {
+	functionVersion := DefaultURNVersion
+	splits := strings.Split(functionName, ":")
+	if len(splits) > 1 {
+		functionName = splits[0]
+		functionVersion = splits[1]
+	}
+	return fmt.Sprintf("%s:%s:yrk:%s:%s:0@%s@%s:%s", DefaultURNProductID, DefaultURNRegion,
+		tenantID, DefaultURNFuncSign, namespace, functionName, functionVersion)
 }

@@ -89,6 +89,31 @@ func InvokeHandler(ctx *gin.Context) {
 		time.Since(processCtx.StartTime).Seconds(), sessionId, instanceLabel)
 }
 
+// ShortInvokeHandler -
+// ShortInvokeHandler handles short invocation requests
+func ShortInvokeHandler(ctx *gin.Context) {
+	traceID := httputil.InitTraceID(ctx)
+	logger := log.GetLogger().With(zap.Any("traceId", traceID))
+	logger.Infof("invoking handler receives one request")
+
+	processCtx, err := buildShortProcessContext(ctx, traceID)
+	if err != nil {
+		logger.Errorf("failed to set processCtx req, error: %s", err.Error())
+		writeHTTPResponse(ctx, processCtx)
+		return
+	}
+	defer writeInterfaceLog(processCtx)
+	logger = logger.With(zap.Any("funcKey", processCtx.FuncKey))
+	if err := middleware.Invoker.Handle(processCtx); err != nil {
+		logger.Errorf("invoke failed,error: %s", err.Error())
+	}
+	writeHTTPResponse(ctx, processCtx)
+	sessionId := processCtx.ReqHeader[httpconstant.HeaderInstanceSession]
+	instanceLabel := processCtx.ReqHeader[httpconstant.HeaderInstanceLabel]
+	logger.Infof("invoke function success, totalTime %f, sessionId %s, instanceLabel %s",
+		time.Since(processCtx.StartTime).Seconds(), sessionId, instanceLabel)
+}
+
 func writeInterfaceLog(invokeCtx *types.InvokeProcessContext) {
 	if invokeCtx.RequestTraceInfo == nil {
 		log.GetLogger().Errorf("write invoke interface log failed, traceIno is nil")
@@ -165,6 +190,52 @@ func buildProcessContext(ctx *gin.Context, traceID string) (processCtx *types.In
 	return
 }
 
+func buildShortProcessContext(ctx *gin.Context, traceID string) (processCtx *types.InvokeProcessContext, err error) {
+	processCtx = types.CreateInvokeProcessContext()
+	processCtx.TraceID = traceID
+	processCtx.RequestID = traceID
+
+	var (
+		funcUrn  urnutils.FunctionURN
+		plainURN string
+	)
+	defer func() {
+		if err != nil {
+			processCtx.StatusCode = http.StatusBadRequest
+			responsehandler.SetErrorInContextWithDefault(processCtx, err, statuscode.FrontendStatusBadRequest,
+				err.Error())
+		}
+	}()
+	err = handleRequestBodyAndStream(ctx, processCtx, traceID)
+	if err != nil {
+		return
+	}
+	processCtx.ReqHeader = readHeaders(ctx.Request.Header)
+	processCtx.ReqPath = ctx.Request.URL.Path
+	processCtx.ReqMethod = ctx.Request.Method
+	processCtx.ReqQuery = ctx.Request.URL.RawQuery
+	tenantId := ctx.Param("tenant-id")
+	namespace := ctx.Param("namespace")
+	functionName := ctx.Param("function")
+	plainURN = urnutils.BuildFunctionShortURN(tenantId, namespace, functionName)
+	params := make(map[string]string)
+	for k, v := range processCtx.ReqHeader {
+		params[strings.ToLower(k)] = v
+	}
+	functionURN := aliasroute.GetAliases().GetFuncVersionURNWithParams(plainURN, params)
+	funcUrn, err = urnutils.GetFunctionInfo(functionURN)
+	if err != nil {
+		return
+	}
+	processCtx.FuncKey = urnutils.CombineFunctionKey(funcUrn.TenantID, funcUrn.FuncName, funcUrn.FuncVersion)
+	if config.GetConfig().BusinessType == constant.BusinessTypeFG {
+		if err = processContextForFG(ctx, processCtx, plainURN, funcUrn); err != nil {
+			return
+		}
+	}
+	return
+}
+
 func handleRequestBodyAndStream(ctx *gin.Context, processCtx *types.InvokeProcessContext, traceID string) error {
 	stream.BuildStreamContext(ctx, processCtx)
 	if stream.IsHTTPUploadStream(ctx.Request) {
@@ -222,7 +293,8 @@ func extractFunctionURN(c *gin.Context, reqHeaders map[string]string) (urnutils.
 }
 
 func processContextForFG(c *gin.Context, processCtx *types.InvokeProcessContext,
-	plainURN string, functionInfo urnutils.FunctionURN) error {
+	plainURN string, functionInfo urnutils.FunctionURN,
+) error {
 	anonymizeURN := urnutils.AnonymizeTenantURN(plainURN)
 
 	log.GetLogger().Debugf("request URN is coming: %s, alias: %s traceID: %s",
