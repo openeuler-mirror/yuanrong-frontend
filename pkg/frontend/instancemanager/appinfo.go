@@ -128,7 +128,7 @@ func switch2AppStatus(statsCode constant.InstanceStatus, statusType constant.Ins
 
 // StoreAppInfo -
 func StoreAppInfo(key string, value *types.InstanceSpecification) {
-	if !strings.HasPrefix(value.InstanceID, constant.FunctionNameApp) {
+	if !strings.Contains(value.InstanceID, constant.FunctionNameApp) {
 		return
 	}
 	appStatusCode := constant.InstanceStatus(value.InstanceStatus.Code)
