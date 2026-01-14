@@ -1,0 +1,15 @@
+# Grafana 数据源配置
+# 这个文件可以通过 Grafana API 或手动在 UI 中配置
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "10s"
+      httpMethod: "POST"

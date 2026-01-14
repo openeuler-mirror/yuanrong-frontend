@@ -1,0 +1,142 @@
+{
+  "title": "Yuanrong Frontend Metrics",
+  "tags": ["yuanrong", "frontend", "metrics"],
+  "timezone": "browser",
+  "schemaVersion": 27,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Function Invocations Total",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(function_invocations_total[5m])) by (function_name, http_code)",
+          "legendFormat": "{{function_name}} - {{http_code}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {"format": "ops", "label": "Requests/sec"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 2,
+      "title": "Function Invocation Duration",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(function_invocation_duration_seconds_bucket[5m])) by (le, function_name))",
+          "legendFormat": "p95 - {{function_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(function_invocation_duration_seconds_bucket[5m])) by (le, function_name))",
+          "legendFormat": "p99 - {{function_name}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(function_invocation_duration_seconds_sum[5m])) / sum(rate(function_invocation_duration_seconds_count[5m])) by (function_name)",
+          "legendFormat": "avg - {{function_name}}",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {"format": "s", "label": "Duration (seconds)"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 3,
+      "title": "HTTP Status Code Distribution",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(function_invocations_total) by (http_code)",
+          "legendFormat": "{{http_code}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Function Invocation Count by Function",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(function_invocations_total) by (function_name, http_code)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "function_name": "Function Name",
+              "http_code": "HTTP Code",
+              "Value": "Count"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Error Rate",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "sum(rate(function_invocations_total{http_code=~\"5..\"}[5m])) / sum(rate(function_invocations_total[5m]))",
+          "legendFormat": "Error Rate",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {"format": "percentunit", "label": "Error Rate"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 6,
+      "title": "Request Rate by Function",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {
+          "expr": "sum(rate(function_invocations_total[5m])) by (function_name)",
+          "legendFormat": "{{function_name}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {"format": "ops", "label": "Requests/sec"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+  }
+}

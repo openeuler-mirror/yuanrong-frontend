@@ -1,0 +1,42 @@
+# Prometheus configuration file
+global:
+  scrape_interval: 15s      # 每15秒拉取一次指标
+  evaluation_interval: 15s  # 每15秒评估一次规则
+  external_labels:
+    cluster: 'yuanrong-frontend'
+    environment: 'development'
+
+# Alertmanager configuration (可选)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# 规则文件路径 (可选)
+# rule_files:
+#   - "alert_rules.yml"
+
+# 抓取配置
+scrape_configs:
+  # 抓取 Prometheus 自身指标
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: 'prometheus'
+
+  # 抓取 Frontend 服务指标
+  - job_name: 'yuanrong-frontend'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:8888']  # 根据实际服务端口修改
+        labels:
+          service: 'yuanrong-frontend'
+          instance: 'frontend-1'
+    # 如果需要抓取多个实例，可以添加更多 targets
+    # - targets: ['localhost:8889']
+    #   labels:
+    #     service: 'yuanrong-frontend'
+    #     instance: 'frontend-2'

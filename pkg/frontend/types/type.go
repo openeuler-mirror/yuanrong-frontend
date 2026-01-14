@@ -202,6 +202,8 @@ type FrontendHTTP struct {
 	MaxDataSystemMultiDataBodySize int    `json:"maxDataSystemMultiDataBodySize" valid:"optional"`
 	ServerListenPort               int    `json:"serverListenPort" valid:"optional"`
 	ServerListenIP                 string `json:"serverListenIP" valid:"optional"`
+	// PrometheusMetricsPort is the port for Prometheus metrics server
+	PrometheusMetricsPort int `json:"prometheusMetricsPort" valid:"optional"`
 }
 
 // TrafficLimitParams parameters of traffic limitation

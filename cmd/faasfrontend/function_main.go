@@ -18,10 +18,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	_ "go.uber.org/automaxprocs"
 
@@ -36,6 +38,7 @@ import (
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/invocation"
+	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
@@ -43,13 +46,11 @@ import (
 	"frontend/pkg/frontend/state"
 )
 
-var (
-	stopCh = make(chan struct{})
-)
+var stopCh = make(chan struct{})
 
 const (
 	defaultArgsLength = 5
-	defaultFileMode   = 0640
+	defaultFileMode   = 0o640
 	serverNum         = 2
 )
 
@@ -180,6 +181,12 @@ func ShutdownHandlerLibruntime(gracePeriodSecond uint64) error {
 		server.GracefulShutdown(server.GetHTTPServer())
 		wg.Done()
 	}()
+	// Stop Prometheus metrics server
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(gracePeriodSecond)*time.Second)
+	defer cancel()
+	if err := metrics.StopPrometheusServer(ctx); err != nil {
+		log.GetLogger().Warnf("failed to stop Prometheus metrics server: %v", err)
+	}
 	wg.Wait()
 	log.GetLogger().Infof("faasfrontendLibruntime exit")
 	log.GetLogger().Sync()
@@ -212,6 +219,18 @@ func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct
 			rt.Exit(0, "")
 		}
 	}()
+
+	// Start Prometheus metrics server if configured
+	if cfg.HTTPConfig != nil && cfg.HTTPConfig.PrometheusMetricsPort > 0 {
+		metricsAddress := fmt.Sprintf("%s:%d", config.GetConfig().HTTPConfig.ServerListenIP,
+			cfg.HTTPConfig.PrometheusMetricsPort)
+		if err := metrics.StartPrometheusServer(metricsAddress, "/metrics"); err != nil {
+			log.GetLogger().Warnf("failed to start Prometheus metrics server: %v", err)
+		} else {
+			log.GetLogger().Infof("Prometheus metrics server started on port %d", cfg.HTTPConfig.PrometheusMetricsPort)
+		}
+	}
+
 	return nil
 }
 

@@ -1,0 +1,51 @@
+# Prometheus configuration file for Docker deployment
+global:
+  scrape_interval: 15s      # 每15秒拉取一次指标
+  evaluation_interval: 15s  # 每15秒评估一次规则
+  external_labels:
+    cluster: 'yuanrong-frontend'
+    environment: 'docker'
+
+# 抓取配置
+scrape_configs:
+  # 抓取 Prometheus 自身指标
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          instance: 'prometheus'
+
+  # 抓取 Frontend 服务指标
+  # 网络说明:
+  # - Prometheus 在 docker_monitoring 网络 (172.18.0.x)
+  # - 普通容器在 bridge 网络 (172.17.0.x)
+  # - 不同网络中的容器默认无法直接通信
+  #
+  # 解决方案:
+  # 1. Frontend 在宿主机: 使用 host.docker.internal:端口
+  # 2. Frontend 在容器且在同一网络: 使用容器名:端口
+  # 3. Frontend 在 bridge 网络: 先连接网络，再使用容器名或 IP
+  - job_name: 'yuanrong-frontend'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      # 方案 1: Frontend 在宿主机上运行（推荐）
+      # - targets: ['host.docker.internal:8888']  # 根据实际服务端口修改
+      #   labels:
+      #     service: 'yuanrong-frontend'
+      #     instance: 'frontend-host'
+      
+      # 方案 2: Frontend 在 Docker 容器中，且已连接到 monitoring 网络
+      # 执行: docker network connect docker_monitoring <frontend-container>
+      # 然后取消下面的注释
+      - targets: ['172.18.0.4:8000']
+        labels:
+          service: 'yuanrong-frontend'
+          instance: 'frontend-docker'
+      
+      # 方案 3: Frontend 在 bridge 网络 (172.17.0.x)，使用容器 IP
+      # 注意: 需要先连接网络才能访问，或使用 host 网络模式
+      # - targets: ['172.17.0.2:8888']  # 使用容器 IP（不推荐，IP 可能变化）
+      #   labels:
+      #     service: 'yuanrong-frontend'
+      #     instance: 'frontend-bridge'

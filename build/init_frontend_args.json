@@ -37,7 +37,8 @@
       "serverReadTimeout": 0,
       "serverWriteTimeout": 0,
       "serverListenIP": "{faas_frontend_http_ip}",
-      "serverListenPort": {faas_frontend_http_port}
+      "serverListenPort": {faas_frontend_http_port},
+      "prometheusMetricsPort": 8000
     },
     "businessType": 0,
     "diskMonitorEnable": false,

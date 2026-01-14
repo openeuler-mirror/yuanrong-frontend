@@ -1,0 +1,6 @@
+# 临时文件
+*.tmp
+.DS_Store
+
+# Kustomize 构建输出
+kustomize-build/

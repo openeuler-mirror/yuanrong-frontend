@@ -1,0 +1,12 @@
+# Prometheus 数据目录
+prometheus-data/
+
+# Grafana 数据目录
+grafana-data/
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+.DS_Store
