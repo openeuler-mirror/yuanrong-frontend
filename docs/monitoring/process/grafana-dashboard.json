@@ -54,16 +54,21 @@
     },
     {
       "id": 3,
-      "title": "HTTP Status Code Distribution",
-      "type": "piechart",
+      "title": "Success Rate (per minute)",
+      "type": "graph",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "sum(function_invocations_total) by (http_code)",
-          "legendFormat": "{{http_code}}",
+          "expr": "sum(rate(function_invocations_total{http_code=~\"2..\"}[1m])) / sum(rate(function_invocations_total[1m]))",
+          "legendFormat": "Success Rate",
           "refId": "A"
         }
-      ]
+      ],
+      "yaxes": [
+        {"format": "percentunit", "label": "Success Rate", "min": 0, "max": 1},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
     },
     {
       "id": 4,
@@ -96,28 +101,10 @@
       ]
     },
     {
-      "id": 5,
-      "title": "Error Rate",
-      "type": "graph",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
-      "targets": [
-        {
-          "expr": "sum(rate(function_invocations_total{http_code=~\"5..\"}[5m])) / sum(rate(function_invocations_total[5m]))",
-          "legendFormat": "Error Rate",
-          "refId": "A"
-        }
-      ],
-      "yaxes": [
-        {"format": "percentunit", "label": "Error Rate"},
-        {"format": "short"}
-      ],
-      "xaxis": {"mode": "time"}
-    },
-    {
       "id": 6,
       "title": "Request Rate by Function",
       "type": "graph",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
       "targets": [
         {
           "expr": "sum(rate(function_invocations_total[5m])) by (function_name)",
@@ -127,6 +114,144 @@
       ],
       "yaxes": [
         {"format": "ops", "label": "Requests/sec"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 7,
+      "title": "Handler Create Operations",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {
+          "expr": "sum(rate(handler_create_operations_total[5m])) by (function_name, http_code)",
+          "legendFormat": "{{function_name}} - {{http_code}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {"format": "ops", "label": "Operations/sec"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 8,
+      "title": "Handler Create Operation Duration",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(handler_create_operation_duration_seconds_bucket[5m])) by (le, function_name))",
+          "legendFormat": "p95 - {{function_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(handler_create_operation_duration_seconds_bucket[5m])) by (le, function_name))",
+          "legendFormat": "p99 - {{function_name}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(handler_create_operation_duration_seconds_sum[5m])) / sum(rate(handler_create_operation_duration_seconds_count[5m])) by (function_name)",
+          "legendFormat": "avg - {{function_name}}",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {"format": "s", "label": "Duration (seconds)"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 9,
+      "title": "Handler Invoke Operations",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "targets": [
+        {
+          "expr": "sum(rate(handler_invoke_operations_total[5m])) by (function_name, http_code)",
+          "legendFormat": "{{function_name}} - {{http_code}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {"format": "ops", "label": "Operations/sec"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 10,
+      "title": "Handler Invoke Operation Duration",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(handler_invoke_operation_duration_seconds_bucket[5m])) by (le, function_name))",
+          "legendFormat": "p95 - {{function_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(handler_invoke_operation_duration_seconds_bucket[5m])) by (le, function_name))",
+          "legendFormat": "p99 - {{function_name}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(handler_invoke_operation_duration_seconds_sum[5m])) / sum(rate(handler_invoke_operation_duration_seconds_count[5m])) by (function_name)",
+          "legendFormat": "avg - {{function_name}}",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {"format": "s", "label": "Duration (seconds)"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 11,
+      "title": "Handler Kill Operations",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "targets": [
+        {
+          "expr": "sum(rate(handler_kill_operations_total[5m])) by (http_code)",
+          "legendFormat": "{{http_code}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {"format": "ops", "label": "Operations/sec"},
+        {"format": "short"}
+      ],
+      "xaxis": {"mode": "time"}
+    },
+    {
+      "id": 12,
+      "title": "Handler Kill Operation Duration",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(handler_kill_operation_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(handler_kill_operation_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(handler_kill_operation_duration_seconds_sum[5m])) / sum(rate(handler_kill_operation_duration_seconds_count[5m]))",
+          "legendFormat": "avg",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {"format": "s", "label": "Duration (seconds)"},
         {"format": "short"}
       ],
       "xaxis": {"mode": "time"}

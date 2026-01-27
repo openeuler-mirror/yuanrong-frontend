@@ -18,6 +18,8 @@ package invocation
 
 import (
 	"errors"
+	"strconv"
+	"sync"
 	"time"
 
 	"frontend/pkg/common/faas_common/constant"
@@ -29,6 +31,7 @@ import (
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functionmeta"
+	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/types"
@@ -41,11 +44,54 @@ const (
 	bitSize          = 64
 )
 
+var metricsOnce sync.Once
+
+func initInvokeMetrics() {
+	metricsOnce.Do(func() {
+		// Register counter for function invocations with function name and http code
+		err := metrics.RegisterCounter("function_invocations_total", "Total number of function invocations", []string{"function_name", "http_code"})
+		if err != nil {
+			log.GetLogger().Warnf("failed to register function_invocations_total metric: %v", err)
+		}
+		// Register histogram for function invocation duration
+		err = metrics.RegisterHistogram("function_invocation_duration_seconds", "Function invocation duration in seconds", []string{"function_name"}, nil)
+		if err != nil {
+			log.GetLogger().Warnf("failed to register function_invocation_duration_seconds metric: %v", err)
+		}
+	})
+}
+
 // InvokeHandler the handler of invoke
 func InvokeHandler(ctx *types.InvokeProcessContext) error {
+	initInvokeMetrics()
 	var err error
 	traceID := ctx.TraceID
 	funcKey := ctx.FuncKey
+	invokeStart := time.Now()
+	invokeTotalTime := time.Since(invokeStart)
+
+	// Use defer to ensure metrics are reported even if function returns early
+	defer func() {
+		// Prepare metrics reporting
+		functionName := ctx.FuncKey
+		if functionName == "" {
+			functionName = "unknown"
+		}
+		// Get http code from context
+		httpCode := ctx.StatusCode
+		httpCodeStr := strconv.Itoa(httpCode)
+
+		// Report invocation count
+		if err := metrics.IncrementCounter("function_invocations_total", functionName, httpCodeStr); err != nil {
+			log.GetLogger().Debugf("failed to report function_invocations_total metric: %v", err)
+		}
+
+		// Report invocation duration
+		if err := metrics.ObserveHistogram("function_invocation_duration_seconds", invokeTotalTime.Seconds(), functionName); err != nil {
+			log.GetLogger().Debugf("failed to report function_invocation_duration_seconds metric: %v", err)
+		}
+	}()
+
 	funcSpec, exist := functionmeta.LoadFuncSpec(funcKey)
 	if !exist {
 		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
@@ -57,6 +103,7 @@ func InvokeHandler(ctx *types.InvokeProcessContext) error {
 	log.GetLogger().Infof("invoking function %s, signature %s, traceID %s, sessionId %s, instanceLabel %s",
 		funcSpec.FunctionKey, funcSpec.FuncMetaSignature, traceID, sessionId, instanceLabel)
 	err = doInvokeWithRetry(ctx, funcSpec)
+	invokeTotalTime = time.Since(invokeStart)
 	if err != nil {
 		log.GetLogger().Errorf("failed to finish the request, traceID %s, error: %s", traceID, err.Error())
 		httputil.HandleInvokeError(ctx, err)

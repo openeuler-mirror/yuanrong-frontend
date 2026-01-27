@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -40,29 +39,11 @@ import (
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
-	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/types"
 	"frontend/pkg/frontend/wisecloud"
 )
-
-var metricsOnce sync.Once
-
-func initInvokeMetrics() {
-	metricsOnce.Do(func() {
-		// Register counter for function invocations with function name and http code
-		err := metrics.RegisterCounter("function_invocations_total", "Total number of function invocations", []string{"function_name", "http_code"})
-		if err != nil {
-			log.GetLogger().Warnf("failed to register function_invocations_total metric: %v", err)
-		}
-		// Register histogram for function invocation duration
-		err = metrics.RegisterHistogram("function_invocation_duration_seconds", "Function invocation duration in seconds", []string{"function_name"}, nil)
-		if err != nil {
-			log.GetLogger().Warnf("failed to register function_invocation_duration_seconds metric: %v", err)
-		}
-	})
-}
 
 func computeTimeout(originTimeout int64, beginTime time.Time) int64 {
 	costTime := time.Now().Sub(beginTime)
@@ -275,9 +256,6 @@ func invokeByClient(ctx *types.InvokeProcessContext, request util.InvokeRequest,
 ) snerror.SNError {
 	logger.Infof("send request %v to grpc", request)
 
-	// Initialize metrics on first call
-	initInvokeMetrics()
-
 	invokeStart := time.Now()
 	var notifyMsg []byte
 	var err error
@@ -290,68 +268,25 @@ func invokeByClient(ctx *types.InvokeProcessContext, request util.InvokeRequest,
 	invokeTotalTime := time.Since(invokeStart)
 	logger.Debugf("get response %s, err: %v", string(notifyMsg), err)
 
-	// Prepare metrics reporting
-	functionName := ctx.FuncKey
-	if functionName == "" {
-		functionName = request.Function
-	}
-	if functionName == "" {
-		functionName = "unknown"
-	}
-
-	// Track if there's an error for metrics reporting
-	hasError := false
-	var snErr snerror.SNError
-
-	// Use defer to ensure metrics are reported even if function returns early
-	defer func() {
-		// Get http code from context
-		httpCode := ctx.StatusCode
-		if httpCode == 0 {
-			// If status code is not set, determine based on error
-			if hasError {
-				httpCode = 500
-			} else {
-				httpCode = 200
-			}
-		}
-		httpCodeStr := strconv.Itoa(httpCode)
-
-		// Report invocation count
-		if err := metrics.IncrementCounter("function_invocations_total", functionName, httpCodeStr); err != nil {
-			logger.Debugf("failed to report function_invocations_total metric: %v", err)
-		}
-
-		// Report invocation duration
-		if err := metrics.ObserveHistogram("function_invocation_duration_seconds", invokeTotalTime.Seconds(), functionName); err != nil {
-			logger.Debugf("failed to report function_invocation_duration_seconds metric: %v", err)
-		}
-	}()
-
 	if err != nil {
-		hasError = true
 		if rtErr, ok := err.(api.ErrorInfo); ok {
 			logger.Errorf("invoke request, errCode: %d, error: %s, totalTime: %v",
 				rtErr.Code, rtErr.Error(), invokeTotalTime.Seconds())
 			if snErr := checkErrorMsg(rtErr.Error()); snErr != nil {
 				return snErr
 			}
-			snErr = snerror.New(rtErr.Code, rtErr.Error())
-			return snErr
+			return snerror.New(rtErr.Code, rtErr.Error())
 		}
 		if snError := checkInstanceResp(notifyMsg); snError != nil {
-			hasError = true
 			return snError
 		}
 		logger.Errorf("invoke GRPC request error: %s, totalTime: %v", err.Error(), invokeTotalTime.Seconds())
 		errMsg := fmt.Sprintf("invoke GRPC request error: %s", err.Error())
 		httputil.JudgeRetry(err, ctx)
-		snErr = snerror.New(statuscode.FrontendStatusInternalError, errMsg)
-		return snErr
+		return snerror.New(statuscode.FrontendStatusInternalError, errMsg)
 	}
 	respMsg, snErr := responsehandler.SetResponseInContext(ctx, notifyMsg)
 	if snErr != nil {
-		hasError = true
 		return snErr
 	}
 	if ctx.RequestTraceInfo != nil {
