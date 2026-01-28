@@ -19,13 +19,16 @@ package alarm
 
 import (
 	"encoding/json"
-	"frontend/pkg/common/faas_common/constant"
-	"frontend/pkg/common/faas_common/logger/config"
-	"frontend/pkg/common/faas_common/urnutils"
-	"github.com/smartystreets/goconvey/convey"
 	"os"
 	"sync"
 	"testing"
+
+	"github.com/agiledragon/gomonkey/v2"
+	"github.com/smartystreets/goconvey/convey"
+
+	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/logger/config"
+	"frontend/pkg/common/faas_common/urnutils"
 )
 
 func TestGetAlarmLogger(t *testing.T) {

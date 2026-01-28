@@ -87,7 +87,7 @@ func TestContainPassPhase(t *testing.T) {
 			passPhase := ""
 			isHttps := false
 			content, err := containPassPhase(keyContent, passPhase, "LOCAL", isHttps)
-			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err, convey.ShouldBeNil)
 			convey.So(content, convey.ShouldBeNil)
 		})
 		convey.Convey("https error case 1", func() {

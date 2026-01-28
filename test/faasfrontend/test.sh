@@ -47,7 +47,7 @@ run_gocover_report()
 
     cd ${SRC_PATH}
     find frontendsdk/ -type f -print0 | xargs -0 sed -i 's#"yuanrong.org/kernel/runtime/posixsdk"#"functionsystem/pkg/frontend/frontendsdk/posixsdk"#g'
-    go test -tags function -v -gcflags=all=-l -covermode="${GOCOVER_MODE}" -coverprofile="$OUTPUT_PATH/faasfrontend.cover" -coverpkg="./..." "./..."
+    go test -tags function -gcflags=all=-l -covermode="${GOCOVER_MODE}" -coverprofile="$OUTPUT_PATH/faasfrontend.cover" -coverpkg="./..." "./..."
 
     if [ $? -ne 0 ]; then
         log_error "failed to go test faasfrontend"
