@@ -37,12 +37,10 @@ import (
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
-	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functiontask"
-	"frontend/pkg/frontend/instanceleasemanager"
+	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/responsehandler"
-	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/stream"
 	"frontend/pkg/frontend/types"
 )
@@ -76,6 +74,14 @@ func (ic innerCode) String() string {
 }
 
 func functionInvokeForFG(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) error {
+	if ctx.IsHTTPUploadStream {
+		timeout := getRequestDeadline(funcSpec)
+		if err := stream.HTTPStreamInvokeHandler(ctx, timeout); err != nil {
+			setErrorResponse(ctx, err)
+			return nil
+		}
+	}
+
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 	readBodyStart := time.Now()
@@ -189,7 +195,7 @@ func invokeFunction(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSp
 		initProxyRequest(req, instanceAllocationInfo, funcSpec)
 		needBreak, needTry, err := invokeBus(ctx, req, resp, funcSpec)
 		if err != nil {
-			instanceleasemanager.GetInstanceManager().ReleaseInstanceAllocation(instanceAllocationInfo,
+			leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(instanceAllocationInfo,
 				true, ctx.TraceID)
 			if needTry {
 				time.Sleep(retryInterval * time.Millisecond)
@@ -198,12 +204,12 @@ func invokeFunction(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSp
 			return err
 		}
 		if needBreak {
-			instanceleasemanager.GetInstanceManager().ReleaseInstanceAllocation(instanceAllocationInfo,
+			leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(instanceAllocationInfo,
 				false, ctx.TraceID)
 			return nil
 		}
 		if needTry {
-			instanceleasemanager.GetInstanceManager().ReleaseInstanceAllocation(instanceAllocationInfo,
+			leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(instanceAllocationInfo,
 				false, ctx.TraceID)
 			time.Sleep(retryInterval * time.Millisecond)
 		}
@@ -462,38 +468,14 @@ func shouldRetry(innerCode int, businessType string) bool {
 func acquireInstance(ctx *types.InvokeProcessContext,
 	funcSpec *commontype.FuncSpec) (*commontype.InstanceAllocationInfo, error) {
 	defer resetSchedulerProxy(ctx)
-	resourceSpecs, err := util.ConvertResourceSpecs(ctx, funcSpec)
-	if err != nil {
-		return nil, err
-	}
+
 	var instanceAllocationInfo *commontype.InstanceAllocationInfo
 	var snError snerror.SNError
 	logger := log.GetLogger().With(zap.Any("traceId", ctx.TraceID), zap.Any("function", ctx.FuncKey))
 	for {
-		scheduler, err := schedulerproxy.Proxy.Get(ctx.FuncKey, logger)
-		if err != nil || scheduler == nil {
-			logger.Errorf("failed to get scheduler, error:%s", err.Error())
-			responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusInternalError, err.Error())
-			return nil, err
-		}
-		acquireOption := util.AcquireOption{
-			SchedulerID:      scheduler.InstanceName,
-			SchedulerFuncKey: scheduler.FunctionName,
-			TraceID:          ctx.TraceID,
-			ResourceSpecs:    resourceSpecs,
-			Timeout:          util.GetAcquireTimeout(funcSpec),
-			FuncSig:          funcSpec.FuncMetaSignature,
-			TrafficLimited:   ctx.TrafficLimited,
-		}
-		instanceAllocationInfo, snError = instanceleasemanager.GetInstanceManager().AcquireInstanceAllocation(
-			ctx.FuncKey, "", acquireOption)
+		instanceAllocationInfo, snError = leaseadaptor.GetInstanceManager().AcquireInstance(ctx, funcSpec, logger)
 		if snError != nil {
-			logger.Errorf("failed to acquire lease, error:%+v", err)
-			if snError.Code() == constant.AcquireLeaseTrafficLimitErrorCode {
-				schedulerproxy.Proxy.SetStain(funcSpec.FunctionKey, scheduler.InstanceName)
-				ctx.TrafficLimited = true
-				continue
-			}
+			logger.Errorf("failed to acquire lease, error:%+v", snError)
 			if shouldRetry(snError.Code(), funcSpec.FuncMetaData.BusinessType) &&
 				ctx.RequestTraceInfo.TryCount < (config.GetConfig().InvokeMaxRetryTimes-1) {
 				logger.Warnf("failed to acquire lease for function %s failed: %d, retry count: %d",
@@ -504,7 +486,7 @@ func acquireInstance(ctx *types.InvokeProcessContext,
 			}
 			if snError.Code() == statuscode.NoInstanceAvailableErrCode &&
 				utils.IsCAEFunc(funcSpec.FuncMetaData.BusinessType) {
-				instanceAllocationInfo, err = selectBusForInstance(ctx)
+				instanceAllocationInfo, err := selectBusForInstance(ctx)
 				if err != nil {
 					return nil, err
 				}

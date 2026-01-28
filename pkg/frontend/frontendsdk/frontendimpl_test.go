@@ -19,6 +19,7 @@ package frontendsdk
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -32,6 +33,7 @@ import (
 	"frontend/pkg/common/faas_common/sts/raw"
 	commonType "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/wisecloudtool"
+	"frontend/pkg/common/faas_common/wisecloudtool/serviceaccount"
 	wisecloudtypes "frontend/pkg/common/faas_common/wisecloudtool/types"
 	frontendConfig "frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/frontendsdk/posixsdk"
@@ -83,6 +85,74 @@ func TestInit(t *testing.T) {
 			}).Reset()
 			err := frontend.Init("/home/sn/config.json")
 			convey.So(err.Error(), convey.ShouldContainSubstring, "failed to init sts sdk")
+		})
+		convey.Convey("init logger error", func() {
+			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
+				return data, nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
+				func(rawConfigValue string) (plainBytes []byte, err error) {
+					return plainBytes, nil
+				}).Reset()
+			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
+				return errors.New("init log error")
+			}).Reset()
+			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
+				return nil
+			}).Reset()
+			err := frontend.Init("/home/sn/config.json")
+			convey.So(err.Error(), convey.ShouldContainSubstring, "init logger error")
+		})
+		convey.Convey("init runtime failed", func() {
+			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
+				return data, nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
+				func(rawConfigValue string) (plainBytes []byte, err error) {
+					return plainBytes, nil
+				}).Reset()
+			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(posixsdk.InitRuntime, func(conf *common.Configuration,
+				intfs execution.FunctionExecutionIntfs) error {
+				return errors.New("init InitRuntime error")
+			}).Reset()
+			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
+				return nil
+			}).Reset()
+			err := frontend.Init("/home/sn/config.json")
+			convey.So(err.Error(), convey.ShouldContainSubstring, "init InitRuntime error")
+		})
+		convey.Convey("init runtime success", func() {
+			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
+				return data, nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
+				func(rawConfigValue string) (plainBytes []byte, err error) {
+					return plainBytes, nil
+				}).Reset()
+			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(posixsdk.InitRuntime, func(conf *common.Configuration,
+				intfs execution.FunctionExecutionIntfs) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
+				return nil
+			}).Reset()
+			err := frontend.Init("/home/sn/config.json")
+			convey.So(err, convey.ShouldBeNil)
 		})
 	})
 }
@@ -143,6 +213,48 @@ func TestInitSDKHandler(t *testing.T) {
 			}).Reset()
 			_, err := initSDKHandler(args, nil)
 			convey.So(err, convey.ShouldBeNil)
+		})
+	})
+}
+
+func TestParseSystemAuthError(t *testing.T) {
+	convey.Convey("Test ParseSystemAuth Error", t, func() {
+		cfg := &types.Config{
+			Runtime: types.RuntimeConfig{
+				SystemAuthConfig: types.SystemAuthConfig{
+					Enable:    false,
+					AccessKey: "ak",
+					SecretKey: "sk",
+				},
+			},
+		}
+		convey.Convey("systemAuth not enable ", func() {
+			err := parseSystemAuth(cfg, &common.Configuration{})
+			convey.So(err, convey.ShouldBeNil)
+		})
+		convey.Convey("DecryptSensitiveConfig ak error ", func() {
+			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
+				func(rawConfigValue string) (plainBytes []byte, err error) {
+					if rawConfigValue == "ak" {
+						return []byte{}, errors.New("decrypt accessKey failed")
+					}
+					return plainBytes, nil
+				}).Reset()
+			cfg.Runtime.SystemAuthConfig.Enable = true
+			err := parseSystemAuth(cfg, &common.Configuration{})
+			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt accessKey failed")
+		})
+		convey.Convey("DecryptSensitiveConfig sk error ", func() {
+			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
+				func(rawConfigValue string) (plainBytes []byte, err error) {
+					if rawConfigValue == "sk" {
+						return []byte{}, errors.New("decrypt secretKey failed")
+					}
+					return plainBytes, nil
+				}).Reset()
+			cfg.Runtime.SystemAuthConfig.Enable = true
+			err := parseSystemAuth(cfg, &common.Configuration{})
+			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt secretKey failed")
 		})
 	})
 }
@@ -234,6 +346,151 @@ func TestCheckLocalDataSystemStatusReady(t *testing.T) {
 			}).Reset()
 			result := frontend.CheckLocalDataSystemStatusReady()
 			convey.So(result, convey.ShouldBeTrue)
+		})
+	})
+}
+
+func TestParseServiceAccountJwt(t *testing.T) {
+	convey.Convey("Given a Config instance", t, func() {
+
+		convey.Convey("When STS is enabled and ServiceAccountKeyStr is not empty", func() {
+			cfg := &types.Config{
+				RawStsConfig: raw.StsConfig{StsEnable: true},
+				WiseCloudConfig: types.WiseCloudConfig{
+					ServiceAccountJwt: wisecloudtypes.ServiceAccountJwt{
+						ServiceAccountKeyStr: "service-account-key",
+					},
+				},
+			}
+
+			parsedServiceAccount := &wisecloudtypes.ServiceAccount{}
+			defer gomonkey.ApplyFunc(serviceaccount.ParseServiceAccount, func(keyStr string) (*wisecloudtypes.ServiceAccount, error) {
+				return parsedServiceAccount, nil
+			}).Reset()
+
+			err := parseServiceAccountJwt(cfg)
+
+			convey.Convey("Then ParseServiceAccount should be called", func() {
+				convey.So(err, convey.ShouldBeNil)
+				convey.So(cfg.WiseCloudConfig.ServiceAccountJwt.ServiceAccount, convey.ShouldEqual, parsedServiceAccount)
+				convey.So(frontendConfig.GetConfig().WiseCloudConfig.ServiceAccountJwt.ServiceAccount, convey.ShouldEqual, parsedServiceAccount)
+			})
+		})
+
+		convey.Convey("When STS is disabled or ServiceAccountKeyStr is empty", func() {
+			cfg := &types.Config{
+				RawStsConfig: raw.StsConfig{StsEnable: false},
+				WiseCloudConfig: types.WiseCloudConfig{
+					ServiceAccountJwt: wisecloudtypes.ServiceAccountJwt{
+						ServiceAccountKeyStr: "",
+					},
+				},
+			}
+
+			err := parseServiceAccountJwt(cfg)
+
+			convey.Convey("Then the function should return nil", func() {
+				convey.So(err, convey.ShouldBeNil)
+			})
+		})
+
+		convey.Convey("When TLS config is not nil and TlsCipherSuitesStr is not empty", func() {
+			cfg := &types.Config{
+				RawStsConfig: raw.StsConfig{StsEnable: true},
+				WiseCloudConfig: types.WiseCloudConfig{
+					ServiceAccountJwt: wisecloudtypes.ServiceAccountJwt{
+						ServiceAccountKeyStr: "service-account-key",
+						TlsConfig: &wisecloudtypes.TLSConfig{
+							TlsCipherSuitesStr: []string{"cipher-suites"},
+						},
+					},
+				},
+			}
+
+			parsedServiceAccount := &wisecloudtypes.ServiceAccount{}
+			defer gomonkey.ApplyFunc(serviceaccount.ParseServiceAccount, func(keyStr string) (*wisecloudtypes.ServiceAccount, error) {
+				return parsedServiceAccount, nil
+			}).Reset()
+
+			parsedTlsCipherSuites := []uint16{1, 2}
+			defer gomonkey.ApplyFunc(serviceaccount.ParseTlsCipherSuites, func(cipherSuitesStr []string) ([]uint16, error) {
+				return parsedTlsCipherSuites, nil
+			}).Reset()
+
+			err := parseServiceAccountJwt(cfg)
+
+			convey.Convey("Then ParseTlsCipherSuites should be called", func() {
+				convey.So(err, convey.ShouldBeNil)
+				convey.So(cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig.TlsCipherSuites, convey.ShouldResemble, parsedTlsCipherSuites)
+				convey.So(frontendConfig.GetConfig().WiseCloudConfig.ServiceAccountJwt.TlsConfig.TlsCipherSuites, convey.ShouldResemble, parsedTlsCipherSuites)
+			})
+		})
+
+		convey.Convey("When TLS config is nil or TlsCipherSuitesStr is empty", func() {
+			cfg := &types.Config{
+				RawStsConfig: raw.StsConfig{StsEnable: true},
+				WiseCloudConfig: types.WiseCloudConfig{
+					ServiceAccountJwt: wisecloudtypes.ServiceAccountJwt{
+						ServiceAccountKeyStr: "service-account-key",
+						TlsConfig:            nil,
+					},
+				},
+			}
+
+			err := parseServiceAccountJwt(cfg)
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt service account key failed")
+
+		})
+
+		convey.Convey("When parsing ServiceAccount fails", func() {
+			cfg := &types.Config{
+				RawStsConfig: raw.StsConfig{StsEnable: true},
+				WiseCloudConfig: types.WiseCloudConfig{
+					ServiceAccountJwt: wisecloudtypes.ServiceAccountJwt{
+						ServiceAccountKeyStr: "invalid-service-account-key",
+					},
+				},
+			}
+
+			defer gomonkey.ApplyFunc(serviceaccount.ParseServiceAccount, func(keyStr string) (*wisecloudtypes.ServiceAccount, error) {
+				return nil, fmt.Errorf("failed to parse service account")
+			}).Reset()
+
+			err := parseServiceAccountJwt(cfg)
+
+			convey.Convey("Then the function should return the error", func() {
+				convey.So(err, convey.ShouldNotBeNil)
+				convey.So(err.Error(), convey.ShouldEqual, "failed to parse service account")
+			})
+		})
+
+		convey.Convey("When parsing TlsCipherSuites fails", func() {
+			cfg := &types.Config{
+				RawStsConfig: raw.StsConfig{StsEnable: true},
+				WiseCloudConfig: types.WiseCloudConfig{
+					ServiceAccountJwt: wisecloudtypes.ServiceAccountJwt{
+						ServiceAccountKeyStr: "service-account-key",
+						TlsConfig: &wisecloudtypes.TLSConfig{
+							TlsCipherSuitesStr: []string{"invalid-cipher-suites"},
+						},
+					},
+				},
+			}
+
+			parsedServiceAccount := &wisecloudtypes.ServiceAccount{}
+			defer gomonkey.ApplyFunc(serviceaccount.ParseServiceAccount, func(keyStr string) (*wisecloudtypes.ServiceAccount, error) {
+				return parsedServiceAccount, nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(serviceaccount.ParseTlsCipherSuites, func(cipherSuitesStr []string) ([]uint16, error) {
+				return nil, fmt.Errorf("failed to parse cipher suites")
+			}).Reset()
+
+			err := parseServiceAccountJwt(cfg)
+			convey.Convey("Then the function should return the error", func() {
+				convey.So(err, convey.ShouldNotBeNil)
+				convey.So(err.Error(), convey.ShouldEqual, "failed to parse cipher suites")
+			})
 		})
 	})
 }

@@ -36,6 +36,7 @@ import (
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/server"
+	"frontend/pkg/frontend/stream"
 )
 
 const (
@@ -78,6 +79,10 @@ func main() {
 	if err != nil {
 		logAndPrintError(fmt.Sprintf("setup module frontend error: %s", err.Error()))
 		return
+	}
+	// 流监听
+	if err := stream.StartListenFrontendResponseStream(stopCh); err != nil {
+		log.GetLogger().Warnf("failed to listen frontend response stream, err: %s", err.Error())
 	}
 	errChan := make(chan error, 1)
 	httpServer := server.CreateHTTPServer()

@@ -140,7 +140,7 @@ func GetSchedulerClient() *fasthttp.Client {
 
 func newSchedulerClient() *fasthttp.Client {
 	var tlsConfig *tls.Config
-	if config.GetConfig().HTTPSConfig.HTTPSEnable {
+	if config.GetConfig().HTTPSConfig != nil && config.GetConfig().HTTPSConfig.HTTPSEnable {
 		tlsConfig = commontls.GetClientTLSConfig()
 		if tlsConfig != nil {
 			tlsConfig.NextProtos = []string{"http/1.1"}
@@ -398,6 +398,21 @@ func AddAuthorizationHeaderForFG(proxyReq *fasthttp.Request) {
 		config.GetConfig().LocalAuth.SKey, httpconstant.AppID, config.GetConfig().LocalAuth.Duration)
 	proxyReq.Header.Set(constant.HeaderAuthTimestamp, timestamp)
 	proxyReq.Header.Set(constant.HeaderAuthorization, authorization)
+}
+
+// SignForSchedulerWithSts -
+func SignForSchedulerWithSts(req *fasthttp.Request) error {
+	if !config.GetConfig().RawStsConfig.StsEnable {
+		return nil
+	}
+	if config.GetConfig() == nil || config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.AccessKey == "" {
+		return fmt.Errorf("sts accessKey is empty")
+	}
+	if config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.SecretKey == "" {
+		return fmt.Errorf("sts secretKey is empty")
+	}
+	return localauth.SignWithHmacSha256(req, config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.AccessKey,
+		config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.SecretKey)
 }
 
 // ReadLimitedBody -

@@ -98,6 +98,14 @@ func TestNewLeaseHandler(t *testing.T) {
 		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
 			cb([]byte{}, nil)
 		}).Reset()
+	defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetEvent",
+		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
+			cb([]byte{}, nil)
+		}).Reset()
+	defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "DeleteGetEventCallback",
+		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string) {
+			return
+		}).Reset()
 	convey.Convey("NewLeaseHandler", t, func() {
 		convey.Convey("failed to parse lease request, empty remote client id", func() {
 			rw := httptest.NewRecorder()
@@ -133,6 +141,14 @@ func TestNewLeaseHandler(t *testing.T) {
 			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetAsync",
 				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
 					cb([]byte{}, errors.New("invoke failed"))
+				}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetEvent",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
+					cb([]byte{}, nil)
+				}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "DeleteGetEventCallback",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string) {
+					return
 				}).Reset()
 			rw := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(rw)
@@ -196,6 +212,14 @@ func TestDelLeaseHandler(t *testing.T) {
 		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
 			cb([]byte{}, nil)
 		}).Reset()
+	defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetEvent",
+		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
+			cb([]byte{}, nil)
+		}).Reset()
+	defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "DeleteGetEventCallback",
+		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string) {
+			return
+		}).Reset()
 	convey.Convey("DelLeaseHandler", t, func() {
 		convey.Convey("failed to parse lease request, empty remote client id", func() {
 			rw := httptest.NewRecorder()
@@ -231,6 +255,14 @@ func TestDelLeaseHandler(t *testing.T) {
 			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetAsync",
 				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
 					cb([]byte{}, errors.New("invoke failed"))
+				}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetEvent",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
+					cb([]byte{}, nil)
+				}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "DeleteGetEventCallback",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string) {
+					return
 				}).Reset()
 			rw := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(rw)
@@ -294,6 +326,14 @@ func TestKeepAliveHandler(t *testing.T) {
 		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
 			cb([]byte{}, nil)
 		}).Reset()
+	defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetEvent",
+		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
+			cb([]byte{}, nil)
+		}).Reset()
+	defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "DeleteGetEventCallback",
+		func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string) {
+			return
+		}).Reset()
 	convey.Convey("KeepAliveHandler", t, func() {
 		convey.Convey("failed to parse lease request, empty remote client id", func() {
 			rw := httptest.NewRecorder()
@@ -329,6 +369,14 @@ func TestKeepAliveHandler(t *testing.T) {
 			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetAsync",
 				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
 					cb([]byte{}, errors.New("invoke failed"))
+				}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "GetEvent",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
+					cb([]byte{}, nil)
+				}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}), "DeleteGetEventCallback",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string) {
+					return
 				}).Reset()
 			rw := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(rw)

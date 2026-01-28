@@ -35,14 +35,14 @@ import (
 	"frontend/pkg/common/faas_common/tls"
 	commontype "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/common/httpconstant"
-	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functiontask"
-	"frontend/pkg/frontend/instanceleasemanager"
+	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/stream"
 	"frontend/pkg/frontend/types"
+	"yuanrong.org/kernel/runtime/libruntime/api"
 )
 
 func TestProcessResp(t *testing.T) {
@@ -156,16 +156,19 @@ func TestAcquireInstance(t *testing.T) {
 		expectedError  error
 	}
 
-	schedulerproxy.Proxy.Add(&commontype.InstanceInfo{InstanceName: "instance1"}, log.GetLogger())
+	schedulerInfo := &schedulerproxy.SchedulerNodeInfo{
+		InstanceInfo: &commontype.InstanceInfo{InstanceName: "instance1"},
+		UpdateTime:   time.Now(),
+	}
+	schedulerproxy.Proxy.Add(schedulerInfo, log.GetLogger())
 
 	cases := []testCase{
 		{
 			name: "No Instance Available",
 			setupMocks: func() {
-				patches = gomonkey.ApplyMethod(reflect.TypeOf(instanceleasemanager.GetInstanceManager()),
-					"AcquireInstanceAllocation",
-					func(im *instanceleasemanager.Manager, funcKey, version string,
-						option util.AcquireOption) (*commontype.InstanceAllocationInfo, snerror.SNError) {
+				patches = gomonkey.ApplyMethod(reflect.TypeOf(leaseadaptor.GetInstanceManager()),
+					"AcquireInstance",
+					func(im *leaseadaptor.Manager, ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec, logger api.FormatLogger) (*commontype.InstanceAllocationInfo, snerror.SNError) {
 						return nil, snerror.New(statuscode.NoInstanceAvailableErrCode, "no instance available")
 					})
 				patches.ApplyFunc(time.Sleep, func(d time.Duration) {})
@@ -181,10 +184,9 @@ func TestAcquireInstance(t *testing.T) {
 		{
 			name: "Should retry error",
 			setupMocks: func() {
-				patches = gomonkey.ApplyMethod(reflect.TypeOf(instanceleasemanager.GetInstanceManager()),
-					"AcquireInstanceAllocation",
-					func(im *instanceleasemanager.Manager, funcKey, version string,
-						option util.AcquireOption) (*commontype.InstanceAllocationInfo, snerror.SNError) {
+				patches = gomonkey.ApplyMethod(reflect.TypeOf(leaseadaptor.GetInstanceManager()),
+					"AcquireInstance",
+					func(im *leaseadaptor.Manager, ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec, logger api.FormatLogger) (*commontype.InstanceAllocationInfo, snerror.SNError) {
 						return nil, snerror.New(statuscode.SendReqErrCode, "send req error")
 					})
 				patches.ApplyFunc(time.Sleep, func(d time.Duration) {})

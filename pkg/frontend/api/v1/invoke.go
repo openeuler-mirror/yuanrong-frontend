@@ -115,11 +115,12 @@ func writeInterfaceLog(invokeCtx *types.InvokeProcessContext) {
 	if len(message) > 100 { // 仅保留前100个字符
 		message = message[:100] // 仅保留前100个字符
 	}
-	// tenantId | funcName | version | sessionId | instanceLabel | statusCode | code | totalCost |
-	logContent := fmt.Sprintf("invocation |%s | %s | %s | %s | %s | %d | %s | %.2f | %s",
+	// tenantId | funcName | version | traceId | instanceLabel | sessionId | statusCode | code | totalCost |
+	logContent := fmt.Sprintf("invocation |%s | %s | %s | %s | %s | %s | %d | %s | %.2f | %s",
 		tenantId, funcName, version,
-		invokeCtx.ReqHeader[httpconstant.HeaderInstanceSession],
+		invokeCtx.TraceID,
 		invokeCtx.ReqHeader[httpconstant.HeaderInstanceLabel],
+		invokeCtx.ReqHeader[httpconstant.HeaderInstanceSession],
 		invokeCtx.StatusCode,
 		invokeCtx.RespHeader[httpconstant.HeaderInnerCode],
 		totalTime.Seconds()*1000, // 秒转换成毫秒
@@ -132,6 +133,9 @@ func buildProcessContext(ctx *gin.Context, traceID string) (processCtx *types.In
 	processCtx = types.CreateInvokeProcessContext()
 	processCtx.TraceID = traceID
 	processCtx.RequestID = traceID
+	processCtx.ResponseWriter = &GinWriter{
+		Context: ctx,
+	}
 
 	var (
 		funcUrn  urnutils.FunctionURN
@@ -165,6 +169,57 @@ func buildProcessContext(ctx *gin.Context, traceID string) (processCtx *types.In
 	return
 }
 
+// GinWriter 实现 ResponseWriter 接口
+type GinWriter struct {
+	Context *gin.Context
+}
+
+// SSEWrite SSE协议响应回传
+func (gw *GinWriter) SSEWrite(data []byte) (int, error) {
+	// 设置SSE响应头
+	if gw == nil || gw.Context == nil {
+		return 0, fmt.Errorf("context has nil")
+	}
+	gw.Context.Header("Content-Type", constant.HeaderAcceptEventStream)
+	gw.Context.Header("Cache-Control", "no-cache")
+	gw.Context.Header("Connection", "keep-alive")
+	gw.Context.Header("Transfer-Encoding", "chunked")
+	gw.Context.Header("X-Accel-Buffering", "no")
+
+	// 尝试写入数据，最多重试3次
+	sseEvent := fmt.Sprintf("data: %s\n\n", string(data))
+	maxRetries := 3
+	retryCount := 0
+	writer := gw.Context.Writer
+	for {
+		if writer == nil {
+			break
+		}
+		_, err := writer.Write([]byte(sseEvent))
+		if err == nil {
+			break
+		}
+		retryCount++
+		if retryCount >= maxRetries {
+			log.GetLogger().Errorf("SSE write response failed after %d retries, err: %v", maxRetries, err)
+			gw.Context.Abort()
+			return 0, err
+		}
+		time.Sleep(time.Second)
+	}
+
+	// 立即发送数据到客户端
+	if writer != nil {
+		writer.Flush()
+	}
+	return 0, nil
+}
+
+// ClientDisconnectChan -
+func (gw *GinWriter) ClientDisconnectChan() <-chan struct{} {
+	return gw.Context.Request.Context().Done()
+}
+
 func handleRequestBodyAndStream(ctx *gin.Context, processCtx *types.InvokeProcessContext, traceID string) error {
 	stream.BuildStreamContext(ctx, processCtx)
 	if stream.IsHTTPUploadStream(ctx.Request) {
@@ -187,9 +242,21 @@ func writeHTTPResponse(ctx *gin.Context, processCtx *types.InvokeProcessContext)
 	// It has to be in this order. 1. set header 2.writeHeader 3.write
 	writeHeadersToResponse(processCtx.RespHeader, ctx.Writer.Header())
 	ctx.Writer.WriteHeader(processCtx.StatusCode)
-	_, err := ctx.Writer.Write(processCtx.RespBody)
-	if err != nil {
-		log.GetLogger().Errorf("failed to write response body error %s", err.Error())
+	sseHeader, ok := processCtx.ReqHeader["Accept"]
+	if ok && sseHeader == constant.HeaderAcceptEventStream {
+		_, err := processCtx.ResponseWriter.SSEWrite(processCtx.RespBody)
+		if err != nil {
+			log.GetLogger().Errorf("failed to write response body error %s", err.Error())
+		}
+		_, err = processCtx.ResponseWriter.SSEWrite([]byte("[DONE]"))
+		if err != nil {
+			log.GetLogger().Errorf("failed to write DONE error %s", err.Error())
+		}
+	} else {
+		_, err := ctx.Writer.Write(processCtx.RespBody)
+		if err != nil {
+			log.GetLogger().Errorf("failed to write response body error %s", err.Error())
+		}
 	}
 }
 

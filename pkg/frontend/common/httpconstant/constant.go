@@ -87,6 +87,8 @@ const (
 	FormContentType = "application/x-www-form-urlencoded"
 	// MultipartFormContentType -
 	MultipartFormContentType = "multipart/form-data"
+	// AcceptEventStream Accept:text/event-stream
+	AcceptEventStream = "text/event-stream"
 
 	// ContentType -
 	ContentType = "Content-Type"

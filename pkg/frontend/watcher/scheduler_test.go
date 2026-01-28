@@ -32,83 +32,6 @@ import (
 	"frontend/pkg/frontend/schedulerproxy"
 )
 
-func TestIsFaaSScheduler(t *testing.T) {
-	Convey("TestIsFaaSScheduler", t, func() {
-		key := "/sn/instance/business/yrk/tenant/0/function/faasscheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772"
-		So(isFaaSScheduler(key), ShouldBeTrue)
-		key = "/sn/instance/business/yrk/tenant/1/function/faasscheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772"
-		So(isFaaSScheduler(key), ShouldBeTrue)
-		key = "/sn/instance/business/yrk/tenant/0/function/scheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772"
-		So(isFaaSScheduler(key), ShouldBeFalse)
-		key = "/instance/business/yrk/tenant/0/function/faasscheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772"
-		So(isFaaSScheduler(key), ShouldBeFalse)
-	})
-}
-
-func TestInstanceSchedulerHandler(t *testing.T) {
-	var (
-		founded int32
-		missed  int32
-	)
-
-	store := make(map[string]string)
-	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "Add", func(_ *schedulerproxy.ProxyManager, i *types.InstanceInfo, _ api.FormatLogger) {
-		store[i.InstanceName] = i.InstanceID
-		atomic.AddInt32(&founded, 1)
-	}).Reset()
-	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "Remove", func(_ *schedulerproxy.ProxyManager, i *types.InstanceInfo, _ api.FormatLogger) {
-		delete(store, i.InstanceName)
-		atomic.AddInt32(&missed, 1)
-	}).Reset()
-	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "Exist", func(_ *schedulerproxy.ProxyManager, instanceName string, instanceId string) bool {
-		id, ok := store[instanceName]
-		if !ok {
-			return false
-		}
-		if id != instanceId {
-			return false
-		}
-		return true
-	}).Reset()
-	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "ExistInstanceName", func(_ *schedulerproxy.ProxyManager, instanceName string) bool {
-		_, ok := store[instanceName]
-		return ok
-	}).Reset()
-
-	events := []etcd3.Event{
-		{
-			Type: etcd3.PUT,
-			Key:  "/sn/instance/business/yrk/tenant/1/function/faasscheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772",
-			Value: []byte(`{
-    "instanceID": "1f060613-68af-4a02-8000-000000e077ce",
-    "instanceStatus": {
-        "code": 3,
-        "msg": "running"
-    }}`),
-		},
-		{
-			Type: etcd3.DELETE,
-			Key:  "/sn/instance/business/yrk/tenant/1/function/faasscheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772",
-		},
-		{
-			Type: etcd3.PUT,
-			Key:  "/business/yrk/tenant/1/function/xxxxscheduler/version/latest/defaultaz/3f079541-15fc-4009-8c41-50b2b2936772",
-		},
-		{
-			Type: etcd3.DELETE,
-			Key:  "/business/yrk/tenant/1/function/xxxxscheduler/version/latest/defaultaz/3f079541-15fc-4009-8c41-50b2b2936772",
-		},
-	}
-
-	Convey("Test instance scheduler Handler", t, func() {
-		for _, event := range events {
-			instanceSchedulerHandler(&event)
-		}
-		So(atomic.LoadInt32(&founded), ShouldEqual, 1)
-		So(atomic.LoadInt32(&missed), ShouldEqual, 1)
-	})
-}
-
 func TestStartWatchScheduler(t *testing.T) {
 	Convey("StartWatchScheduler", t, func() {
 		patches := []*gomonkey.Patches{
@@ -128,28 +51,28 @@ func TestStartWatchScheduler(t *testing.T) {
 	})
 }
 
-func TestModuleSchedulerFilter(t *testing.T) {
+func TestSchedulerFilter(t *testing.T) {
 	Convey("TestModuleSchedulerFilter", t, func() {
 		event := &etcd3.Event{
 			Key: "/sn/faas-scheduler/instances/cluster001/7.218.100.25/faas-scheduler-59ddbc4b75-8xdjf",
 		}
-		So(moduleSchedulerFilter(event), ShouldBeFalse)
+		So(schedulerFilter(event), ShouldBeFalse)
 		event = &etcd3.Event{
 			Key: "/sn/instance/business/yrk/tenant/0/function/scheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772",
 		}
-		So(moduleSchedulerFilter(event), ShouldBeTrue)
+		So(schedulerFilter(event), ShouldBeTrue)
 	})
 }
 
-func TestModuleSchedulerHandler(t *testing.T) {
+func TestSchedulerHandler(t *testing.T) {
 	var (
 		founded int32
 		missed  int32
 	)
 
 	store := make(map[string]string)
-	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "Add", func(_ *schedulerproxy.ProxyManager, i *types.InstanceInfo, _ api.FormatLogger) {
-		store[i.InstanceName] = i.InstanceID
+	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "Add", func(_ *schedulerproxy.ProxyManager, i *schedulerproxy.SchedulerNodeInfo, _ api.FormatLogger) {
+		store[i.InstanceInfo.InstanceName] = i.InstanceInfo.InstanceID
 		atomic.AddInt32(&founded, 1)
 	}).Reset()
 	defer gomonkey.ApplyMethod(reflect.TypeOf(schedulerproxy.Proxy), "Remove", func(_ *schedulerproxy.ProxyManager, i *types.InstanceInfo, _ api.FormatLogger) {
@@ -197,10 +120,10 @@ func TestModuleSchedulerHandler(t *testing.T) {
 	}
 
 	oldType := config.GetConfig().SchedulerKeyPrefixType
-	config.GetConfig().SchedulerKeyPrefixType = "module"
-	Convey("Test module scheduler Handler", t, func() {
+	config.GetConfig().SchedulerKeyPrefixType = "function"
+	Convey("Test function scheduler Handler", t, func() {
 		for _, event := range events {
-			moduleSchedulerHandler(&event)
+			schedulerHandler(&event)
 		}
 		So(atomic.LoadInt32(&founded), ShouldEqual, 1)
 		So(atomic.LoadInt32(&missed), ShouldEqual, 1)

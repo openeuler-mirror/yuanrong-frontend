@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-// Package instancleaseemanager for message process
-package instanceleasemanager
+// Package leaseadaptor -
+package leaseadaptor
 
 import (
 	"sync"
@@ -43,39 +43,39 @@ type ReportRecord struct {
 	sync.RWMutex
 }
 
-func (mc *ReportRecord) recordAbnormal() {
-	mc.Lock()
-	mc.isAbnormal = true
-	mc.Unlock()
+func (r *ReportRecord) recordAbnormal() {
+	r.Lock()
+	r.isAbnormal = true
+	r.Unlock()
 }
 
-func (mc *ReportRecord) recordRequest(duration time.Duration) {
-	mc.Lock()
-	mc.requestsCount++
+func (r *ReportRecord) recordRequest(duration time.Duration) {
+	r.Lock()
+	r.requestsCount++
 	durationInMill := duration.Milliseconds()
-	mc.totalDuration += durationInMill
-	if durationInMill > mc.maxDuration {
-		mc.maxDuration = durationInMill
+	r.totalDuration += durationInMill
+	if durationInMill > r.maxDuration {
+		r.maxDuration = durationInMill
 	}
-	mc.Unlock()
+	r.Unlock()
 }
 
-func (mc *ReportRecord) report(reset bool) InstanceReport {
-	mc.Lock()
-	report := InstanceReport{
-		ProcReqNum:  mc.requestsCount,
-		MaxProcTime: mc.maxDuration,
-		IsAbnormal:  mc.isAbnormal,
+func (r *ReportRecord) report(reset bool) *InstanceReport {
+	r.Lock()
+	report := &InstanceReport{
+		ProcReqNum:  r.requestsCount,
+		MaxProcTime: r.maxDuration,
+		IsAbnormal:  r.isAbnormal,
 	}
-	if mc.requestsCount == 0 {
+	if r.requestsCount == 0 {
 		report.AvgProcTime = -1
 	} else {
-		report.AvgProcTime = mc.totalDuration / mc.requestsCount
+		report.AvgProcTime = r.totalDuration / r.requestsCount
 	}
 	if reset {
-		mc.requestsCount = 0
-		mc.totalDuration = 0
+		r.requestsCount = 0
+		r.totalDuration = 0
 	}
-	mc.Unlock()
+	r.Unlock()
 	return report
 }
