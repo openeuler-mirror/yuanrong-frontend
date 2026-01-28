@@ -1,8 +1,10 @@
 package utils
 
 import (
-	"github.com/stretchr/testify/assert"
 	"testing"
+	
+	"github.com/stretchr/testify/assert"
+	
 	"yuanrong.org/kernel/runtime/libruntime/api"
 )
 
@@ -105,6 +107,9 @@ func TestFakeLibruntimeSdkClient(t *testing.T) {
 	_, err = fakeLibruntimeSdkClient.CreateClient(api.ConnectArguments{})
 	assert.Equal(t, nil, err)
 
+	err = fakeLibruntimeSdkClient.ReleaseGRefs("")
+	assert.Equal(t, nil, err)
+
 	credential := fakeLibruntimeSdkClient.GetCredential()
 	assert.NotEqual(t, nil, credential)
 }
@@ -115,6 +120,9 @@ func TestFakeStreamProducer(t *testing.T) {
 	assert.Equal(t, nil, err)
 
 	err = fakeStreamProducer.SendWithTimeout(api.Element{}, 1)
+	assert.Equal(t, nil, err)
+
+	err = fakeStreamProducer.Flush()
 	assert.Equal(t, nil, err)
 
 	err = fakeStreamProducer.Close()

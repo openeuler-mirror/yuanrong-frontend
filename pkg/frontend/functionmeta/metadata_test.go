@@ -75,6 +75,60 @@ func TestMetaData(t *testing.T) {
 
 	err = ProcessDelete("//////tenant1//func2//version2", "CAEMeta")
 	assert.Equal(t, nil, err)
+	etcdClient := &etcd3.EtcdClient{
+		Client: &clientv3.Client{},
+	}
+	t.Run("load crMeta function notExists", func(t *testing.T) {
+		enableAgentCRDRegistry = true
+		defer gomonkey.ApplyFunc(etcd3.GetMetaEtcdClient, func() *etcd3.EtcdClient {
+			return etcdClient
+		}).Reset()
+		defer gomonkey.ApplyMethod(reflect.TypeOf(&etcd3.EtcdClient{}), "GetResponse",
+			func(_ *etcd3.EtcdClient, ctxInfo etcd3.EtcdCtxInfo, etcdKey string,
+				opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+				return &clientv3.GetResponse{
+					Kvs: []*mvccpb.KeyValue{},
+				}, nil
+			}).Reset()
+		defer func() {
+			enableAgentCRDRegistry = false
+		}()
+		funcKey := "/tenant1//func-cr//version1"
+		_, ok := LoadFuncSpec(funcKey)
+		assert.False(t, ok)
+	})
+	t.Run("load crMeta function not funcSpec format", func(t *testing.T) {
+		enableAgentCRDRegistry = true
+		defer gomonkey.ApplyFunc(etcd3.GetMetaEtcdClient, func() *etcd3.EtcdClient {
+			return etcdClient
+		}).Reset()
+		defer gomonkey.ApplyMethod(reflect.TypeOf(&etcd3.EtcdClient{}), "GetResponse",
+			func(_ *etcd3.EtcdClient, ctxInfo etcd3.EtcdCtxInfo, etcdKey string,
+				opts ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+				return &clientv3.GetResponse{
+					Kvs: []*mvccpb.KeyValue{},
+				}, nil
+			}).Reset()
+		defer func() {
+			funcCrSpecMap.Clear()
+			enableAgentCRDRegistry = false
+		}()
+		funcKey := "/tenant1//func-cr//version2"
+		funcCrSpecMap.Store(funcKey, 1)
+		_, ok := LoadFuncSpec(funcKey)
+		assert.False(t, ok)
+	})
+	t.Run("success to load crMeta function", func(t *testing.T) {
+		enableAgentCRDRegistry = true
+		defer func() {
+			funcCrSpecMap.Clear()
+			enableAgentCRDRegistry = false
+		}()
+		funcKey := "/tenant1//func-cr//version3"
+		funcCrSpecMap.Store(funcKey, &types.FuncSpec{})
+		_, ok := LoadFuncSpec(funcKey)
+		assert.True(t, ok)
+	})
 
 	convey.Convey("Test funcSpecMap not exists", t, func() {
 		convey.Convey("etcd meta not exist", func() {

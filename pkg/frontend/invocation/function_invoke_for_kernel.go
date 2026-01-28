@@ -39,10 +39,37 @@ import (
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
+	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/types"
+	"frontend/pkg/frontend/upgradecompatible"
 	"frontend/pkg/frontend/wisecloud"
+)
+
+var (
+	// 参考libruntime写法, runtime\src\libruntime\invokeadaptor\task_submitter.cpp NeedRetry
+	needRetryCodeMap = map[int]struct{}{
+		statuscode.ErrInstanceNotFound:    {}, // 1003
+		statuscode.ErrInstanceExitedCode:  {}, // 1007
+		statuscode.ErrInstanceCircuitCode: {}, // 1009
+		statuscode.ErrInstanceEvicted:     {}, // 1013
+
+		statuscode.ErrRequestBetweenRuntimeBusCode:      {}, // 3001
+		statuscode.ErrInnerCommunication:                {}, // 3002
+		statuscode.ErrRequestBetweenRuntimeFrontendCode: {}, // 3008
+
+		statuscode.ErrSharedMemoryLimited:   {}, // 4202
+		statuscode.ErrOperateDiskFailed:     {}, // 4203
+		statuscode.ErrInsufficientDiskSpace: {}, // 4204
+		statuscode.ErrFinalized:             {}, // 9000
+	}
+
+	instanceFatalCodeMap = map[int]struct{}{
+		statuscode.ErrInstanceNotFound:   {}, // 1003
+		statuscode.ErrInstanceExitedCode: {}, // 1007
+		statuscode.ErrInstanceEvicted:    {}, // 1013
+	}
 )
 
 func computeTimeout(originTimeout int64, beginTime time.Time) int64 {
@@ -52,19 +79,21 @@ func computeTimeout(originTimeout int64, beginTime time.Time) int64 {
 }
 
 type kernelRequestHandler struct {
-	ctx           *types.InvokeProcessContext
-	funcSpec      *commontype.FuncSpec
-	funcKey       string
-	resSpecKeyStr string
-	resSpecKey    *resspeckey.ResSpecKey
-	logger        api.FormatLogger
+	ctx                    *types.InvokeProcessContext
+	funcSpec               *commontype.FuncSpec
+	funcKey                string
+	resSpecKeyStr          string
+	resSpecKey             *resspeckey.ResSpecKey
+	logger                 api.FormatLogger
+	instanceAllocationInfo *commontype.InstanceAllocationInfo
 
-	startTime              time.Time
-	invokeWithOutScheduler bool
-	timeout                int64
+	startTime time.Time
+	downgrade bool
+	timeout   int64
 
-	currentSchedulerInfo *commontype.InstanceInfo
-	unexpectedInstances  []string
+	unexpectedInstances []string
+
+	legacyCurrentSchedulerInfo *commontype.InstanceInfo
 }
 
 func newKernelRequestHandler(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) *kernelRequestHandler {
@@ -80,54 +109,112 @@ func newKernelRequestHandler(ctx *types.InvokeProcessContext, funcSpec *commonty
 		resSpecKeyStr: resSpecKey.String(),
 		logger: log.GetLogger().With(zap.Any("traceId", ctx.TraceID), zap.Any("function", funcSpec.FunctionKey),
 			zap.Any("timeout", ctx.InvokeTimeout), zap.Any("acquireTimeout", ctx.AcquireTimeout)),
-		startTime:              time.Now(),
-		invokeWithOutScheduler: ctx.InvokeWithoutScheduler,
-		unexpectedInstances:    make([]string, 0),
-		timeout:                ctx.InvokeTimeout,
+		startTime:           time.Now(),
+		downgrade:           ctx.InvokeWithoutScheduler,
+		unexpectedInstances: make([]string, 0),
+		timeout:             ctx.InvokeTimeout,
 	}
 }
 
-func (k *kernelRequestHandler) makeReq(logger api.FormatLogger) (*util.InvokeRequest, error) {
-	var err error
-	k.currentSchedulerInfo = nil
-	if !k.invokeWithOutScheduler {
-		k.currentSchedulerInfo, err = schedulerproxy.Proxy.Get(k.funcKey, logger)
+func (k *kernelRequestHandler) legacyMakeReq(logger api.FormatLogger) (*util.InvokeRequest, error) {
+	k.legacyCurrentSchedulerInfo = nil
+	if !k.downgrade {
+		var schedulerNodeInfo *schedulerproxy.SchedulerNodeInfo
+		schedulerNodeInfo, err := schedulerproxy.Proxy.Get(k.funcKey, logger)
 		if err != nil {
 			logger.Warnf("failed to get scheduler, err: %s", err.Error())
+		} else if schedulerNodeInfo != nil {
+			k.legacyCurrentSchedulerInfo = schedulerNodeInfo.InstanceInfo
 		}
 	}
-
+	var err error
 	var instanceId string
-	if needDownGrade(k.currentSchedulerInfo) {
-		k.invokeWithOutScheduler = true // 这里要处理的情况是，当无可用scheduler时，该请求后续都不走租约机制，直接选择实例调用
-		instance := instancemanager.GetGlobalInstanceScheduler().GetRandomInstanceWithoutUnexpectedInstance(
-			k.funcKey, k.resSpecKeyStr, k.unexpectedInstances, logger)
-
-		if instance == nil {
-			pendingRequest := &wisecloud.PendingRequest{
-				CreatedTime:     time.Now(),
-				ScheduleTimeout: time.Duration(k.ctx.AcquireTimeout) * time.Second,
-				ResultChan:      make(chan *wisecloud.PendingResponse, 1),
-			}
-			wisecloud.GetQueueManager().AddPendingRequest(k.funcKey, k.resSpecKey, pendingRequest)
-			pendingResponse := <-pendingRequest.ResultChan
-			if pendingResponse.Error != nil {
-				return nil, pendingResponse.Error
-			}
-			if pendingResponse.Instance == nil {
-				return nil, fmt.Errorf("no available instance, no available scheduler")
-			}
-			instance = pendingResponse.Instance
+	if k.downgrade || needDownGrade(k.legacyCurrentSchedulerInfo) {
+		k.downgrade = true
+		instanceId, err = k.chooseInstance(logger)
+		if err != nil {
+			return nil, err
 		}
-		instanceId = instance.InstanceID
 	}
-
-	req, err := convert(k.ctx, k.currentSchedulerInfo, k.funcSpec, instanceId)
+	req, err := convert(k.ctx, k.funcSpec, instanceId, false, k.legacyCurrentSchedulerInfo)
 	if err != nil {
 		logger.Errorf("failed to convert request, err: %s", err.Error())
 		return nil, err
 	}
 	return req, nil
+}
+
+func (k *kernelRequestHandler) makeReqCompatible(logger api.FormatLogger) (*util.InvokeRequest, error) {
+	if k.accessFaaSSchedulerWithLibRuntime() {
+		// legacy
+		return k.legacyMakeReq(logger)
+	}
+	return k.makeReq(logger)
+}
+
+func (k *kernelRequestHandler) makeReq(logger api.FormatLogger) (*util.InvokeRequest, error) {
+	var instanceId string
+	var forceInvoke bool
+	if !k.downgrade {
+		instanceAllocationInfo, err := leaseadaptor.GetInstanceManager().AcquireInstance(k.ctx, k.funcSpec, k.logger)
+		if err != nil {
+			if err.Code() == statuscode.ErrAllSchedulerUnavailable {
+				k.logger.Warnf("acquire lease failed, err: %s, do downgrade", err.Error())
+				k.downgrade = true
+			} else {
+				k.logger.Errorf("acquire lease failed, err: %s", err.Error())
+				return nil, err
+			}
+		} else {
+			k.instanceAllocationInfo = instanceAllocationInfo
+			instanceId = instanceAllocationInfo.InstanceID
+			forceInvoke = instanceAllocationInfo.ForceInvoke
+		}
+	}
+
+	if k.downgrade {
+		var err error
+		instanceId, err = k.chooseInstance(logger)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	req, err := convert(k.ctx, k.funcSpec, instanceId, forceInvoke, nil)
+	if err != nil {
+		logger.Errorf("failed to convert request, err: %s", err.Error())
+		return nil, err
+	}
+	return req, nil
+}
+
+func (k *kernelRequestHandler) chooseInstance(logger api.FormatLogger) (string, error) {
+	instance := instancemanager.GetGlobalInstanceScheduler().GetRandomInstanceWithoutUnexpectedInstance(
+		k.funcKey, k.resSpecKeyStr, k.unexpectedInstances, logger)
+
+	if instance == nil {
+		pendingRequest := &wisecloud.PendingRequest{
+			CreatedTime:     time.Now(),
+			ScheduleTimeout: time.Duration(k.ctx.AcquireTimeout) * time.Second,
+			ResultChan:      make(chan *wisecloud.PendingResponse, 1),
+		}
+		wisecloud.GetQueueManager().AddPendingRequest(k.funcKey, k.resSpecKey, pendingRequest)
+		pendingResponse := <-pendingRequest.ResultChan
+		if pendingResponse.Error != nil {
+			return "", pendingResponse.Error
+		}
+		if pendingResponse.Instance == nil {
+			return "", fmt.Errorf("no available instance, no available scheduler")
+		}
+		instance = pendingResponse.Instance
+	}
+	return instance.InstanceID, nil
+}
+
+func (k *kernelRequestHandler) accessFaaSSchedulerWithLibRuntime() bool {
+	accessType := upgradecompatible.GetAccessFaaSSchedulerType()
+	k.logger.Debugf("access scheduler type: %s", accessType)
+	return accessType == upgradecompatible.AccessSchedulerByLibruntime
 }
 
 func (k *kernelRequestHandler) invoke() error {
@@ -143,66 +230,81 @@ func (k *kernelRequestHandler) invoke() error {
 
 		logger := k.logger.With(zap.Any("requestId", k.ctx.RequestID), zap.Any("timeLeft", k.ctx.InvokeTimeout),
 			zap.Any("count", count))
-		req, err := k.makeReq(logger)
+		req, err := k.makeReqCompatible(logger)
 		if err != nil {
 			logger.Errorf("make req failed: %s", err.Error())
 			httputil.HandleInvokeError(k.ctx, err)
 			return err
 		}
 
-		if k.invokeWithOutScheduler {
+		if k.downgrade {
 			wisecloud.GetMetricsManager().InvokeStart(k.funcKey, k.resSpecKeyStr, req.InstanceID)
 		}
 
-		snError := invokeByClient(k.ctx, *req, logger)
-		if k.invokeWithOutScheduler {
+		snError := invokeFunctionWithLibRuntime(k.ctx, *req, logger)
+		if k.downgrade {
 			wisecloud.GetMetricsManager().InvokeEnd(k.funcKey, k.resSpecKeyStr, req.InstanceID)
 		}
-		if snError != nil {
-			if snError.Code() == constant.AcquireLeaseTrafficLimitErrorCode && k.currentSchedulerInfo != nil {
-				schedulerproxy.Proxy.SetStain(k.funcKey, k.currentSchedulerInfo.InstanceName)
-				k.ctx.TrafficLimited = true
-				continue
-			} else if snError.Code() == statuscode.FrontendStatusInternalError {
-				logger.Errorf("failed to invoke name by client, err: %s", snError.Error())
-				responsehandler.SetErrorInContext(k.ctx, statuscode.FrontendStatusInternalError, snError.Error())
-				return snError
-			} else if snError.Code() == statuscode.ErrAllSchedulerUnavailable {
-				logger.Warnf("all schedulers are unavailable")
-				k.invokeWithOutScheduler = true // 这里要处理的情况是，当无可用scheduler时，该请求后续都不走租约机制，直接选择实例调用
-				continue
-			} else if k.invokeWithOutScheduler && invokeInstanceNeedRetry(snError.Code()) {
-				logger.Warnf("do invokeByInstanceId failed, retry, code: %d, message: %s",
-					snError.Code(), snError.Error())
-				k.unexpectedInstances = append(k.unexpectedInstances, req.InstanceID)
-				continue
+		if k.instanceAllocationInfo != nil {
+			if snError != nil && instanceIsAbnormal(snError.Code()) {
+				leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(k.instanceAllocationInfo, true,
+					k.ctx.TraceID)
 			} else {
-				httputil.HandleInvokeError(k.ctx, snError)
+				leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(k.instanceAllocationInfo, false,
+					k.ctx.TraceID)
+			}
+			k.instanceAllocationInfo = nil
+		}
+		if snError != nil {
+			retry, err := k.handleInvokeError(snError, req.InstanceID, logger)
+			if err != nil {
+				return err
+			}
+			if retry {
+				continue
 			}
 		}
 		return nil
 	}
 }
 
-func invokeInstanceNeedRetry(code int) bool {
-	// 暂时不考虑区分 同实例重试和不同实例重试的错误码
-	needRetryCode := map[int]struct{}{
-		statuscode.ErrInstanceNotFound:    {}, // 1003
-		statuscode.ErrInstanceExitedCode:  {}, // 1007
-		statuscode.ErrInstanceCircuitCode: {}, // 1009
-		statuscode.ErrInstanceEvicted:     {}, // 1013
-
-		// 参考libruntime写法, runtime\src\libruntime\invokeadaptor\task_submitter.cpp
-		statuscode.ErrRequestBetweenRuntimeBusCode:      {}, // 3001
-		statuscode.ErrInnerCommunication:                {}, // 3002
-		statuscode.ErrRequestBetweenRuntimeFrontendCode: {}, // 3008
-
-		statuscode.ErrSharedMemoryLimited:   {}, // 4202
-		statuscode.ErrOperateDiskFailed:     {}, // 4203
-		statuscode.ErrInsufficientDiskSpace: {}, // 4204
-		statuscode.ErrFinalized:             {}, // 9000
+func (k *kernelRequestHandler) handleInvokeError(snError snerror.SNError, instanceId string, logger api.FormatLogger) (
+	bool, error) {
+	if snError == nil {
+		return false, nil
 	}
-	_, ok := needRetryCode[code]
+	if snError.Code() == constant.AcquireLeaseTrafficLimitErrorCode && k.legacyCurrentSchedulerInfo != nil {
+		k.ctx.TrafficLimited = true
+		return true, nil
+	} else if snError.Code() == statuscode.FrontendStatusInternalError { // 这个分支不太理解，后续考虑优化
+		logger.Errorf("failed to invoke name by client, err: %s", snError.Error())
+		responsehandler.SetErrorInContext(k.ctx, statuscode.FrontendStatusInternalError, snError.Error())
+		return false, snError
+	} else if snError.Code() == statuscode.ErrAllSchedulerUnavailable {
+		logger.Warnf("all schedulers are unavailable")
+		k.downgrade = true // 这里要处理的情况是，当无可用scheduler时，该请求后续都不走租约机制，直接选择实例调用
+		return true, nil
+	} else if needRetryCode(snError.Code()) {
+		logger.Warnf("do invokeByInstanceId failed, retry, code: %d, message: %s",
+			snError.Code(), snError.Error())
+		if instanceId != "" {
+			k.unexpectedInstances = append(k.unexpectedInstances, instanceId)
+		}
+		return true, nil
+	} else {
+		httputil.HandleInvokeError(k.ctx, snError)
+		return false, snError
+	}
+}
+
+func needRetryCode(code int) bool {
+	// 暂时不考虑区分 同实例重试和不同实例重试的错误码
+	_, ok := needRetryCodeMap[code]
+	return ok
+}
+
+func instanceIsAbnormal(code int) bool {
+	_, ok := instanceFatalCodeMap[code]
 	return ok
 }
 
@@ -251,7 +353,7 @@ func needDownGrade(schedulerInfo *commontype.InstanceInfo) bool {
 	return false
 }
 
-func invokeByClient(ctx *types.InvokeProcessContext, request util.InvokeRequest,
+func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.InvokeRequest,
 	logger api.FormatLogger) snerror.SNError {
 	logger.Infof("send request %v to grpc", request)
 
@@ -261,6 +363,7 @@ func invokeByClient(ctx *types.InvokeProcessContext, request util.InvokeRequest,
 	if request.InstanceID != "" {
 		notifyMsg, err = util.NewClient().Invoke(request)
 	} else {
+		// legacy
 		notifyMsg, err = util.NewClient().InvokeByName(request)
 	}
 
@@ -281,6 +384,7 @@ func invokeByClient(ctx *types.InvokeProcessContext, request util.InvokeRequest,
 		}
 		logger.Errorf("invoke GRPC request error: %s, totalTime: %v", err.Error(), invokeTotalTime.Seconds())
 		errMsg := fmt.Sprintf("invoke GRPC request error: %s", err.Error())
+		// todo 暂时保存，后续可以考虑取消JudgeRetry
 		httputil.JudgeRetry(err, ctx)
 		return snerror.New(statuscode.FrontendStatusInternalError, errMsg)
 	}
@@ -298,13 +402,12 @@ func invokeByClient(ctx *types.InvokeProcessContext, request util.InvokeRequest,
 }
 
 // Convert an http request to a POSIX invoke request
-func convert(ctx *types.InvokeProcessContext, schedulerInfo *commontype.InstanceInfo, funcSpec *commontype.FuncSpec,
-	instanceId string) (*util.InvokeRequest, error) {
+func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
+	instanceId string, forceInvoke bool, legacySchedulerInfo *commontype.InstanceInfo) (*util.InvokeRequest, error) {
 	resourceSpecs, err := util.ConvertResourceSpecs(ctx, funcSpec)
 	if err != nil {
 		return nil, err
 	}
-
 	req := &util.InvokeRequest{
 		Function:        ctx.FuncKey,
 		TraceID:         ctx.TraceID,
@@ -321,11 +424,13 @@ func convert(ctx *types.InvokeProcessContext, schedulerInfo *commontype.Instance
 		BusinessType:    funcSpec.FuncMetaData.BusinessType,
 		TenantID:        funcSpec.FuncMetaData.TenantID,
 		InstanceID:      instanceId,
+		ForceInvoke:     forceInvoke,
 	}
 
-	if schedulerInfo != nil {
-		req.SchedulerID = schedulerInfo.InstanceID
-		req.SchedulerFuncKey = schedulerInfo.FunctionName
+	// legacy
+	if legacySchedulerInfo != nil {
+		req.SchedulerID = legacySchedulerInfo.InstanceID
+		req.SchedulerFuncKey = legacySchedulerInfo.FunctionName
 	}
 
 	instanceSession := util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceSession)
@@ -342,6 +447,17 @@ func convert(ctx *types.InvokeProcessContext, schedulerInfo *commontype.Instance
 		responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusInternalError, err.Error())
 		return req, err
 	}
+	req, err = convertResourceSpecs(ctx, req)
+	if err != nil {
+		return req, err
+	}
+	req.Args = newArgList([]byte(ctx.TraceID), body)
+	req.AcceptHeader = ctx.ReqHeader["Accept"]
+	req.ResponseWriter = ctx.ResponseWriter
+	return req, nil
+}
+
+func convertResourceSpecs(ctx *types.InvokeProcessContext, req *util.InvokeRequest) (*util.InvokeRequest, error) {
 	dynamicResourceSpecs, err := prepareDynamicResource(ctx)
 	if err != nil {
 		responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusInternalError, err.Error())
@@ -350,8 +466,6 @@ func convert(ctx *types.InvokeProcessContext, schedulerInfo *commontype.Instance
 	if dynamicResourceSpecs[constant.ResourceCPUName] > 0 && dynamicResourceSpecs[constant.ResourceMemoryName] > 0 {
 		req.ResourceSpecs = dynamicResourceSpecs
 	}
-
-	req.Args = newArgList([]byte(ctx.TraceID), body)
 	return req, nil
 }
 

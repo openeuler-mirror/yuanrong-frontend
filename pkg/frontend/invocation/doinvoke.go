@@ -30,7 +30,6 @@ import (
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/responsehandler"
-	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/types"
 )
 
@@ -46,12 +45,11 @@ func InvokeHandler(ctx *types.InvokeProcessContext) error {
 	var err error
 	traceID := ctx.TraceID
 	funcKey := ctx.FuncKey
-	funcSpec, exist := functionmeta.LoadFuncSpec(funcKey)
-	if !exist {
-		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
-		log.GetLogger().Errorf("function %s doesn't exist in cache", funcKey)
-		return errors.New("function doesn't exist")
+	funcSpec, err := getFuncSpec(ctx, funcKey)
+	if err != nil {
+		return err
 	}
+
 	sessionId := ctx.ReqHeader[httpconstant.HeaderInstanceSession]
 	instanceLabel := ctx.ReqHeader[httpconstant.HeaderInstanceLabel]
 	log.GetLogger().Infof("invoking function %s, signature %s, traceID %s, sessionId %s, instanceLabel %s",
@@ -88,7 +86,16 @@ func doInvoke(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) er
 
 func resetSchedulerProxy(ctx *types.InvokeProcessContext) {
 	if ctx.TrafficLimited {
-		schedulerproxy.Proxy.Reset()
 		ctx.TrafficLimited = false
 	}
+}
+
+func getFuncSpec(ctx *types.InvokeProcessContext, funcKey string) (*commontype.FuncSpec, error) {
+	spec, exist := functionmeta.LoadFuncSpec(funcKey)
+	if !exist {
+		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
+		log.GetLogger().Errorf("function %s doesn't exist in cache", funcKey)
+		return nil, errors.New("function doesn't exist")
+	}
+	return spec, nil
 }

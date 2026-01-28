@@ -29,6 +29,7 @@ func StartWatch(stopCh <-chan struct{}) error {
 	go startWatchScheduler(stopCh)
 	go startWatchRemoteClientLease(stopCh)
 	go startWatchFunctionMeta(stopCh)
+	go startWatchFunctionCR(stopCh)
 	if config.GetConfig().BusinessType == constant.BusinessTypeFG {
 		go startWatchCAEFunctionMeta(stopCh)
 		go startWatchFunctionProxy(stopCh)

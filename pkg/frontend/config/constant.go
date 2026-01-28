@@ -24,4 +24,6 @@ const (
 	ConfigFilePath = "/home/sn/config/config.json"
 	// ConfigEnvKey defines config env key of frontend
 	ConfigEnvKey = "FRONTEND_CONFIG"
+	// InitArgsFilePathEnvKey -
+	InitArgsFilePathEnvKey = "INIT_ARGS_FILE_PATH"
 )
