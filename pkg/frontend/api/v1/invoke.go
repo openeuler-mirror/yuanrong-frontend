@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -38,6 +40,7 @@ import (
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/config"
 	frontendlog "frontend/pkg/frontend/log"
+	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/stream"
@@ -67,36 +70,67 @@ import (
 // @Header       200  {string}  X-Invoke-Summary "本次调用摘要信息"
 // @Header       200  {string}  X-Log-Result "调用过程中产生日志"
 func InvokeHandler(ctx *gin.Context) {
-	traceID := httputil.InitTraceID(ctx)
-	logger := log.GetLogger().With(zap.Any("traceId", traceID))
-	logger.Infof("invoking handler receives one request")
-
-	processCtx, err := buildProcessContext(ctx, traceID)
-	if err != nil {
-		logger.Errorf("failed to set processCtx req, error: %s", err.Error())
-		writeHTTPResponse(ctx, processCtx)
-		return
-	}
-	defer writeInterfaceLog(processCtx)
-	logger = logger.With(zap.Any("funcKey", processCtx.FuncKey))
-	if err := middleware.Invoker.Handle(processCtx); err != nil {
-		logger.Errorf("invoke failed,error: %s", err.Error())
-	}
-	writeHTTPResponse(ctx, processCtx)
-	sessionId := processCtx.ReqHeader[httpconstant.HeaderInstanceSession]
-	instanceLabel := processCtx.ReqHeader[httpconstant.HeaderInstanceLabel]
-	logger.Infof("invoke function success, totalTime %f, sessionId %s, instanceLabel %s",
-		time.Since(processCtx.StartTime).Seconds(), sessionId, instanceLabel)
+	invokeWrap(ctx, false)
 }
 
 // ShortInvokeHandler -
 // ShortInvokeHandler handles short invocation requests
 func ShortInvokeHandler(ctx *gin.Context) {
+	invokeWrap(ctx, true)
+}
+
+var metricsOnce sync.Once
+
+func initInvokeMetrics() {
+	metricsOnce.Do(func() {
+		// Register counter for function invocations with function name and http code
+		err := metrics.RegisterCounter("function_invocations_total", "Total number of function invocations", []string{"function_name", "http_code"})
+		if err != nil {
+			log.GetLogger().Warnf("failed to register function_invocations_total metric: %v", err)
+		}
+		// Register histogram for function invocation duration
+		err = metrics.RegisterHistogram("function_invocation_duration_seconds", "Function invocation duration in seconds", []string{"function_name"}, nil)
+		if err != nil {
+			log.GetLogger().Warnf("failed to register function_invocation_duration_seconds metric: %v", err)
+		}
+	})
+}
+
+func invokeWrap(ctx *gin.Context, isShortUrl bool) {
+	initInvokeMetrics()
+	invokeStart := time.Now()
+	var processCtx *types.InvokeProcessContext
 	traceID := httputil.InitTraceID(ctx)
 	logger := log.GetLogger().With(zap.Any("traceId", traceID))
 	logger.Infof("invoking handler receives one request")
+	// Use defer to ensure metrics are reported even if function returns early
+	defer func() {
+		invokeTotalTime := time.Since(invokeStart)
+		// Prepare metrics reporting
+		functionName := processCtx.FuncKey
+		if functionName == "" {
+			functionName = "unknown"
+		}
+		// Get http code from context
+		httpCode := processCtx.StatusCode
+		httpCodeStr := strconv.Itoa(httpCode)
 
-	processCtx, err := buildShortProcessContext(ctx, traceID)
+		// Report invocation count
+		if err := metrics.IncrementCounter("function_invocations_total", functionName, httpCodeStr); err != nil {
+			log.GetLogger().Debugf("failed to report function_invocations_total metric: %v", err)
+		}
+
+		// Report invocation duration
+		if err := metrics.ObserveHistogram("function_invocation_duration_seconds", invokeTotalTime.Seconds(), functionName); err != nil {
+			log.GetLogger().Debugf("failed to report function_invocation_duration_seconds metric: %v", err)
+		}
+	}()
+	var err error
+	if isShortUrl {
+		processCtx, err = buildShortProcessContext(ctx, traceID)
+	} else {
+		processCtx, err = buildProcessContext(ctx, traceID)
+	}
 	if err != nil {
 		logger.Errorf("failed to set processCtx req, error: %s", err.Error())
 		writeHTTPResponse(ctx, processCtx)
