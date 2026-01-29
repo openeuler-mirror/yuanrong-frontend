@@ -368,6 +368,7 @@ type FuncMetaData struct {
 	VPCTriggerImage     string            `json:"vpcTriggerImage" valid:",optional"`
 	StateConfig         StateConfig       `json:"stateConfig" valid:",optional"`
 	BusinessType        string            `json:"businessType" valid:"optional"`
+	IsFuncPublic        bool              `json:"isFuncPublic" valid:"optional"`
 }
 
 // StateConfig ConsistentWithInstance- The lifecycle is consistent with that of the instance.

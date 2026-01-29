@@ -30,9 +30,9 @@ import (
 	fhttp "github.com/valyala/fasthttp"
 
 	"frontend/pkg/common/constants"
+	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/httputil/http"
 	"frontend/pkg/common/httputil/utils"
-	"frontend/pkg/common/snerror"
 	"frontend/pkg/common/uuid"
 )
 

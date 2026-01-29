@@ -148,7 +148,8 @@ type Config struct {
 
 // IamConfig -
 type IamConfig struct {
-	Addr string `json:"addr"`
+	Addr                string `json:"addr"`
+	EnableFuncTokenAuth bool   `json:"enableFuncTokenAuth" valid:"optional"`
 }
 
 // WiseCloudConfig -

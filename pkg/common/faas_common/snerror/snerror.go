@@ -17,6 +17,11 @@
 // Package snerror is basic information contained in the SN error.
 package snerror
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 const (
 	// UserErrorMax is maximum value of user error
 	UserErrorMax = 4999
@@ -83,4 +88,21 @@ func IsUserError(s SNError) bool {
 		return true
 	}
 	return false
+}
+
+// ConvertBadResponse converts a bad response body to SNError
+func ConvertBadResponse(body []byte) SNError {
+	if len(body) == 0 {
+		return New(0, "empty response body")
+	}
+	var badResp BadResponse
+	if err := json.Unmarshal(body, &badResp); err != nil {
+		// If JSON parsing fails, return error with raw body as message
+		return New(0, fmt.Sprintf("failed to parse error response: %s", string(body)))
+	}
+	// If code is 0 and message is empty, use the raw body as message
+	if badResp.Code == 0 && badResp.Message == "" {
+		return New(0, string(body))
+	}
+	return New(badResp.Code, badResp.Message)
 }

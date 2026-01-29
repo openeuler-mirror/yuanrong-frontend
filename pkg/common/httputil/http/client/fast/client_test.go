@@ -22,8 +22,8 @@ import (
 	"github.com/valyala/fasthttp"
 	"testing"
 
+	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/httputil/http"
-	"frontend/pkg/common/snerror"
 )
 
 func Test_parseFastResponse(t *testing.T) {
