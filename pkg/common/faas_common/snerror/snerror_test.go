@@ -18,6 +18,7 @@
 package snerror
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -36,5 +37,59 @@ func TestSnError(t *testing.T) {
 		snErr := NewWithError(1000, fmt.Errorf("test error"))
 		convey.So(snErr.Code(), convey.ShouldEqual, 1000)
 		convey.So(snErr.Error(), convey.ShouldEqual, "test error")
+	})
+}
+
+func TestConvertBadResponse_Convey(t *testing.T) {
+	convey.Convey("测试ConvertBadResponse函数", t, func() {
+		convey.Convey("当body为空时", func() {
+			err := ConvertBadResponse([]byte{})
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Code(), convey.ShouldEqual, 0)
+			convey.So(err.Error(), convey.ShouldEqual, "empty response body")
+		})
+
+		convey.Convey("当body为nil时", func() {
+			err := ConvertBadResponse(nil)
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Code(), convey.ShouldEqual, 0)
+			convey.So(err.Error(), convey.ShouldEqual, "empty response body")
+		})
+
+		convey.Convey("当body是有效的JSON时", func() {
+			badResp := BadResponse{
+				Code:    500,
+				Message: "Internal Server Error",
+			}
+			body, _ := json.Marshal(badResp)
+			err := ConvertBadResponse(body)
+
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Code(), convey.ShouldEqual, 500)
+			convey.So(err.Error(), convey.ShouldEqual, "Internal Server Error")
+		})
+
+		convey.Convey("当body是无效的JSON时", func() {
+			body := []byte("invalid json content")
+			err := ConvertBadResponse(body)
+
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Code(), convey.ShouldEqual, 0)
+			convey.So(err.Error(), convey.ShouldContainSubstring, "failed to parse error response")
+			convey.So(err.Error(), convey.ShouldContainSubstring, "invalid json content")
+		})
+
+		convey.Convey("当code为0且message为空时，使用原始body", func() {
+			badResp := BadResponse{
+				Code:    0,
+				Message: "",
+			}
+			body, _ := json.Marshal(badResp)
+			err := ConvertBadResponse(body)
+
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Code(), convey.ShouldEqual, 0)
+			convey.So(err.Error(), convey.ShouldEqual, string(body))
+		})
 	})
 }
