@@ -9,7 +9,7 @@
     "clusterName": "",
     "regionName": "",
     "nodeAffinity": "",
-    "defaultTenantLimitQuota": 20000,
+    "defaultTenantLimitQuota": -1,
     "alarmConfig": {
       "enableAlarm": false,
       "minInsStartInterval": 15,

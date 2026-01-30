@@ -37,6 +37,9 @@ const (
 )
 
 func (t *TenantContainer) getTenantLimiter(info TenantInfo) *rate.Limiter {
+	if config.GetConfig().DefaultTenantLimitQuota == -1 {
+		return rate.NewLimiter(rate.Inf, 0)
+	}
 	frontendNum := getFrontendNum()
 	limitRate := float64(info.Quota) / float64(frontendNum)
 	limitBucketSize := int(math.Ceil(float64(info.Quota)) /
@@ -103,6 +106,9 @@ func (t *TenantContainer) ProcessDelete(event *etcd3.Event) {
 }
 
 func getDefaultLimiter() *rate.Limiter {
+	if config.GetConfig().DefaultTenantLimitQuota == -1 {
+		return rate.NewLimiter(rate.Inf, 0)
+	}
 	frontendNum := getFrontendNum()
 	limitRate := float64(config.GetConfig().DefaultTenantLimitQuota) / float64(frontendNum)
 	limitBucketSize := int(math.Ceil(float64(config.GetConfig().DefaultTenantLimitQuota)) /
