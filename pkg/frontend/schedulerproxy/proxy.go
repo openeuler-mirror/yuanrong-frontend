@@ -27,15 +27,8 @@ import (
 
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/loadbalance"
-	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/instancemanager"
-)
-
-const (
-	// hashRingSize the concurrent hash ring length
-	hashRingSize = 100
-	limiterTime  = 1 * time.Millisecond
 )
 
 const (
@@ -57,7 +50,7 @@ var Proxy *ProxyManager
 
 func init() {
 	Proxy = newSchedulerProxy(
-		loadbalance.NewLimiterCHGeneric(limiterTime),
+		loadbalance.LBFactory(loadbalance.SimpleHashGeneric),
 	)
 }
 
@@ -71,25 +64,34 @@ type ProxyManager struct {
 	RTAPI       api.LibruntimeAPI
 }
 
+// SchedulerNodeInfo -
+type SchedulerNodeInfo struct {
+	InstanceInfo *types.InstanceInfo
+	UpdateTime   time.Time
+}
+
 // Add an FaaSScheduler
-func (im *ProxyManager) Add(scheduleInfo *types.InstanceInfo, logger api.FormatLogger) {
+func (im *ProxyManager) Add(scheduleInfo *SchedulerNodeInfo, logger api.FormatLogger) {
 	if im.RTAPI != nil {
-		switch scheduleInfo.InstanceID != "" {
+		switch scheduleInfo.InstanceInfo.InstanceID != "" {
 		case true:
-			im.RTAPI.UpdateSchdulerInfo(scheduleInfo.InstanceName, scheduleInfo.InstanceID, addSchedulerInfoOption)
+			im.RTAPI.UpdateSchdulerInfo(scheduleInfo.InstanceInfo.InstanceName, scheduleInfo.InstanceInfo.InstanceID,
+				addSchedulerInfoOption)
 		case false:
-			im.RTAPI.UpdateSchdulerInfo(scheduleInfo.InstanceName, scheduleInfo.InstanceID, removeSchedulerInfoOption)
+			im.RTAPI.UpdateSchdulerInfo(scheduleInfo.InstanceInfo.InstanceName, scheduleInfo.InstanceInfo.InstanceID,
+				removeSchedulerInfoOption)
 		default:
 
 		}
 	}
-	im.faasSchedulers.Store(scheduleInfo.InstanceName, scheduleInfo)
-	im.exclusivitySchedulers.Store(scheduleInfo.Exclusivity, scheduleInfo.InstanceName)
-	if scheduleInfo.Exclusivity != "" {
-		logger.Infof("no need to add scheduler to load balance for exclusivity %s", scheduleInfo.Exclusivity)
+	im.faasSchedulers.Store(scheduleInfo.InstanceInfo.InstanceName, scheduleInfo)
+	im.exclusivitySchedulers.Store(scheduleInfo.InstanceInfo.Exclusivity, scheduleInfo.InstanceInfo.InstanceName)
+	if scheduleInfo.InstanceInfo.Exclusivity != "" {
+		logger.Infof("no need to add scheduler to load balance for exclusivity %s",
+			scheduleInfo.InstanceInfo.Exclusivity)
 		return
 	}
-	im.loadBalance.Add(scheduleInfo.InstanceName, 0)
+	im.loadBalance.Add(scheduleInfo.InstanceInfo.InstanceName, 0)
 	logger.Infof("add scheduler to load balance")
 }
 
@@ -99,11 +101,11 @@ func (im *ProxyManager) Exist(instanceName string, instanceId string) bool {
 	if !ok {
 		return false
 	}
-	info, _ := value.(*types.InstanceInfo) // no need judge
+	info, _ := value.(*SchedulerNodeInfo) // no need judge
 	if info == nil {
 		return false
 	}
-	return info.InstanceID == instanceId
+	return info.InstanceInfo.InstanceID == instanceId
 }
 
 // ExistInstanceName -
@@ -137,7 +139,7 @@ func (im *ProxyManager) Remove(schedulerInfo *types.InstanceInfo, logger api.For
 }
 
 // Get an instance for this request
-func (im *ProxyManager) Get(funcKey string, logger api.FormatLogger) (*types.InstanceInfo, error) {
+func (im *ProxyManager) Get(funcKey string, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
 	logger.Debugf("begin to get scheduler for funcKey: %s", funcKey)
 	next, err := im.getNextScheduler(funcKey, logger)
 	if err != nil {
@@ -147,31 +149,112 @@ func (im *ProxyManager) Get(funcKey string, logger api.FormatLogger) (*types.Ins
 	if !ok {
 		return nil, fmt.Errorf("failed to parse the result of loadbanlance: %+v", next)
 	}
-	if strings.TrimSpace(faasSchedulerName) == "" {
-		return nil, fmt.Errorf("no avaiable faas scheduler was found")
+	if faasSchedulerName == "" {
+		return nil, fmt.Errorf(constant.AllSchedulerUnavailableErrorMessage)
 	}
-	faaSSchedulerData, ok := im.faasSchedulers.Load(faasSchedulerName)
-	if !ok {
+	faaSScheduler := im.instanceNameToSchedulerNodeInfo(faasSchedulerName)
+	if faaSScheduler == nil {
 		return nil, fmt.Errorf("failed to get the faas scheduler named %s", faasSchedulerName)
 	}
-	faaSScheduler, ok := faaSSchedulerData.(*types.InstanceInfo)
-	if !ok {
-		return nil, fmt.Errorf("invalid faas scheduler named %s: %#v", faasSchedulerName, faaSSchedulerData)
-	}
 	logger.Infof("succeed to get scheduler instanceID: %s for funcKey: %s", faasSchedulerName, funcKey)
+
 	return faaSScheduler, nil
+}
+
+func (im *ProxyManager) getFromExclusivityScheduler(funcKey string) string {
+	elements := strings.Split(funcKey, constant.KeySeparator)
+	if len(elements) != funcKeyElementsLen {
+		return ""
+	}
+	var ok bool
+	tenantID := elements[0]
+	next, ok := im.exclusivitySchedulers.Load(tenantID)
+	if ok && next != nil {
+		instanceName, ok := next.(string)
+		if ok {
+			return instanceName
+		}
+		return ""
+	}
+	return ""
+}
+
+func (im *ProxyManager) instanceNameToSchedulerNodeInfo(instanceName string) *SchedulerNodeInfo {
+	if strings.TrimSpace(instanceName) == "" {
+		return nil
+	}
+	faaSSchedulerData, ok := im.faasSchedulers.Load(instanceName)
+	if !ok {
+		return nil
+	}
+	faaSScheduler, ok := faaSSchedulerData.(*SchedulerNodeInfo)
+	if !ok {
+		return nil
+	}
+
+	return faaSScheduler
+}
+
+// GetWithoutUnexpectedSchedulerInfos -
+func (im *ProxyManager) GetWithoutUnexpectedSchedulerInfos(funcKey string,
+	unexpectedSchedulerNodeInfos []*SchedulerNodeInfo, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
+	logger.Debugf("begin to get scheduler for funcKey: %s", funcKey)
+	if len(unexpectedSchedulerNodeInfos) == 0 {
+		return im.Get(funcKey, logger)
+	}
+	allSchedulers := make(map[string]*SchedulerNodeInfo, 0)
+	im.faasSchedulers.Range(func(key, value any) bool {
+		info, ok := value.(*SchedulerNodeInfo)
+		if !ok {
+			return true
+		}
+		allSchedulers[info.InstanceInfo.InstanceName] = info
+		return true
+	})
+	tmpHash := loadbalance.LBFactory(loadbalance.SimpleHashGeneric)
+
+	for _, v := range allSchedulers {
+		flag := true
+		for _, unexpectedSchedulerNodeInfo := range unexpectedSchedulerNodeInfos {
+			if v.InstanceInfo.InstanceID == unexpectedSchedulerNodeInfo.InstanceInfo.InstanceID &&
+				v.UpdateTime.Sub(unexpectedSchedulerNodeInfo.UpdateTime) <= 0 {
+				flag = false
+				break
+			}
+		}
+		if flag {
+			tmpHash.Add(v.InstanceInfo.InstanceName, 0)
+
+		}
+	}
+
+	next := tmpHash.Next(funcKey, false)
+
+	faasSchedulerName, ok := next.(string)
+	if !ok {
+		return nil, fmt.Errorf("failed to parse the result of loadbalance: %+v", next)
+	}
+	if faasSchedulerName == "" {
+		return nil, fmt.Errorf(constant.AllSchedulerUnavailableErrorMessage)
+	}
+	schedulerNodeInfo := im.instanceNameToSchedulerNodeInfo(faasSchedulerName)
+	if schedulerNodeInfo == nil {
+		return nil, fmt.Errorf("failed to get the faas scheduler named %s", faasSchedulerName)
+	}
+
+	return schedulerNodeInfo, nil
 }
 
 // IsEmpty -
 func (im *ProxyManager) IsEmpty() bool {
 	flag := false
 	im.faasSchedulers.Range(func(k, v any) bool {
-		instance, ok := v.(*types.InstanceInfo)
+		instance, ok := v.(*SchedulerNodeInfo)
 		if !ok {
 			return true
 		}
 
-		ok = instancemanager.GetFaaSSchedulerInstanceManager().IsExist(instance.InstanceID)
+		ok = instancemanager.GetFaaSSchedulerInstanceManager().IsExist(instance.InstanceInfo.InstanceID)
 		if ok {
 			flag = true
 			return false
@@ -181,13 +264,33 @@ func (im *ProxyManager) IsEmpty() bool {
 	return !flag
 }
 
+// GetSchedulerByInstanceId -
+func (im *ProxyManager) GetSchedulerByInstanceId(instanceId string) *SchedulerNodeInfo {
+	var instanceInfo *SchedulerNodeInfo
+	im.faasSchedulers.Range(func(k, v any) bool {
+		schedulerNodeInfo, ok := v.(*SchedulerNodeInfo)
+		if !ok {
+			return true
+		}
+		if schedulerNodeInfo.InstanceInfo.InstanceID == instanceId {
+			ok = instancemanager.GetFaaSSchedulerInstanceManager().IsExist(schedulerNodeInfo.InstanceInfo.InstanceID)
+			if ok {
+				instanceInfo = schedulerNodeInfo
+				return false
+			}
+		}
+		return true
+	})
+	return instanceInfo
+}
+
 // GetSchedulerByInstanceName -
-func (im *ProxyManager) GetSchedulerByInstanceName(instanceName string, traceID string) (*types.InstanceInfo, error) {
+func (im *ProxyManager) GetSchedulerByInstanceName(instanceName string, traceID string) (*SchedulerNodeInfo, error) {
 	faaSSchedulerData, ok := im.faasSchedulers.Load(instanceName)
 	if !ok {
 		return nil, fmt.Errorf("failed to get the faas scheduler named %s,traceID %s", instanceName, traceID)
 	}
-	faaSScheduler, ok := faaSSchedulerData.(*types.InstanceInfo)
+	faaSScheduler, ok := faaSSchedulerData.(*SchedulerNodeInfo)
 	if !ok {
 		return nil, fmt.Errorf("invalid faas scheduler named %s: %#v, traceID: %s",
 			instanceName, faaSSchedulerData, traceID)
@@ -197,42 +300,20 @@ func (im *ProxyManager) GetSchedulerByInstanceName(instanceName string, traceID 
 
 func (im *ProxyManager) getNextScheduler(funcKey string, logger api.FormatLogger) (any, error) {
 	var next interface{}
-	elements := strings.Split(funcKey, constant.KeySeparator)
-	if len(elements) == funcKeyElementsLen {
-		var ok bool
-		tenantID := elements[0]
-		next, ok = im.exclusivitySchedulers.Load(tenantID)
-		if ok && next != nil {
-			return next, nil
-		}
-	} else {
-		logger.Warnf("invalid funcKey: %s", funcKey)
-	}
 
 	// select one FaaSScheduler by the func key
 	next = im.loadBalance.Next(funcKey, false)
 	if next == nil {
-		log.GetLogger().Errorf("failed to get faaSScheduler instance, function: %s", funcKey)
+		logger.Errorf("failed to get faaSScheduler instance, function: %s", funcKey)
 		return nil, fmt.Errorf("failed to get faaSScheduler instance")
 	}
+	logger.Debugf("show next type is %+v", next)
 	return next, nil
 }
 
 // DeleteBalancer -
 func (im *ProxyManager) DeleteBalancer(funcKey string) {
 	im.loadBalance.DeleteBalancer(funcKey)
-}
-
-// SetStain -
-func (im *ProxyManager) SetStain(funcKey, instanceName string) {
-	if v, ok := im.loadBalance.(*loadbalance.LimiterCHGeneric); ok {
-		v.SetStain(funcKey, instanceName)
-	}
-}
-
-// Reset - reset hash anchor point
-func (im *ProxyManager) Reset() {
-	im.loadBalance.Reset()
 }
 
 // newSchedulerProxy return an instance pool which get the instance from the remote FaaSScheduler

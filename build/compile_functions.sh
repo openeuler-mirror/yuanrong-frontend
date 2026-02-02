@@ -15,6 +15,15 @@
 
 set -e
 
+# Log functions
+log_error() {
+    echo "[BUILD_ERROR][$(date +%b\ %d\ %H:%M:%S)]$*"
+}
+
+log_warning() {
+    echo "[BUILD_WARN][$(date +%b\ %d\ %H:%M:%S)]$*"
+}
+
 function generate_pb() {
     # generate pb files
     if [ -z "${GOPATH}" ] || [ ! -d "${GOPATH}" ]; then

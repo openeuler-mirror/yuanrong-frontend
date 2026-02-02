@@ -19,14 +19,35 @@ package v1
 
 import (
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/frontend/clusterhealth"
+)
+
+// 区分健康检查方式
+const (
+	HealthCheckType = "HEALTH_CHECK_TYPE"
+	YrDataCache     = "yrdatacache"
 )
 
 // HealthzHandler -
 func HealthzHandler(ctx *gin.Context) {
+	enableStream := os.Getenv(constant.EnableStream)
+	healthCheckType := os.Getenv(HealthCheckType)
+	if strings.ToLower(enableStream) == "true" && healthCheckType == YrDataCache {
+		if !checkLocalDataSystemStatusReady() {
+			ctx.JSON(http.StatusServiceUnavailable, gin.H{
+				"code":    http.StatusServiceUnavailable,
+				"message": "datasystem unavailabe",
+			})
+			return
+		}
+	}
 	ctx.Writer.WriteHeader(http.StatusOK)
 }
 
@@ -34,4 +55,8 @@ func HealthzHandler(ctx *gin.Context) {
 func ClusterHealthHandler(ctx *gin.Context) {
 	clusterhealth.CheckClusterHealth(ctx.Writer, ctx.Request)
 	return
+}
+
+func checkLocalDataSystemStatusReady() bool {
+	return datasystemclient.IsLocalDataSystemStatusReady()
 }

@@ -18,10 +18,13 @@
 package util
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
+	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/httpconstant"
@@ -67,6 +70,8 @@ type invokerLibruntime interface {
 	GIncreaseRef(objectIDs []string, remoteClientID ...string) (failedIDs []string, err error)
 	GDecreaseRef(objectIDs []string, remoteClientID ...string) (failedIDs []string, err error)
 	GetAsync(objectID string, cb api.GetAsyncCallback)
+	GetEvent(objectID string, cb api.GetEventCallback)
+	DeleteGetEventCallback(objectID string)
 
 	GetFormatLogger() api.FormatLogger
 	GetCredential() api.Credential
@@ -80,19 +85,6 @@ var clientLibruntime invokerLibruntime
 // SetAPIClientLibruntime set the client provided by the runtime
 func SetAPIClientLibruntime(rt invokerLibruntime) {
 	clientLibruntime = rt
-}
-
-// AcquireOption holds the options for acquireInstance
-type AcquireOption struct {
-	DesignateInstanceID string
-	SchedulerFuncKey    string
-	SchedulerID         string
-	RequestID           string
-	TraceID             string
-	FuncSig             string
-	ResourceSpecs       map[string]int64
-	Timeout             int64
-	TrafficLimited      bool
 }
 
 // InvokeRequest -
@@ -117,11 +109,22 @@ type InvokeRequest struct {
 	RetryTimes       int
 	BusinessType     string
 	TenantID         string
+	AcceptHeader     string
+	ForceInvoke      bool
+	types.ResponseWriter
+}
+
+// SSEChan -
+type SSEChan struct {
+	Event    chan []byte
+	EventErr error
+	// WaitEvent 用于通知sse消息处理结束，防止主流程和getEvent回调阻塞等待
+	WaitEvent chan struct{}
 }
 
 // Client is used to invoke an instance and wait for its response
 type Client interface {
-	AcquireInstance(functionKey string, req AcquireOption) (*types.InstanceAllocationInfo, error)
+	AcquireInstance(functionKey string, req types.AcquireOption) (*types.InstanceAllocationInfo, error)
 	ReleaseInstance(allocation *types.InstanceAllocationInfo, abnormal bool)
 	Invoke(req InvokeRequest) ([]byte, error)
 	InvokeByName(req InvokeRequest) ([]byte, error)
@@ -148,7 +151,9 @@ type defaultClient struct {
 	clientLibruntime invokerLibruntime
 }
 
-func (c *defaultClient) AcquireInstance(functionKey string, req AcquireOption) (*types.InstanceAllocationInfo, error) {
+func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOption) (
+	*types.InstanceAllocationInfo, error,
+) {
 	var err error
 	var instanceAllocation api.InstanceAllocation
 	functionMeta := api.FunctionMeta{
@@ -193,19 +198,25 @@ func deepCopyArgs(args []*api.Arg, tenantID string) []api.Arg {
 	return rtArgs
 }
 
+// Invoke -
 func (c *defaultClient) Invoke(req InvokeRequest) ([]byte, error) {
-	wait := make(chan struct{}, 1)
-	var (
-		res         []byte
-		resErr, err error
-	)
+	log.GetLogger().Debugf("invoke by instanceId: %s", req.InstanceID)
 	funcMeta := api.FunctionMeta{FuncID: req.Function, Api: api.FaaSApi}
 	funcArgs := deepCopyArgs(req.Args, "")
-	invokeOpts := api.InvokeOptions{TraceID: req.TraceID, CustomExtensions: req.InvokeTag, RetryTimes: req.RetryTimes,
-		Timeout: int(req.InvokeTimeout)}
-	var objID string
-	objID, err = c.clientLibruntime.InvokeByInstanceId(funcMeta, req.InstanceID, funcArgs, invokeOpts)
+	invokeOpts := convertCommonInvokeOption(req)
+	invokeOpts.RetryTimes = req.RetryTimes
+	invokeOpts.ForceInvoke = req.ForceInvoke
+	objID, err := c.clientLibruntime.InvokeByInstanceId(funcMeta, req.InstanceID, funcArgs, invokeOpts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to invoke by instance id request, req: %#v, err: %s", req, err.Error())
+	}
+	return c.getRes(objID, req)
+}
 
+func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) {
+	var res []byte
+	var resErr error
+	wait := make(chan struct{}, 1)
 	c.clientLibruntime.GetAsync(objID, func(result []byte, err error) {
 		res = result
 		resErr = err
@@ -214,30 +225,97 @@ func (c *defaultClient) Invoke(req InvokeRequest) ([]byte, error) {
 			fmt.Printf("failed to decrease object ref,err: %s", err.Error())
 		}
 	})
-	if err != nil {
-		return res, fmt.Errorf("failed to invoke by instance id request, req: %#v, err: %s", req, err.Error())
+	log.GetLogger().Debugf("invoke AcceptHeader: %s, requestId: %s, objID: %s, instanceId: %s",
+		req.AcceptHeader, req.RequestID, objID, req.InstanceID)
+	if req.AcceptHeader != httpconstant.AcceptEventStream {
+		<-wait
+		return res, resErr
 	}
-	<-wait
-	return res, resErr
+	sseChan := &SSEChan{
+		Event:     make(chan []byte, 100), // 使用100大小缓冲区，防止libruntime侧回写event消息阻塞
+		WaitEvent: make(chan struct{}, 1),
+	}
+	c.clientLibruntime.GetEvent(objID, func(result []byte, err error) {
+		select {
+		case sseChan.Event <- result:
+			sseChan.EventErr = err
+		case <-sseChan.WaitEvent:
+			return
+		}
+	})
+	stopSSEHandle := make(chan struct{}) // 用于反向通知sse消息处理结束，防止协程泄露
+	go c.handleEvent(objID, sseChan, req, stopSSEHandle)
+	defer close(stopSSEHandle)
+	select {
+	case <-req.ResponseWriter.ClientDisconnectChan():
+		return nil, fmt.Errorf("client disconnected during wait, stop sse request, objID: %s", objID)
+	case <-wait:
+		if resErr != nil {
+			log.GetLogger().Errorf("notify response error, objID: %s, err: %v", objID, resErr)
+			return res, resErr
+		}
+	}
+	<-sseChan.WaitEvent
+	if sseChan.EventErr != nil {
+		log.GetLogger().Errorf("handler sse event failed, objID: %s, err: %v", objID, sseChan.EventErr)
+		return nil, sseChan.EventErr
+	}
+	log.GetLogger().Debugf("finish handle sse event, requestId: %s, objID: %s, instanceId: %s",
+		req.RequestID, objID, req.InstanceID)
+	return res, nil
+}
+
+func (c *defaultClient) handleEvent(objID string, sseChan *SSEChan, req InvokeRequest, stopSSEHandle chan struct{}) {
+	defer func() {
+		if err := recover(); err != nil {
+			log.GetLogger().Errorf("write response err: %v", err)
+		}
+		c.clientLibruntime.DeleteGetEventCallback(objID)
+		close(sseChan.WaitEvent)
+	}()
+	for {
+		select {
+		case <-req.ResponseWriter.ClientDisconnectChan():
+			sseChan.EventErr = fmt.Errorf("client disconnected during wait, stop sse request, objID: %s", objID)
+			return
+		case <-stopSSEHandle:
+			return
+		case data, ok := <-sseChan.Event:
+			if !ok {
+				log.GetLogger().Debugf("event channel closed, objID: %s", objID)
+				return
+			}
+			if bytes.Equal(data, []byte("yuanrong_event_EOF")) {
+				log.GetLogger().Debugf("event recive EOF, objID: %s", objID)
+				return
+			}
+			if sseChan.EventErr != nil {
+				return
+			}
+			var v interface{}
+			sseChan.EventErr = json.Unmarshal(data, &v)
+			if sseChan.EventErr != nil {
+				return
+			}
+			_, sseChan.EventErr = req.ResponseWriter.SSEWrite(data)
+			if sseChan.EventErr != nil {
+				return
+			}
+		}
+	}
 }
 
 func convertInvokeOption(req InvokeRequest) api.InvokeOptions {
+	invokeOpt := convertCommonInvokeOption(req)
 	cpu, mem, customRes := LibruntimeCustomResources(req.ResourceSpecs)
-	invokeLabels := map[string]string{}
+	invokeOpt.Cpu = cpu
+	invokeOpt.Memory = mem
+	invokeOpt.CustomResources = customRes
+	invokeOpt.SchedulerFunctionID = req.SchedulerFuncKey
+	invokeOpt.SchedulerInstanceIDs = []string{req.SchedulerID}
+	invokeOpt.AcquireTimeout = int(req.AcquireTimeout)
 	if req.InstanceLabel != "" {
-		invokeLabels[httpconstant.HeaderInstanceLabel] = req.InstanceLabel
-	}
-	invokeOpt := api.InvokeOptions{
-		Cpu:                  cpu,
-		Memory:               mem,
-		InvokeLabels:         invokeLabels,
-		CustomResources:      customRes,
-		CustomExtensions:     req.InvokeTag,
-		SchedulerFunctionID:  req.SchedulerFuncKey,
-		SchedulerInstanceIDs: []string{req.SchedulerID},
-		TraceID:              req.TraceID,
-		Timeout:              int(req.InvokeTimeout),
-		AcquireTimeout:       int(req.AcquireTimeout),
+		invokeOpt.InvokeLabels[httpconstant.HeaderInstanceLabel] = req.InstanceLabel
 	}
 	if req.InstanceSession != nil {
 		invokeOpt.InstanceSession = &api.InstanceSessionConfig{
@@ -249,7 +327,20 @@ func convertInvokeOption(req InvokeRequest) api.InvokeOptions {
 	return invokeOpt
 }
 
-func convertAcquireOption(req AcquireOption) api.InvokeOptions {
+func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
+	invokeOpt := api.InvokeOptions{
+		TraceID:          req.TraceID,
+		Timeout:          int(req.InvokeTimeout),
+		CustomExtensions: req.InvokeTag,
+		InvokeLabels:     map[string]string{},
+	}
+	if req.AcceptHeader == httpconstant.AcceptEventStream {
+		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
+	}
+	return invokeOpt
+}
+
+func convertAcquireOption(req types.AcquireOption) api.InvokeOptions {
 	cpu, mem, customRes := LibruntimeCustomResources(req.ResourceSpecs)
 	invokeOpt := api.InvokeOptions{
 		Cpu:                  cpu,
@@ -268,11 +359,6 @@ func convertAcquireOption(req AcquireOption) api.InvokeOptions {
 
 // InvokeByName -
 func (c *defaultClient) InvokeByName(req InvokeRequest) ([]byte, error) {
-	wait := make(chan struct{}, 1)
-	var (
-		res         []byte
-		resErr, err error
-	)
 	funcMeta := api.FunctionMeta{
 		FuncID:    req.Function,
 		Name:      &req.InstanceID,
@@ -282,21 +368,11 @@ func (c *defaultClient) InvokeByName(req InvokeRequest) ([]byte, error) {
 	}
 	funcArgs := deepCopyArgs(req.Args, req.TenantID)
 	invokeOpt := convertInvokeOption(req)
-	var objID string
-	objID, err = c.clientLibruntime.InvokeByFunctionName(funcMeta, funcArgs, invokeOpt)
+	objID, err := c.clientLibruntime.InvokeByFunctionName(funcMeta, funcArgs, invokeOpt)
 	if err != nil {
 		return nil, err
 	}
-	c.clientLibruntime.GetAsync(objID, func(result []byte, err error) {
-		res = result
-		resErr = err
-		wait <- struct{}{}
-		if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
-			fmt.Printf("failed to decrease object ref,err: %s", err.Error())
-		}
-	})
-	<-wait
-	return res, resErr
+	return c.getRes(objID, req)
 }
 
 func (c *defaultClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {

@@ -21,99 +21,38 @@ import (
 
 	"go.uber.org/zap"
 
-	"yuanrong.org/kernel/runtime/libruntime/api"
-
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/etcd3"
 	"frontend/pkg/common/faas_common/logger/log"
-	"frontend/pkg/common/faas_common/types"
-	"frontend/pkg/common/faas_common/utils"
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/schedulerproxy"
 )
 
-// start to watch the schedulers by the etcd
+// start to watch the module schedulers by the etcd
 func startWatchScheduler(stopCh <-chan struct{}) {
-	switch config.GetConfig().SchedulerKeyPrefixType {
-	case constant.SchedulerKeyTypeFunction:
-		startWatchInstanceScheduler(stopCh)
-	case constant.SchedulerKeyTypeModule:
-		startWatchModuleScheduler(stopCh)
-	default:
-		startWatchInstanceScheduler(stopCh)
-	}
-}
-
-// start to watch the instance faas schedulers by the etcd
-func startWatchInstanceScheduler(stopCh <-chan struct{}) {
 	etcdClient := etcd3.GetRouterEtcdClient()
-	watcher := etcd3.NewEtcdWatcher(constant.InstancePathPrefix, instanceSchedulerFilter, instanceSchedulerHandler,
+	watcher := etcd3.NewEtcdWatcher(constant.SchedulerHashPrefix, schedulerFilter, schedulerHandler,
 		stopCh, etcdClient)
 	watcher.StartWatch()
 }
 
-func isFaaSScheduler(etcdPath string) bool {
-	info, err := utils.GetFunctionInstanceInfoFromEtcdKey(etcdPath)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(info.FunctionName, "faasscheduler")
+func schedulerFilter(event *etcd3.Event) bool {
+	return !strings.Contains(event.Key, constant.SchedulerHashPrefix)
 }
 
-func instanceSchedulerFilter(event *etcd3.Event) bool {
-	return !isFaaSScheduler(event.Key)
-}
-
-func instanceSchedulerHandler(event *etcd3.Event) {
+func schedulerHandler(event *etcd3.Event) {
 	logger := log.GetLogger().With(zap.Any("eventType", event.Type), zap.Any("eventKey", event.Key),
-		zap.Any("revisionId", event.Rev), zap.Any("schedulerType", "function"))
+		zap.Any("revisionId", event.Rev))
 	logger.Infof("recv scheduler event type")
 	if event.Type == etcd3.SYNCED {
-		logger.Infof("faaSFrontend scheduler ready to receive etcd kv")
 		return
 	}
-	info, err := utils.GetFunctionInstanceInfoFromEtcdKey(event.Key)
-	if err != nil {
-		logger.Errorf("failed to parse event key: %s", err.Error())
-		return
-	}
-	handleEvent(event, info, logger)
-}
-
-// start to watch the module schedulers by the etcd
-func startWatchModuleScheduler(stopCh <-chan struct{}) {
-	etcdClient := etcd3.GetRouterEtcdClient()
-	watcher := etcd3.NewEtcdWatcher(constant.ModuleSchedulerPrefix, moduleSchedulerFilter, moduleSchedulerHandler,
-		stopCh, etcdClient)
-	watcher.StartWatch()
-}
-
-func moduleSchedulerFilter(event *etcd3.Event) bool {
-	return !strings.Contains(event.Key, constant.ModuleSchedulerPrefix)
-}
-
-func moduleSchedulerHandler(event *etcd3.Event) {
-	logger := log.GetLogger().With(zap.Any("eventType", event.Type), zap.Any("eventKey", event.Key),
-		zap.Any("revisionId", event.Rev), zap.Any("schedulerType", "module"))
-	logger.Infof("recv module scheduler event type")
-	if event.Type == etcd3.SYNCED {
-		logger.Infof("faaSFrontend scheduler ready to receive etcd kv")
-		return
-	}
-	info, err := utils.GetModuleSchedulerInfoFromEtcdKey(event.Key)
-	if err != nil {
-		logger.Errorf("failed to parse event key: %s", err.Error())
-		return
-	}
-	handleEvent(event, info, logger)
-}
-
-func handleEvent(event *etcd3.Event, info *types.InstanceInfo, logger api.FormatLogger) {
 	switch event.Type {
+	case etcd3.SYNCED:
+		logger.Infof("faaSFrontend scheduler ready to receive etcd kv")
 	case etcd3.PUT:
-		schedulerproxy.ProcessUpdate(event, info, logger)
+		schedulerproxy.EventManager.ProcessUpdate(event, logger)
 	case etcd3.DELETE:
-		schedulerproxy.ProcessDelete(info, logger)
+		schedulerproxy.EventManager.ProcessDelete(event, logger)
 	default:
 		logger.Warnf("unsupported event, type is %d", event.Type)
 	}

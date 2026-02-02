@@ -174,11 +174,12 @@ func writeInterfaceLog(invokeCtx *types.InvokeProcessContext) {
 	if len(message) > 100 { // 仅保留前100个字符
 		message = message[:100] // 仅保留前100个字符
 	}
-	// tenantId | funcName | version | sessionId | instanceLabel | statusCode | code | totalCost |
-	logContent := fmt.Sprintf("invocation |%s | %s | %s | %s | %s | %d | %s | %.2f | %s",
+	// tenantId | funcName | version | traceId | instanceLabel | sessionId | statusCode | code | totalCost |
+	logContent := fmt.Sprintf("invocation |%s | %s | %s | %s | %s | %s | %d | %s | %.2f | %s",
 		tenantId, funcName, version,
-		invokeCtx.ReqHeader[httpconstant.HeaderInstanceSession],
+		invokeCtx.TraceID,
 		invokeCtx.ReqHeader[httpconstant.HeaderInstanceLabel],
+		invokeCtx.ReqHeader[httpconstant.HeaderInstanceSession],
 		invokeCtx.StatusCode,
 		invokeCtx.RespHeader[httpconstant.HeaderInnerCode],
 		totalTime.Seconds()*1000, // 秒转换成毫秒
@@ -191,6 +192,9 @@ func buildProcessContext(ctx *gin.Context, traceID string) (processCtx *types.In
 	processCtx = types.CreateInvokeProcessContext()
 	processCtx.TraceID = traceID
 	processCtx.RequestID = traceID
+	processCtx.ResponseWriter = &GinWriter{
+		Context: ctx,
+	}
 
 	var (
 		funcUrn  urnutils.FunctionURN
@@ -292,9 +296,21 @@ func writeHTTPResponse(ctx *gin.Context, processCtx *types.InvokeProcessContext)
 	// It has to be in this order. 1. set header 2.writeHeader 3.write
 	writeHeadersToResponse(processCtx.RespHeader, ctx.Writer.Header())
 	ctx.Writer.WriteHeader(processCtx.StatusCode)
-	_, err := ctx.Writer.Write(processCtx.RespBody)
-	if err != nil {
-		log.GetLogger().Errorf("failed to write response body error %s", err.Error())
+	sseHeader, ok := processCtx.ReqHeader["Accept"]
+	if ok && sseHeader == constant.HeaderAcceptEventStream {
+		_, err := processCtx.ResponseWriter.SSEWrite(processCtx.RespBody)
+		if err != nil {
+			log.GetLogger().Errorf("failed to write response body error %s", err.Error())
+		}
+		_, err = processCtx.ResponseWriter.SSEWrite([]byte("[DONE]"))
+		if err != nil {
+			log.GetLogger().Errorf("failed to write DONE error %s", err.Error())
+		}
+	} else {
+		_, err := ctx.Writer.Write(processCtx.RespBody)
+		if err != nil {
+			log.GetLogger().Errorf("failed to write response body error %s", err.Error())
+		}
 	}
 }
 

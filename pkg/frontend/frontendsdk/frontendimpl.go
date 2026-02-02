@@ -100,6 +100,7 @@ func (f *Frontend) Init(configFilePath string) error {
 	}
 	go posixsdk.Run()
 	wisecloud.NewColdStartProvider(&config.GetConfig().WiseCloudConfig.ServiceAccountJwt)
+	setRawStsAuthConfig(runtimeConfig)
 	log.GetLogger().Infof("init frontend sdk successfully")
 	return nil
 }
@@ -148,19 +149,109 @@ func parseRuntimeCfgAndSetEnv(configFilePath string) (*common.Configuration, err
 		FunctionName:            functionName,
 		LogLevel:                cfg.Runtime.LogConfig.Level,
 		FSAddress:               fmt.Sprintf("%s:%s", fsAddr, functionSystemPort),
+		IamAddress:              cfg.IamConfig.Addr,
+		VerifyFilePath:          cfg.VerifyFilePath,
+		EnableEvent:             cfg.EnableEvent,
 		LogPath:                 cfg.Runtime.LogConfig.FilePath,
 		JobID:                   jobID,
 		DriverMode:              true,
 		MaxConcurrencyCreateNum: 5000,
 		EnableSigaction:         cfg.Runtime.EnableSigaction,
 	}
+	err = initSts(cfg)
+	if err != nil {
+		return nil, err
+	}
+	err = parseSystemAuth(cfg, runtimeCfg)
+	if err != nil {
+		return nil, err
+	}
 	err = setEnv(configFilePath, cfg)
+	if err != nil {
+		return nil, err
+	}
+	err = parseServiceAccountJwt(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return runtimeCfg, nil
 }
 
+func parseSystemAuth(cfg *types.Config, runtimeCfg *common.Configuration) error {
+	if !cfg.Runtime.SystemAuthConfig.Enable {
+		return nil
+	}
+	accessKey, err := stsgoapi.DecryptSensitiveConfig(cfg.Runtime.SystemAuthConfig.AccessKey)
+	if err != nil {
+		return fmt.Errorf("decrypt accessKey failed, err %s", err.Error())
+	}
+	secretKey, err := stsgoapi.DecryptSensitiveConfig(cfg.Runtime.SystemAuthConfig.SecretKey)
+	if err != nil {
+		utils.ClearByteMemory(secretKey)
+		return fmt.Errorf("decrypt secretKey failed, err %s", err.Error())
+	}
+	dataKey, err := stsgoapi.DecryptSensitiveConfig(cfg.Runtime.SystemAuthConfig.DataKey)
+	if err != nil {
+		utils.ClearByteMemory(secretKey)
+		return fmt.Errorf("decrypt dataKey failed, err %s", err.Error())
+	}
+	runtimeCfg.SystemAuthAccessKey = string(accessKey)
+	runtimeCfg.SystemAuthSecretKey = string(secretKey)
+	runtimeCfg.SystemAuthDataKey = string(dataKey)
+	return nil
+}
+
+func setRawStsAuthConfig(runtimeCfg *common.Configuration) {
+	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.AccessKey = runtimeCfg.SystemAuthAccessKey
+	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.SecretKey = runtimeCfg.SystemAuthSecretKey
+	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.DataKey = runtimeCfg.SystemAuthDataKey
+}
+
+func parseServiceAccountJwt(cfg *types.Config) error {
+	if cfg.RawStsConfig.StsEnable && len(cfg.WiseCloudConfig.ServiceAccountJwt.ServiceAccountKeyStr) > 0 {
+		var err error
+		cfg.WiseCloudConfig.ServiceAccountJwt.ServiceAccount, err =
+			serviceaccount.ParseServiceAccount(cfg.WiseCloudConfig.ServiceAccountJwt.ServiceAccountKeyStr)
+		if err != nil {
+			return err
+		}
+		config.GetConfig().WiseCloudConfig.ServiceAccountJwt.ServiceAccount =
+			cfg.WiseCloudConfig.ServiceAccountJwt.ServiceAccount
+	} else {
+		return nil
+	}
+	if cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig != nil &&
+		len(cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig.TlsCipherSuitesStr) > 0 {
+		var err error
+		cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig.TlsCipherSuites, err =
+			serviceaccount.ParseTlsCipherSuites(cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig.TlsCipherSuitesStr)
+		if err != nil {
+			return err
+		}
+		config.GetConfig().WiseCloudConfig.ServiceAccountJwt.TlsConfig =
+			cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig
+	} else {
+		return nil
+	}
+	return nil
+}
+
+func initSts(cfg *types.Config) error {
+	if !cfg.RawStsConfig.StsEnable {
+		return nil
+	}
+	stsProperties := properties.LoadMap(
+		map[string]string{
+			"sts.server.domain": cfg.RawStsConfig.ServerConfig.Domain,
+			"sts.config.path":   cfg.RawStsConfig.ServerConfig.Path,
+		},
+	)
+	err := stsgoapi.InitWith(*stsProperties)
+	if err != nil {
+		return fmt.Errorf("failed to init sts sdk, error %s", err.Error())
+	}
+	return nil
+}
 
 // InvokeHandler -
 func (f *Frontend) InvokeHandler(ctx *InvokeProcessContext) error {
@@ -203,8 +294,8 @@ func initSDKHandler(args []api.Arg, rt api.LibruntimeAPI) ([]byte, error) {
 		return []byte{}, err
 	}
 	initSubscribe()
-	util.SetAPIClientLibruntime(rt)
 	schedulerproxy.Proxy.RTAPI = rt
+	util.SetAPIClientLibruntime(rt)
 	datasystemclient.SetStreamEnable(config.GetConfig().StreamEnable)
 	datasystemclient.InitDataSystemLibruntime(config.GetConfig().DataSystemConfig, rt, stopCh)
 	responsehandler.Handler = (&invocation.FGAdapter{}).MakeResponseHandler()

@@ -20,17 +20,14 @@ import (
 	"errors"
 	"time"
 
-	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/statuscode"
 	commontype "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/responsehandler"
-	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/types"
 )
 
@@ -46,12 +43,11 @@ func InvokeHandler(ctx *types.InvokeProcessContext) error {
 	var err error
 	traceID := ctx.TraceID
 	funcKey := ctx.FuncKey
-	funcSpec, exist := functionmeta.LoadFuncSpec(funcKey)
-	if !exist {
-		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
-		log.GetLogger().Errorf("function %s doesn't exist in cache", funcKey)
-		return errors.New("function doesn't exist")
+	funcSpec, err := getFuncSpec(ctx, funcKey)
+	if err != nil {
+		return err
 	}
+
 	sessionId := ctx.ReqHeader[httpconstant.HeaderInstanceSession]
 	instanceLabel := ctx.ReqHeader[httpconstant.HeaderInstanceLabel]
 	log.GetLogger().Infof("invoking function %s, signature %s, traceID %s, sessionId %s, instanceLabel %s",
@@ -79,16 +75,22 @@ func doInvokeWithRetry(ctx *types.InvokeProcessContext, funcSpec *commontype.Fun
 }
 
 func doInvoke(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) error {
-	if config.GetConfig().FunctionInvokeBackend == constant.BackendTypeFG {
-		return functionInvokeForFG(ctx, funcSpec)
-	}
 	kernelReqHandler := newKernelRequestHandler(ctx, funcSpec)
 	return kernelReqHandler.invoke()
 }
 
 func resetSchedulerProxy(ctx *types.InvokeProcessContext) {
 	if ctx.TrafficLimited {
-		schedulerproxy.Proxy.Reset()
 		ctx.TrafficLimited = false
 	}
+}
+
+func getFuncSpec(ctx *types.InvokeProcessContext, funcKey string) (*commontype.FuncSpec, error) {
+	spec, exist := functionmeta.LoadFuncSpec(funcKey)
+	if !exist {
+		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
+		log.GetLogger().Errorf("function %s doesn't exist in cache", funcKey)
+		return nil, errors.New("function doesn't exist")
+	}
+	return spec, nil
 }

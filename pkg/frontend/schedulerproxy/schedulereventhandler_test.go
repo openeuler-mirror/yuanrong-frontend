@@ -20,7 +20,9 @@ package schedulerproxy
 import (
 	"encoding/json"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/smartystreets/goconvey/convey"
@@ -30,91 +32,111 @@ import (
 	"frontend/pkg/common/faas_common/etcd3"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/types"
+	"frontend/pkg/common/uuid"
 	"frontend/pkg/frontend/config"
 )
+
+func mockEtcdEvent(instanceName, instanceId string, isLease bool) *etcd3.Event {
+	etcdPrefix := "/sn/faas-scheduler/instances///"
+	etcdkey := etcdPrefix + instanceName
+
+	if isLease {
+		etcdkey += "/" + uuid.New().String()
+	}
+	instanceInfo := &types.InstanceSpecification{
+		InstanceID: instanceId,
+	}
+	return &etcd3.Event{
+		Type:      etcd3.PUT,
+		Key:       etcdkey,
+		Value:     getBytes(instanceInfo),
+		PrevValue: nil,
+		Rev:       0,
+		ETCDType:  "",
+	}
+}
 
 func getBytes(info *types.InstanceSpecification) []byte {
 	bytes, _ := json.Marshal(info)
 	return bytes
 }
 
-func TestProcessUpdate(t *testing.T) {
-	foundedCall := 0
-	missedCall := 0
-	defer gomonkey.ApplyMethod(reflect.TypeOf(Proxy), "Add", func(_ *ProxyManager, scheduler *types.InstanceInfo, _ api.FormatLogger) {
-		foundedCall++
+func TestProcessSchedulerEvent(t *testing.T) {
+	instance1Event := mockEtcdEvent("instanceName1", "instanceId1", false)
+	instance2Event := mockEtcdEvent("instanceName2", "instanceId2", false)
+	instance1LeaseEvent := mockEtcdEvent("instanceName1", "instanceId1", true)
+	instance2LeaseEvent := mockEtcdEvent("instanceName2", "instanceId2", true)
+
+	schedulerMap := make(map[string]*SchedulerNodeInfo, 0)
+	defer gomonkey.ApplyMethod(reflect.TypeOf(Proxy), "Add", func(_ *ProxyManager, scheduler *SchedulerNodeInfo, _ api.FormatLogger) {
+		schedulerMap[scheduler.InstanceInfo.InstanceName] = scheduler
 	}).Reset()
-	resetCall := 0
-	defer gomonkey.ApplyMethod(reflect.TypeOf(Proxy), "Reset", func(_ *ProxyManager) {
-		resetCall++
+
+	defer gomonkey.ApplyMethod(reflect.TypeOf(Proxy), "Remove", func(_ *ProxyManager, schedulerInstance *types.InstanceInfo, _ api.FormatLogger) {
+		delete(schedulerMap, schedulerInstance.InstanceName)
 	}).Reset()
-	defer gomonkey.ApplyMethod(reflect.TypeOf(Proxy), "Remove", func(_ *ProxyManager, scheduler *types.InstanceInfo, _ api.FormatLogger) {
-		missedCall++
+	defer gomonkey.ApplyMethod(reflect.TypeOf(Proxy), "ExistInstanceName", func(_ *ProxyManager, instanceName string) bool {
+		_, ok := schedulerMap[instanceName]
+		return ok
 	}).Reset()
 	convey.Convey("Test module scheduler ProcessUpdate", t, func() {
 		oldType := config.GetConfig().SchedulerKeyPrefixType
+		defer func() {
+			config.GetConfig().SchedulerKeyPrefixType = oldType
+		}()
+
 		config.GetConfig().SchedulerKeyPrefixType = "module"
-		event := &etcd3.Event{
-			Key: "/scheduler1", // no need
-		}
-		info := &types.InstanceInfo{
-			InstanceName: "instanceName1",
-		}
 
-		insSpec := &types.InstanceSpecification{
-			InstanceID: "",
+		m := &EventManagerInfo{
+			leaseIds:       make(map[string]map[string]time.Time),
+			schedulerInfos: make(map[string]*types.InstanceInfo),
+			RWMutex:        sync.RWMutex{},
 		}
-		event.Value = getBytes(insSpec)
-		ProcessUpdate(event, info, log.GetLogger())
-		convey.So(foundedCall, convey.ShouldEqual, 1)
-		convey.So(resetCall, convey.ShouldEqual, 1)
+		m.ProcessUpdate(instance1Event, log.GetLogger())
+		m.ProcessUpdate(instance2Event, log.GetLogger())
 
-		info = &types.InstanceInfo{InstanceName: "instanceName1"}
-		insSpec = &types.InstanceSpecification{InstanceID: "instanceId1"}
-		event.Value = getBytes(insSpec)
-		ProcessUpdate(event, info, log.GetLogger())
-		convey.So(foundedCall, convey.ShouldEqual, 2)
-		convey.So(resetCall, convey.ShouldEqual, 2)
+		convey.So(len(schedulerMap), convey.ShouldEqual, 0)
 
-		event.Value = []byte(`{"createOptions":{}, "instanceStatus":{"code":3, "msg":"ok"}}`)
-		info = &types.InstanceInfo{InstanceName: "instanceName1"}
-		insSpec = &types.InstanceSpecification{InstanceID: "instanceId1", CreateOptions: make(map[string]string), InstanceStatus: types.InstanceStatus{
-			Code: 3,
-			Msg:  "ok",
-		}}
-		event.Value = getBytes(insSpec)
-		ProcessUpdate(event, info, log.GetLogger())
-		convey.So(foundedCall, convey.ShouldEqual, 3)
-		convey.So(resetCall, convey.ShouldEqual, 3)
-		config.GetConfig().SchedulerKeyPrefixType = oldType
+		m.ProcessUpdate(instance1LeaseEvent, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 1)
+
+		m.ProcessUpdate(instance2LeaseEvent, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 2)
+
+		m.ProcessDelete(instance1LeaseEvent, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 1)
+
+		m.ProcessDelete(instance2Event, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 0)
+		m.ProcessDelete(instance1Event, log.GetLogger())
+		m.ProcessDelete(instance2LeaseEvent, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 0)
 	})
 
 	convey.Convey("Test function scheduler ProcessUpdate", t, func() {
 		oldType := config.GetConfig().SchedulerKeyPrefixType
 		config.GetConfig().SchedulerKeyPrefixType = "function"
-
-		foundedCall = 0
-		resetCall = 0
-		event := &etcd3.Event{
-			Key:   "/scheduler1",
-			Value: []byte(""),
+		defer func() {
+			config.GetConfig().SchedulerKeyPrefixType = oldType
+		}()
+		schedulerMap = make(map[string]*SchedulerNodeInfo)
+		m := &EventManagerInfo{
+			leaseIds:       make(map[string]map[string]time.Time),
+			schedulerInfos: make(map[string]*types.InstanceInfo),
+			RWMutex:        sync.RWMutex{},
 		}
-		info := &types.InstanceInfo{
-			InstanceName: "instanceName1",
-		}
-		ProcessUpdate(event, info, log.GetLogger())
-		convey.So(foundedCall, convey.ShouldEqual, 0)
-		convey.So(resetCall, convey.ShouldEqual, 0)
 
-		event.Value = []byte("{}")
-		ProcessUpdate(event, info, log.GetLogger())
-		convey.So(foundedCall, convey.ShouldEqual, 0)
-		convey.So(resetCall, convey.ShouldEqual, 0)
+		m.ProcessUpdate(instance1Event, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 1)
+		m.ProcessUpdate(instance2LeaseEvent, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 1)
+		m.ProcessUpdate(instance2Event, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 2)
 
-		event.Value = []byte(`{"createOptions":{}, "instanceStatus":{"code":3, "msg":"ok"}}`)
-		ProcessUpdate(event, info, log.GetLogger())
-		convey.So(foundedCall, convey.ShouldEqual, 1)
-		convey.So(resetCall, convey.ShouldEqual, 1)
-		config.GetConfig().SchedulerKeyPrefixType = oldType
+		m.ProcessDelete(instance1LeaseEvent, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 2)
+		m.ProcessDelete(instance2Event, log.GetLogger())
+		m.ProcessDelete(instance1Event, log.GetLogger())
+		convey.So(len(schedulerMap), convey.ShouldEqual, 0)
 	})
 }

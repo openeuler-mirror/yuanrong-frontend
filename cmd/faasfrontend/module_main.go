@@ -36,6 +36,7 @@ import (
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/server"
+	"frontend/pkg/frontend/stream"
 )
 
 const (
@@ -79,6 +80,10 @@ func main() {
 		logAndPrintError(fmt.Sprintf("setup module frontend error: %s", err.Error()))
 		return
 	}
+	// 流监听
+	if err := stream.StartListenFrontendResponseStream(stopCh); err != nil {
+		log.GetLogger().Warnf("failed to listen frontend response stream, err: %s", err.Error())
+	}
 	errChan := make(chan error, 1)
 	httpServer := server.CreateHTTPServer()
 	go func() {
@@ -92,6 +97,7 @@ func main() {
 		logAndPrintError(fmt.Sprintf("wait http server error: %s", err.Error()))
 	}
 }
+
 func logAndPrintError(errMessage string) {
 	log.GetLogger().Errorf(errMessage)
 	fmt.Println(errMessage)
@@ -133,8 +139,5 @@ func setupModuleFrontend(stopCh <-chan struct{}) error {
 func updateConfig() {
 	cfg := config.GetConfig()
 	monitor.SetMemoryControlConfig(cfg.MemoryControlConfig)
-	if cfg.FunctionInvokeBackend == constant.BackendTypeFG {
-		functiontask.GetBusProxies().UpdateConfig()
-	}
-
+	functiontask.GetBusProxies().UpdateConfig()
 }

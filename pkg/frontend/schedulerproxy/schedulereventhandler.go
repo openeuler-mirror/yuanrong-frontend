@@ -19,6 +19,9 @@ package schedulerproxy
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -31,58 +34,149 @@ import (
 	"frontend/pkg/frontend/config"
 )
 
+// EventManager -
+var EventManager *EventManagerInfo
+
+// EventManagerInfo -
+type EventManagerInfo struct {
+	leaseIds       map[string]map[string]time.Time // instanceName : leaseId : time
+	schedulerInfos map[string]*types.InstanceInfo
+	sync.RWMutex
+}
+
+func init() {
+	EventManager = &EventManagerInfo{
+		leaseIds:       make(map[string]map[string]time.Time),
+		schedulerInfos: make(map[string]*types.InstanceInfo),
+		RWMutex:        sync.RWMutex{},
+	}
+}
+
 // ProcessDelete -
-func ProcessDelete(info *types.InstanceInfo, logger api.FormatLogger) {
+func (m *EventManagerInfo) ProcessDelete(event *etcd3.Event, logger api.FormatLogger) {
+	leaseId := ""
+	instanceName, isLeaseKey := utils.GetInstanceNameFromSchedulerLeaseEtcdKey(event.Key)
+	if !isLeaseKey {
+		info, err := utils.GetSchedulerInfoFromEtcdKey(event.Key)
+		if err != nil {
+			return
+		}
+		instanceName = info.InstanceName
+	} else {
+		leaseId = utils.ParseLeaseFromSchedulerLeaseEtcdKey(event.Key)
+	}
+
+	m.Lock()
+	info, _ := m.schedulerInfos[instanceName]
+	if isLeaseKey {
+		leases, ok := m.leaseIds[instanceName]
+		if ok {
+			delete(leases, leaseId)
+		}
+		if len(leases) == 0 {
+			delete(m.leaseIds, instanceName)
+		}
+	} else {
+		delete(m.schedulerInfos, instanceName)
+	}
+	m.Unlock()
+
+	m.RLock()
+	_, existLease := m.leaseIds[instanceName]
+	_, existSchedulerInfo := m.schedulerInfos[instanceName]
+	m.RUnlock()
+	needRemove := false
+
+	switch config.GetConfig().SchedulerKeyPrefixType {
+	case constant.SchedulerKeyTypeModule:
+		if existLease != existSchedulerInfo {
+			needRemove = true
+		}
+	default:
+		if !existSchedulerInfo && !isLeaseKey {
+			needRemove = true
+		}
+	}
+
 	defer logger.Infof("process delete event over")
-	if Proxy.ExistInstanceName(info.InstanceName) {
+	if needRemove && info != nil && Proxy.ExistInstanceName(info.InstanceName) {
 		Proxy.Remove(info, logger)
-		Proxy.Reset()
 		logger.Infof("deleted from ProxyManager")
 	}
 }
 
 // ProcessUpdate -
-func ProcessUpdate(event *etcd3.Event, info *types.InstanceInfo, logger api.FormatLogger) {
+func (m *EventManagerInfo) ProcessUpdate(event *etcd3.Event, logger api.FormatLogger) {
 	defer logger.Infof("process update event over")
-
-	instanceInfo := &types.InstanceSpecification{}
-	if len(event.Value) != 0 {
-		err := json.Unmarshal(event.Value, instanceInfo)
+	instanceName, isLeaseKey := utils.GetInstanceNameFromSchedulerLeaseEtcdKey(event.Key)
+	if isLeaseKey {
+		m.Lock()
+		if _, ok := m.leaseIds[instanceName]; !ok {
+			m.leaseIds[instanceName] = make(map[string]time.Time)
+		}
+		m.leaseIds[instanceName][utils.ParseLeaseFromSchedulerLeaseEtcdKey(event.Key)] = time.Now()
+		m.Unlock()
+	} else {
+		info, err := getSchedulerInstanceInfo(event, logger)
 		if err != nil {
-			logger.Errorf("failed to unmarshal ProxyManager to instanceInfo, error %s", err.Error())
+			return
+		}
+		instanceName = info.InstanceName
+		m.Lock()
+		m.schedulerInfos[instanceName] = info
+		m.Unlock()
+	}
+	var updateTime time.Time
+	m.RLock()
+	leases, existLease := m.leaseIds[instanceName]
+	if existLease {
+		for _, v := range leases {
+			if updateTime.After(v) {
+				updateTime = v
+			}
 		}
 	}
+	info, existSchedulerInfo := m.schedulerInfos[instanceName]
+	m.RUnlock()
 
-	logger = logger.With(zap.Any("instanceName", info.InstanceName), zap.Any("instanceId", instanceInfo.InstanceID))
-	if instanceInfo.CreateOptions != nil {
-		info.Exclusivity = instanceInfo.CreateOptions[constant.SchedulerExclusivityKey]
-	}
-	info.InstanceID = instanceInfo.InstanceID
-	info.Address = instanceInfo.RuntimeAddress
-
-	isExist := Proxy.Exist(info.InstanceName, info.InstanceID)
-	isRunning := instanceInfo.InstanceStatus.Code == int32(constant.KernelInstanceStatusRunning)
-	logger = logger.With(zap.Any("isExistInProxy", isExist), zap.Any("instanceStatus", instanceInfo.InstanceStatus.Code))
-
-	// scheduler实例添加到环的逻辑：如果是终端云融合架构场景，则无论scheduler状态如何，亦添加到hash环中,但是如果scheduler id为空，则删除该实例。否则 需要判断其实例状态
+	needUpdate := false
 	switch config.GetConfig().SchedulerKeyPrefixType {
 	case constant.SchedulerKeyTypeModule:
-		Proxy.Add(info, logger)
-		Proxy.Reset()
-		logger.Infof("add to ProxyManager")
-	case constant.SchedulerKeyTypeFunction:
-		fallthrough
+		if existLease && existSchedulerInfo {
+			needUpdate = true
+		}
 	default:
-		if !isExist && (isRunning || instanceInfo.InstanceStatus.Code == int32(constant.KernelInstanceStatusCreating)) {
-			Proxy.Add(info, logger)
-			Proxy.Reset()
-			logger.Infof("added to ProxyManager")
-		} else if utils.CheckFaaSSchedulerInstanceFault(instanceInfo.InstanceStatus) && isExist {
-			Proxy.Remove(info, logger)
-			Proxy.Reset()
-			logger.Infof("deleted from ProxyManager")
-		} else {
-			logger.Infof("do nothing")
+		needUpdate = existSchedulerInfo
+	}
+	if !needUpdate {
+		return
+	}
+
+	logger = logger.With(zap.Any("instanceName", info.InstanceName), zap.Any("instanceId", info.InstanceID))
+	schedulerNodeInfo := &SchedulerNodeInfo{InstanceInfo: info, UpdateTime: updateTime}
+	Proxy.Add(schedulerNodeInfo, logger)
+	logger.Infof("add to ProxyManager")
+}
+
+func getSchedulerInstanceInfo(event *etcd3.Event, logger api.FormatLogger) (*types.InstanceInfo, error) {
+	info, err := utils.GetSchedulerInfoFromEtcdKey(event.Key)
+	if err != nil {
+		return nil, err
+	}
+	insSpecInfo := &types.InstanceSpecification{}
+	if len(event.Value) == 0 {
+		return nil, fmt.Errorf("value is empty")
+	}
+	if len(event.Value) != 0 {
+		err = json.Unmarshal(event.Value, insSpecInfo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal ProxyManager to insSpecInfo, error %s", err.Error())
 		}
 	}
+	if insSpecInfo.CreateOptions != nil {
+		info.Exclusivity = insSpecInfo.CreateOptions[constant.SchedulerExclusivityKey]
+	}
+	info.InstanceID = insSpecInfo.InstanceID
+	info.Address = insSpecInfo.RuntimeAddress
+	return info, nil
 }

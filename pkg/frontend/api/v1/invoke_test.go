@@ -36,10 +36,10 @@ import (
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
-	frontend "frontend/pkg/common/faas_common/grpc/pb/function"
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/monitor"
+	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/faas_common/statuscode"
 	"frontend/pkg/common/faas_common/tls"
 	commontype "frontend/pkg/common/faas_common/types"
@@ -51,12 +51,14 @@ import (
 	"frontend/pkg/frontend/functiontask"
 	"frontend/pkg/frontend/instancemanager"
 	"frontend/pkg/frontend/invocation"
+	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/stream"
 	"frontend/pkg/frontend/tenanttrafficlimit"
 	"frontend/pkg/frontend/types"
+	"frontend/pkg/frontend/upgradecompatible"
 )
 
 func constructFakeInvokeRequest(funcName, reqBody string, rw http.ResponseWriter) *gin.Context {
@@ -67,37 +69,40 @@ func constructFakeInvokeRequest(funcName, reqBody string, rw http.ResponseWriter
 	return ctx
 }
 
-type fakeClient struct {
-}
+type fakeClient struct{}
 
-func (f *fakeClient) AcquireInstance(functionKey string, req util.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
-	//TODO implement me
+func (f *fakeClient) AcquireInstance(functionKey string, req commontype.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
+	// TODO implement me
 	panic("implement me")
 }
 
 func (f *fakeClient) ReleaseInstance(allocation *commontype.InstanceAllocationInfo, abnormal bool) {
-	//TODO implement me
+	// TODO implement me
 	panic("implement me")
 }
 
 func (f *fakeClient) Invoke(req util.InvokeRequest) ([]byte, error) {
-	//TODO implement me
+	// TODO implement me
 	panic("implement me")
 }
 
 func (f *fakeClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (f *fakeClient) KillRaw(killReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
 	InstanceID := ""
 	return InstanceID, nil
 }
+
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -124,33 +129,35 @@ func (f *fakeClient) IsDsHealth() bool {
 	return true
 }
 
-type fakeFailedClient struct {
-}
+type fakeFailedClient struct{}
 
-func (c *fakeFailedClient) AcquireInstance(functionKey string, req util.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
-	//TODO implement me
+func (c *fakeFailedClient) AcquireInstance(functionKey string, req commontype.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
+	// TODO implement me
 	panic("implement me")
 }
 
 func (c *fakeFailedClient) ReleaseInstance(allocation *commontype.InstanceAllocationInfo, abnormal bool) {
-	//TODO implement me
+	// TODO implement me
 	panic("implement me")
 }
 
 func (c *fakeFailedClient) Invoke(req util.InvokeRequest) ([]byte, error) {
-	//TODO implement me
+	// TODO implement me
 	panic("implement me")
 }
 
 func (c *fakeFailedClient) IsLibruntime() bool {
 	return false
 }
+
 func (c *fakeFailedClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (c *fakeFailedClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (c *fakeFailedClient) KillRaw(killReq []byte) ([]byte, error) {
 	return nil, nil
 }
@@ -178,16 +185,18 @@ func (c *fakeFailedClient) InvokeByName(request util.InvokeRequest) ([]byte, err
 	return res, errors.New("runtime initialization timed out after 3s")
 }
 
-func (c *fakeFailedClient) CreateInstance(req *frontend.CreateRequest) (*frontend.CreateResponse, error) {
-	//TODO implement me
+func (c *fakeFailedClient) CreateInstance(req *functionsystem.CreateRequest) (*functionsystem.CreateResponse, error) {
+	// TODO implement me
 	panic("implement me")
 }
-func (c *fakeFailedClient) InvokeInstance(req *frontend.InvokeRequest) (*frontend.NotifyRequest, error) {
-	//TODO implement me
+
+func (c *fakeFailedClient) InvokeInstance(req *functionsystem.InvokeRequest) (*functionsystem.NotifyRequest, error) {
+	// TODO implement me
 	panic("implement me")
 }
-func (c *fakeFailedClient) Kill(req *frontend.KillRequest) (*frontend.KillResponse, error) {
-	//TODO implement me
+
+func (c *fakeFailedClient) Kill(req *functionsystem.KillRequest) (*functionsystem.KillResponse, error) {
+	// TODO implement me
 	panic("implement me")
 }
 
@@ -195,6 +204,7 @@ func (c *fakeFailedClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args
 	InstanceID := ""
 	return InstanceID, nil
 }
+
 func (c *fakeFailedClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -221,8 +231,16 @@ func Test_InvokeHandler(t *testing.T) {
 				DefaultTenantLimitQuota: 1800,
 			}
 		}),
+		gomonkey.ApplyFunc(upgradecompatible.GetAccessFaaSSchedulerType, func() string {
+			return "libruntime"
+		}),
 		gomonkey.ApplyMethod(reflect.TypeOf(instancemanager.GetFaaSSchedulerInstanceManager()), "IsExist", func(_ *instancemanager.FaaSSchedulerInstanceManager) bool {
 			return true
+		}),
+		gomonkey.ApplyMethodFunc(leaseadaptor.GetInstanceManager(), "AcquireInstance", func(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
+			logger api.FormatLogger,
+		) (*commontype.InstanceAllocationInfo, snerror.SNError) {
+			return &commontype.InstanceAllocationInfo{}, nil
 		}),
 	}
 	defer func() {
@@ -239,7 +257,15 @@ func Test_InvokeHandler(t *testing.T) {
 	_ = monitor.InitMemMonitor(stopCh)
 	funcNameDemo := "functions/sn:cn:yrk:xxxxxxxxxxx:function:0@base@testpythonbase001:latest"
 	reqBody := "test body"
-	schedulerproxy.Proxy.Add(&commontype.InstanceInfo{InstanceName: "instance1", InstanceID: "instance1", Address: "127.0.0.1"}, log.GetLogger())
+	schedulerInfo := &schedulerproxy.SchedulerNodeInfo{
+		InstanceInfo: &commontype.InstanceInfo{
+			InstanceName: "instance1",
+			InstanceID:   "instance1",
+			Address:      "127.0.0.1",
+		},
+		UpdateTime: time.Now(),
+	}
+	schedulerproxy.Proxy.Add(schedulerInfo, log.GetLogger())
 
 	convey.Convey("stream not enable", t, func() {
 		rw := httptest.NewRecorder()
@@ -319,7 +345,8 @@ func Test_InvokeHandler(t *testing.T) {
 		c := &fasthttp.Client{}
 		defer gomonkey.ApplyMethod(reflect.TypeOf(c),
 			"DoTimeout", func(c *fasthttp.Client, req *fasthttp.Request,
-				resp *fasthttp.Response, timeout time.Duration) error {
+				resp *fasthttp.Response, timeout time.Duration,
+			) error {
 				resp.Header.Set(constant.HeaderInnerCode, "0")
 				resp.Header.Set(constant.HeaderWorkerCost, "20")
 				resp.Header.Set(constant.HeaderCallNode, "node1")
@@ -334,7 +361,7 @@ func Test_InvokeHandler(t *testing.T) {
 			}).Reset()
 		defer gomonkey.ApplyFunc(config.GetConfig, func() *types.Config {
 			return &types.Config{
-				FunctionInvokeBackend: constant.BackendTypeFG,
+				FunctionInvokeBackend: constant.BackendTypeKernel,
 				MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 					RequestMemoryEvaluator: 2,
 				},
@@ -353,7 +380,6 @@ func Test_InvokeHandler(t *testing.T) {
 				InvokeMaxRetryTimes: 3,
 				RetryConfig:         &types.RetryConfig{},
 			}
-
 		}).Reset()
 		rw := httptest.NewRecorder()
 		ctx := constructFakeInvokeRequest(funcNameDemo, reqBody, rw)
@@ -382,7 +408,8 @@ func Test_InvokeHandler(t *testing.T) {
 		c := &fasthttp.Client{}
 		defer gomonkey.ApplyMethod(reflect.TypeOf(c),
 			"DoTimeout", func(c *fasthttp.Client, req *fasthttp.Request,
-				resp *fasthttp.Response, timeout time.Duration) error {
+				resp *fasthttp.Response, timeout time.Duration,
+			) error {
 				resp.Header.Set(constant.HeaderInnerCode, "200500")
 				resp.Header.Set(constant.HeaderWorkerCost, "20")
 				resp.Header.Set(constant.HeaderCallNode, "node1")
@@ -393,7 +420,7 @@ func Test_InvokeHandler(t *testing.T) {
 			}).Reset()
 		defer gomonkey.ApplyFunc(config.GetConfig, func() *types.Config {
 			return &types.Config{
-				FunctionInvokeBackend: constant.BackendTypeFG,
+				FunctionInvokeBackend: constant.BackendTypeKernel,
 				MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 					RequestMemoryEvaluator: 2,
 				},
@@ -470,10 +497,31 @@ func TestExtractFunctionKey(t *testing.T) {
 	}
 }
 
+func testFgStreamException(t *testing.T, funcNameDemo string, reqBody string) {
+	convey.Convey("invoke for fg stream upload exception", t, func() {
+		defer gomonkey.ApplyFunc(config.GetConfig, mockFgStreamReqConfig()).Reset()
+		defer gomonkey.ApplyFunc(stream.HTTPStreamInvokeHandler,
+			func(ctx interface{}, timeout interface{}) error {
+				return errors.New("mocked error")
+			}).Reset()
+		defer gomonkey.ApplyFunc(stream.IsHTTPUploadStream, func(r interface{}) bool {
+			return true
+		}).Reset()
+		rw := httptest.NewRecorder()
+		ctx := constructFakeInvokeRequest(funcNameDemo, reqBody, rw)
+		ctx.Request.Header.Set(constant.HeaderContentType, httpconstant.MultipartFormContentType)
+		ctx.Request.Header.Set(constant.HeaderContentLength, "1")
+		InvokeHandler(ctx)
+		t.Logf("body %s\n", rw.Body.String())
+		convey.So(rw.Code, convey.ShouldEqual, http.StatusInternalServerError)
+		convey.So(rw.Body.String(), convey.ShouldContainSubstring, "mocked error")
+	})
+}
+
 func mockFgStreamReqConfig() func() *types.Config {
 	return func() *types.Config {
 		return &types.Config{
-			FunctionInvokeBackend: constant.BackendTypeFG,
+			FunctionInvokeBackend: constant.BackendTypeKernel,
 			MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 				RequestMemoryEvaluator: 2,
 			},
@@ -488,10 +536,96 @@ func mockFgStreamReqConfig() func() *types.Config {
 			LocalAuth: &localauth.AuthConfig{
 				AKey:     "ak",
 				SKey:     "sk",
-				Duration: 5},
+				Duration: 5,
+			},
 			InvokeMaxRetryTimes: 3,
 			RetryConfig:         &types.RetryConfig{},
 			StreamEnable:        true,
 		}
 	}
+}
+
+func TestGinWriter(t *testing.T) {
+	convey.Convey("Test GinWriter", t, func() {
+		// Create a new gin.Engine with test mode
+		gin.SetMode(gin.TestMode)
+		rw := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rw)
+		gw := &GinWriter{
+			Context: ctx,
+		}
+
+		convey.Convey("When calling SSEWrite with data", func() {
+			data := []byte("test data")
+			_, err := gw.SSEWrite(data)
+			convey.So(err, convey.ShouldEqual, nil)
+			convey.So(ctx.Writer.Header().Get("Content-Type"), convey.ShouldEqual, "text/event-stream")
+			convey.So(ctx.Writer.Header().Get("Cache-Control"), convey.ShouldEqual, "no-cache")
+			convey.So(ctx.Writer.Header().Get("Connection"), convey.ShouldEqual, "keep-alive")
+			convey.So(ctx.Writer.Header().Get("Transfer-Encoding"), convey.ShouldEqual, "chunked")
+			convey.So(ctx.Writer.Header().Get("X-Accel-Buffering"), convey.ShouldEqual, "no")
+			convey.So(rw.Body.String(), convey.ShouldContainSubstring, "data: test data\n\n")
+		})
+	})
+}
+
+type mockResponseWriter struct {
+	clientDisconnectChan <-chan struct{}
+	sseWriteFunc         func([]byte) (int, error)
+}
+
+func (m *mockResponseWriter) ClientDisconnectChan() <-chan struct{} {
+	return m.clientDisconnectChan
+}
+
+func (m *mockResponseWriter) SSEWrite(data []byte) (int, error) {
+	return m.sseWriteFunc(data)
+}
+
+func TestWriteHTTPResponse(t *testing.T) {
+	convey.Convey("Test WriteHTTPResponse", t, func() {
+		// 初始化测试用的上下文和过程上下文
+		gin.SetMode(gin.TestMode)
+		rw := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rw)
+		processCtx := &types.InvokeProcessContext{
+			StatusCode: http.StatusOK,
+			RespHeader: map[string]string{},
+			RespBody:   []byte("test response"),
+			ReqHeader:  map[string]string{},
+		}
+		defer gomonkey.ApplyFunc(writeHeadersToResponse, func(headerMap map[string]string, header http.Header) {
+			return
+		}).Reset()
+		convey.Convey("When writing a normal HTTP response", func() {
+			processCtx.ResponseWriter = &GinWriter{Context: ctx}
+			writeHTTPResponse(ctx, processCtx)
+			convey.So(ctx.Writer.Status(), convey.ShouldEqual, http.StatusOK)
+			convey.So(rw.Body.String(), convey.ShouldEqual, "test response")
+		})
+
+		convey.Convey("When writing an SSE response", func() {
+			processCtx.ReqHeader["Accept"] = "text/event-stream"
+			processCtx.ResponseWriter = &mockResponseWriter{
+				clientDisconnectChan: make(chan struct{}),
+				sseWriteFunc: func(data []byte) (int, error) {
+					return len(data), nil
+				},
+			}
+			writeHTTPResponse(ctx, processCtx)
+			convey.So(ctx.Writer.Status(), convey.ShouldEqual, http.StatusOK)
+		})
+
+		convey.Convey("When writing an SSE response with an error", func() {
+			processCtx.ReqHeader["Accept"] = "text/event-stream"
+			processCtx.ResponseWriter = &mockResponseWriter{
+				clientDisconnectChan: make(chan struct{}),
+				sseWriteFunc: func(data []byte) (int, error) {
+					return 0, errors.New("SSE write error")
+				},
+			}
+			writeHTTPResponse(ctx, processCtx)
+			convey.So(ctx.Writer.Status(), convey.ShouldEqual, http.StatusOK)
+		})
+	})
 }

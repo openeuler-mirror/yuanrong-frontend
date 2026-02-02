@@ -17,6 +17,7 @@
 package invocation
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/smartystreets/goconvey/convey"
+	"go.uber.org/zap"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
@@ -39,8 +41,11 @@ import (
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
+	"frontend/pkg/frontend/leaseadaptor"
+	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/schedulerproxy"
 	types2 "frontend/pkg/frontend/types"
+	"frontend/pkg/frontend/upgradecompatible"
 	"frontend/pkg/frontend/wisecloud"
 )
 
@@ -109,25 +114,28 @@ func Test_convertResSpecKey(t *testing.T) {
 }
 
 func clearSchedulerProxy() {
-	defer schedulerproxy.Proxy.Reset()
 	for {
 		schedulerInfo, err := schedulerproxy.Proxy.Get("0/0/0", log.GetLogger())
 		if err != nil {
 			return
 		}
-		schedulerproxy.Proxy.Remove(schedulerInfo, log.GetLogger())
+		schedulerproxy.Proxy.Remove(schedulerInfo.InstanceInfo, log.GetLogger())
 	}
 }
 
 func mockSchedulerProxyAdd(id string) {
-	schedulerproxy.Proxy.Add(&types.InstanceInfo{
-		TenantID:     id,
-		FunctionName: id,
-		Version:      id,
-		InstanceName: id,
-		InstanceID:   id,
-		Address:      id,
-	}, log.GetLogger())
+	schedulerInfo := &schedulerproxy.SchedulerNodeInfo{
+		InstanceInfo: &types.InstanceInfo{
+			TenantID:     id,
+			FunctionName: id,
+			Version:      id,
+			InstanceName: id,
+			InstanceID:   id,
+			Address:      id,
+		},
+		UpdateTime: time.Now(),
+	}
+	schedulerproxy.Proxy.Add(schedulerInfo, log.GetLogger())
 }
 
 func mockSchedulerProxyRemove(id string) {
@@ -199,18 +207,18 @@ func Test_needDownGrade(t *testing.T) {
 type fakeClient struct {
 }
 
-func (f *fakeClient) AcquireInstance(functionKey string, req util.AcquireOption) (*types.InstanceAllocationInfo, error) {
-	//TODO implement me
+func (f *fakeClient) AcquireInstance(functionKey string, req types.AcquireOption) (*types.InstanceAllocationInfo, error) {
+	// TODO implement me
 	panic("implement me")
 }
 
 func (f *fakeClient) ReleaseInstance(allocation *types.InstanceAllocationInfo, abnormal bool) {
-	//TODO implement me
+	// TODO implement me
 	panic("implement me")
 }
 
 func (f *fakeClient) Invoke(req util.InvokeRequest) ([]byte, error) {
-	//TODO implement me
+	// TODO implement me
 	panic("implement me")
 }
 
@@ -272,14 +280,14 @@ func Test_invokeByClient(t *testing.T) {
 			InstanceID: "0",
 		}
 
-		invokeByClient(ctx, req, log.GetLogger())
+		invokeFunctionWithLibRuntime(ctx, req, log.GetLogger())
 		convey.So(invokeTrigger, convey.ShouldBeTrue)
 		convey.So(invoekInstance, convey.ShouldEqual, "0")
 		convey.So(invokeByNameTrigger, convey.ShouldBeFalse)
 
 		invokeTrigger = false
 		req.InstanceID = ""
-		invokeByClient(ctx, req, log.GetLogger())
+		invokeFunctionWithLibRuntime(ctx, req, log.GetLogger())
 		convey.So(invokeTrigger, convey.ShouldBeFalse)
 		convey.So(invokeByNameTrigger, convey.ShouldBeTrue)
 	})
@@ -287,6 +295,7 @@ func Test_invokeByClient(t *testing.T) {
 
 func Test_functionInvokeForKernel(t *testing.T) {
 	convey.Convey("Test_functionInvokeForKernel", t, func() {
+		responsehandler.Handler = (&FGAdapter{}).MakeResponseHandler()
 		ctx := &types2.InvokeProcessContext{
 			InvokeTimeout: 10,
 			RespHeader:    make(map[string]string),
@@ -300,7 +309,7 @@ func Test_functionInvokeForKernel(t *testing.T) {
 		defer clearSchedulerProxy()
 		defer instancemanager.GetFaaSSchedulerInstanceManager().Reset()
 		defer gomonkey.ApplyMethodFunc(wisecloud.GetQueueManager(), "AddPendingRequest", func(funcKey string, resSpec *resspeckey.ResSpecKey, pendingReq *wisecloud.PendingRequest) {
-			log.GetLogger().Infof("[zhouyu] debug show addpending request")
+			log.GetLogger().Infof("debug show addpending request")
 			pendingReq.ResultChan <- &wisecloud.PendingResponse{Instance: nil}
 		}).Reset()
 
@@ -310,9 +319,60 @@ func Test_functionInvokeForKernel(t *testing.T) {
 		mockSchedulerProxyAdd("0")
 		mockSchedulerInstanceAdd("0")
 		var getreq util.InvokeRequest
-		defer gomonkey.ApplyFunc(invokeByClient, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+		defer gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
 			getreq = req
 			return nil
+		}).Reset()
+		p := gomonkey.ApplyFunc(needDownGrade, func() bool {
+			return false
+		})
+		newKernelRequestHandler(ctx, funcSpec).invoke()
+		p.Reset()
+		convey.So(getreq.InstanceID, convey.ShouldEqual, "")
+		getreq.SchedulerID = ""
+		defer gomonkey.ApplyFunc(needDownGrade, func() bool {
+			return true
+		}).Reset()
+
+		mockFunctionInstanceAdd("111")
+		funcSpec.FunctionKey = "8d86c63b22e24d9ab650878b75408ea6/0@default@func6ac6741a01334320809dfb7dc1e98049/latest"
+		newKernelRequestHandler(ctx, funcSpec).invoke()
+		convey.So(getreq.InstanceID, convey.ShouldEqual, "111")
+	})
+}
+
+func Test_functionInvokeForKernel_legacy(t *testing.T) {
+	convey.Convey("Test_functionInvokeForKernel_legacy", t, func() {
+		responsehandler.Handler = (&FGAdapter{}).MakeResponseHandler()
+		ctx := &types2.InvokeProcessContext{
+			InvokeTimeout: 10,
+			RespHeader:    make(map[string]string),
+		}
+		funcSpec := &types.FuncSpec{}
+		funcSpec.ResourceMetaData.CPU = 500
+		funcSpec.ResourceMetaData.Memory = 500
+
+		clearSchedulerProxy()
+		instancemanager.GetFaaSSchedulerInstanceManager().Reset()
+		defer clearSchedulerProxy()
+		defer instancemanager.GetFaaSSchedulerInstanceManager().Reset()
+		defer gomonkey.ApplyMethodFunc(wisecloud.GetQueueManager(), "AddPendingRequest", func(funcKey string, resSpec *resspeckey.ResSpecKey, pendingReq *wisecloud.PendingRequest) {
+			log.GetLogger().Infof("debug show addpending request")
+			pendingReq.ResultChan <- &wisecloud.PendingResponse{Instance: nil}
+		}).Reset()
+
+		err := newKernelRequestHandler(ctx, funcSpec).invoke()
+		convey.So(strings.Contains(err.Error(), "no available instance, no available scheduler"), convey.ShouldBeTrue)
+
+		mockSchedulerProxyAdd("0")
+		mockSchedulerInstanceAdd("0")
+		var getreq util.InvokeRequest
+		defer gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+			getreq = req
+			return nil
+		}).Reset()
+		defer gomonkey.ApplyFunc(upgradecompatible.GetAccessFaaSSchedulerType, func() string {
+			return "libruntime"
 		}).Reset()
 
 		p := gomonkey.ApplyFunc(needDownGrade, func() bool {
@@ -340,7 +400,6 @@ func Test_functionInvokeForKernel_retry(t *testing.T) {
 		instancemanager.GetFaaSSchedulerInstanceManager().Reset()
 		defer clearSchedulerProxy()
 		defer instancemanager.GetFaaSSchedulerInstanceManager().Reset()
-
 		ctx := &types2.InvokeProcessContext{
 			InvokeTimeout: 10,
 		}
@@ -353,7 +412,93 @@ func Test_functionInvokeForKernel_retry(t *testing.T) {
 
 		mockSchedulerProxyAdd("0")
 		var getreq util.InvokeRequest
-		p := gomonkey.ApplyFunc(invokeByClient, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+		p := gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+			getreq = req
+			return nil
+		})
+		metricsInvokeStartFlag := false
+		metricsInvokeStartInstance := ""
+		defer gomonkey.ApplyMethodFunc(reflect.TypeOf(wisecloud.GetMetricsManager()), "InvokeStart", func(funcKey string, resSpecKeyStr string, instanceId string) {
+			metricsInvokeStartFlag = true
+			metricsInvokeStartInstance = instanceId
+		}).Reset()
+		metricsInvokeEndFlag := false
+		metricsInvokeEndInstance := ""
+		defer gomonkey.ApplyMethodFunc(reflect.TypeOf(wisecloud.GetMetricsManager()), "InvokeEnd", func(funcKey string, resSpecKeyStr string, instanceId string) {
+			metricsInvokeEndFlag = true
+			metricsInvokeEndInstance = instanceId
+		}).Reset()
+		newKernelRequestHandler(ctx, funcSpec).invoke()
+		convey.So(getreq.InstanceID, convey.ShouldEqual, "111")
+		convey.So(metricsInvokeStartFlag, convey.ShouldBeTrue)
+		convey.So(metricsInvokeStartInstance, convey.ShouldEqual, "111")
+		convey.So(metricsInvokeEndFlag, convey.ShouldBeTrue)
+		convey.So(metricsInvokeEndInstance, convey.ShouldEqual, "111")
+		p.Reset()
+
+		// 比较复杂的用例
+		// 构造只有一个scheduler
+		// 首先，调用的请求，是走租约体系，则其schedulerId不为空，且instanceId为空。然后我们构造返回9009
+		// 然后，重试调用请求，是走降级，则其schedulerId为空，且instanceId不为空。然后我们构造1003
+		// 最后，再次重试调用请求，走降级，则其schedulerId为空，且instanceId不为空且不是上一次重试的instanceId。然后我们构造成功。
+		times := 0
+		var getreq1 util.InvokeRequest
+		var getreq2 util.InvokeRequest
+		mockSchedulerInstanceAdd("0")
+		mockFunctionInstanceAdd("222")
+		defer mockFunctionInstanceRemove("222")
+		p = gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+			times++
+			if times == 1 {
+				getreq1 = req
+				time.Sleep(1*time.Second + 200*time.Millisecond)
+				return snerror.New(statuscode.ErrInstanceEvicted, "")
+			}
+			if times == 2 {
+				getreq2 = req
+			}
+
+			return nil
+		})
+		ctx.InvokeWithoutScheduler = false
+		newKernelRequestHandler(ctx, funcSpec).invoke()
+		convey.So(times, convey.ShouldEqual, 2)
+		convey.So([]string{"111", "222"}, convey.ShouldContain, getreq1.InstanceID)
+		convey.So([]string{"111", "222"}, convey.ShouldContain, getreq2.InstanceID)
+		convey.So(getreq1.InstanceID, convey.ShouldNotEqual, getreq2.InstanceID)
+		convey.So(getreq2.InvokeTimeout, convey.ShouldBeLessThan, 10)
+
+		ctx.InvokeTimeout = 1
+		times = 0
+		err := newKernelRequestHandler(ctx, funcSpec).invoke()
+		convey.So(strings.Contains(err.Error(), "do invoke failed, timeout"), convey.ShouldBeTrue)
+		convey.So(times, convey.ShouldEqual, 1)
+		p.Reset()
+	})
+}
+
+func Test_functionInvokeForKernel_retry_legacy(t *testing.T) {
+	convey.Convey("Test_functionInvokeForKernel_retry_legacy", t, func() {
+		clearSchedulerProxy()
+		instancemanager.GetFaaSSchedulerInstanceManager().Reset()
+		defer clearSchedulerProxy()
+		defer instancemanager.GetFaaSSchedulerInstanceManager().Reset()
+		defer gomonkey.ApplyFunc(upgradecompatible.GetAccessFaaSSchedulerType, func() string {
+			return "libruntime"
+		}).Reset()
+		ctx := &types2.InvokeProcessContext{
+			InvokeTimeout: 10,
+		}
+		funcSpec := &types.FuncSpec{}
+		funcSpec.ResourceMetaData.CPU = 500
+		funcSpec.ResourceMetaData.Memory = 500
+		funcSpec.FunctionKey = "8d86c63b22e24d9ab650878b75408ea6/0@default@func6ac6741a01334320809dfb7dc1e98049/latest"
+		ctx.InvokeWithoutScheduler = true
+		mockFunctionInstanceAdd("111")
+
+		mockSchedulerProxyAdd("0")
+		var getreq util.InvokeRequest
+		p := gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
 			getreq = req
 			return nil
 		})
@@ -389,7 +534,7 @@ func Test_functionInvokeForKernel_retry(t *testing.T) {
 		mockSchedulerInstanceAdd("0")
 		mockFunctionInstanceAdd("222")
 		defer mockFunctionInstanceRemove("222")
-		p = gomonkey.ApplyFunc(invokeByClient, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+		p = gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
 			times++
 			if times == 1 {
 				getreq1 = req
@@ -426,7 +571,7 @@ func Test_functionInvokeForKernel_retry(t *testing.T) {
 }
 
 func TestInvokeInstanceNeedRetry(t *testing.T) {
-	convey.Convey("Test invokeInstanceNeedRetry function", t, func() {
+	convey.Convey("Test needRetryCode function", t, func() {
 		successStatusCodes := []int{
 			statuscode.DsDeleteFailed,
 			statuscode.DsDownloadFailed,
@@ -449,7 +594,7 @@ func TestInvokeInstanceNeedRetry(t *testing.T) {
 		convey.Convey("When passing retry-required error codes", func() {
 			for _, errCode := range retryErrorCodes {
 				convey.Convey("Should return true for error code "+strconv.Itoa(errCode), func() {
-					convey.So(invokeInstanceNeedRetry(errCode), convey.ShouldBeTrue)
+					convey.So(needRetryCode(errCode), convey.ShouldBeTrue)
 				})
 			}
 		})
@@ -457,7 +602,7 @@ func TestInvokeInstanceNeedRetry(t *testing.T) {
 		convey.Convey("When passing non-retry status codes", func() {
 			for _, statusCode := range successStatusCodes {
 				convey.Convey("Should return false for status code "+strconv.Itoa(statusCode), func() {
-					convey.So(invokeInstanceNeedRetry(statusCode), convey.ShouldBeFalse)
+					convey.So(needRetryCode(statusCode), convey.ShouldBeFalse)
 				})
 			}
 		})
@@ -466,9 +611,88 @@ func TestInvokeInstanceNeedRetry(t *testing.T) {
 			undefinedCodes := []int{9999, -1, 10000}
 			for _, unknownCode := range undefinedCodes {
 				convey.Convey("Should return false for unknown code "+strconv.Itoa(unknownCode), func() {
-					convey.So(invokeInstanceNeedRetry(unknownCode), convey.ShouldBeFalse)
+					convey.So(needRetryCode(unknownCode), convey.ShouldBeFalse)
 				})
 			}
+		})
+	})
+}
+
+func TestKernelRequestHandler_legacyMakeReq(t *testing.T) {
+	convey.Convey("Test legacyMakeReq method", t, func() {
+		ctx := &types2.InvokeProcessContext{
+			InvokeTimeout: 10,
+		}
+		funcSpec := &types.FuncSpec{}
+		funcSpec.ResourceMetaData.CPU = 500
+		funcSpec.ResourceMetaData.Memory = 500
+		funcSpec.FunctionKey = "8d86c63b22e24d9ab650878b75408ea6/0@default@func6ac6741a01334320809dfb7dc1e98049/latest"
+		ctx.InvokeWithoutScheduler = true
+
+		defer gomonkey.ApplyFunc(upgradecompatible.GetAccessFaaSSchedulerType, func() string {
+			return "libruntime"
+		}).Reset()
+
+		handler := newKernelRequestHandler(ctx, funcSpec)
+
+		// Mock补丁集合
+		var patches *gomonkey.Patches
+
+		convey.Convey("降级情况 - 无scheduler但能获取实例", func() {
+			clearSchedulerProxy()
+			mockFunctionInstanceAdd("111")
+			defer mockFunctionInstanceRemove("111")
+			req, err := handler.makeReq(log.GetLogger())
+
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(req.InstanceID, convey.ShouldEqual, "111")
+			convey.So(handler.downgrade, convey.ShouldBeTrue)
+		})
+
+		convey.Convey("降级情况 - 需要排队获取实例", func() {
+			patches = gomonkey.NewPatches()
+			defer patches.Reset()
+
+			clearSchedulerProxy()
+
+			// Mock 排队返回结果
+			mockResponse := &wisecloud.PendingResponse{
+				Instance: &types.InstanceSpecification{InstanceID: "222"},
+				Error:    nil,
+			}
+			patches.ApplyMethodFunc(wisecloud.GetQueueManager(), "AddPendingRequest", func(_ string, _ *resspeckey.ResSpecKey, req *wisecloud.PendingRequest) {
+				req.ResultChan <- mockResponse
+			})
+
+			// Mock convert 函数
+			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, _ *types.FuncSpec, instanceId string, forceInvoke bool, legacySchedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+				return &util.InvokeRequest{InstanceID: instanceId}, nil
+			})
+
+			req, err := handler.makeReq(log.GetLogger())
+
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(req.InstanceID, convey.ShouldEqual, "222")
+			convey.So(handler.downgrade, convey.ShouldBeTrue)
+		})
+
+		convey.Convey("异常情况 - 排队获取实例失败", func() {
+			patches = gomonkey.NewPatches()
+			defer patches.Reset()
+
+			clearSchedulerProxy()
+
+			// Mock 排队返回错误
+			patches.ApplyMethodFunc(wisecloud.GetQueueManager(), "AddPendingRequest", func(_ string, _ *resspeckey.ResSpecKey, req *wisecloud.PendingRequest) {
+				req.ResultChan <- &wisecloud.PendingResponse{
+					Error: fmt.Errorf("queue error"),
+				}
+			})
+
+			req, err := handler.makeReq(log.GetLogger())
+
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(req, convey.ShouldBeNil)
 		})
 	})
 }
@@ -497,7 +721,7 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 
 			convey.So(err, convey.ShouldBeNil)
 			convey.So(req.InstanceID, convey.ShouldEqual, "111")
-			convey.So(handler.invokeWithOutScheduler, convey.ShouldBeTrue)
+			convey.So(handler.downgrade, convey.ShouldBeTrue)
 		})
 
 		convey.Convey("降级情况 - 需要排队获取实例", func() {
@@ -516,7 +740,7 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 			})
 
 			// Mock convert 函数
-			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, schedulerInfo *types.InstanceInfo, _ *types.FuncSpec, instanceId string) (*util.InvokeRequest, error) {
+			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string, forceInvoke bool, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 				return &util.InvokeRequest{InstanceID: instanceId}, nil
 			})
 
@@ -524,7 +748,7 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 
 			convey.So(err, convey.ShouldBeNil)
 			convey.So(req.InstanceID, convey.ShouldEqual, "222")
-			convey.So(handler.invokeWithOutScheduler, convey.ShouldBeTrue)
+			convey.So(handler.downgrade, convey.ShouldBeTrue)
 		})
 
 		convey.Convey("异常情况 - 排队获取实例失败", func() {
@@ -546,6 +770,106 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 			convey.So(req, convey.ShouldBeNil)
 		})
 	})
+
+	convey.Convey("Test makeReq with no k.downgrade", t, func() {
+		ctx := &types2.InvokeProcessContext{
+			InvokeTimeout: 10,
+		}
+		funcSpec := &types.FuncSpec{}
+		funcSpec.ResourceMetaData.CPU = 500
+		funcSpec.ResourceMetaData.Memory = 500
+		funcSpec.FunctionKey = "8d86c63b22e24d9ab650878b75408ea6/0@default@func6ac6741a01334320809dfb7dc1e98049/latest"
+		ctx.InvokeWithoutScheduler = true
+
+		defer gomonkey.ApplyFuncReturn(upgradecompatible.GetAccessFaaSSchedulerType, "libRuntime").Reset()
+		// Mock 排队返回结果
+		mockResponse := &wisecloud.PendingResponse{
+			Instance: &types.InstanceSpecification{InstanceID: "testId"},
+			Error:    nil,
+		}
+		defer gomonkey.ApplyMethodFunc(wisecloud.GetQueueManager(), "AddPendingRequest", func(_ string, _ *resspeckey.ResSpecKey, req *wisecloud.PendingRequest) {
+			req.ResultChan <- mockResponse
+		}).Reset()
+
+		// Mock convert 函数
+		defer gomonkey.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string, forceInvoke bool, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+			return &util.InvokeRequest{InstanceID: instanceId}, nil
+		}).Reset()
+
+		handler := newKernelRequestHandler(ctx, funcSpec)
+		handler.downgrade = false
+		convey.Convey("case1: all scheduler unavailable, do downgrade", func() {
+			defer gomonkey.ApplyMethodReturn(
+				leaseadaptor.GetInstanceManager(),
+				"AcquireInstance",
+				nil, snerror.New(statuscode.ErrAllSchedulerUnavailable, constant.AllSchedulerUnavailableErrorMessage),
+			).Reset()
+
+			req, err := handler.makeReq(log.GetLogger())
+			convey.So(handler.downgrade, convey.ShouldBeTrue)
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(req.InstanceID, convey.ShouldEqual, "testId")
+		})
+		convey.Convey("case2: other error, do not downgrade, return err", func() {
+			defer gomonkey.ApplyMethodReturn(
+				leaseadaptor.GetInstanceManager(),
+				"AcquireInstance",
+				nil, snerror.New(statuscode.InstanceSessionInvalidErrCode, "instance session invalid"),
+			).Reset()
+
+			req, err := handler.makeReq(log.GetLogger())
+			convey.So(handler.downgrade, convey.ShouldBeFalse)
+			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err.Error(), convey.ShouldEqual, "instance session invalid")
+			convey.So(req, convey.ShouldBeNil)
+		})
+	})
+}
+
+func TestConvertResourceSpecs(t *testing.T) {
+	convey.Convey("Test ConvertResourceSpecs", t, func() {
+		// 初始化测试用的上下文和请求
+		ctx := &types2.InvokeProcessContext{}
+		req := &util.InvokeRequest{
+			ResourceSpecs: map[string]int64{},
+		}
+		convey.Convey("When prepareDynamicResource returns an error", func() {
+			defer gomonkey.ApplyFunc(prepareDynamicResource, func(ctx *types2.InvokeProcessContext) (map[string]int64, error) {
+				return nil, errors.New("prepare dynamic resource error")
+			}).Reset()
+			defer gomonkey.ApplyFunc(responsehandler.SetErrorInContext, func(ctx *types2.InvokeProcessContext, innerCode int, message interface{}) {
+				return
+			}).Reset()
+			_, err := convertResourceSpecs(ctx, req)
+			convey.So(err, convey.ShouldNotBeNil)
+		})
+
+		convey.Convey("When prepareDynamicResource returns valid resource specs", func() {
+			// Mock prepareDynamicResource to return valid resource specs
+			dynamicResourceSpecs := map[string]int64{
+				constant.ResourceCPUName:    1,
+				constant.ResourceMemoryName: 2,
+			}
+			defer gomonkey.ApplyFunc(prepareDynamicResource, func(ctx *types2.InvokeProcessContext) (map[string]int64, error) {
+				return dynamicResourceSpecs, nil
+			}).Reset()
+			_, err := convertResourceSpecs(ctx, req)
+			convey.So(err, convey.ShouldBeNil)
+		})
+
+		convey.Convey("When prepareDynamicResource returns invalid resource specs", func() {
+			// Mock prepareDynamicResource to return valid resource specs
+			dynamicResourceSpecs := map[string]int64{
+				constant.ResourceCPUName:    0,
+				constant.ResourceMemoryName: 0,
+			}
+			defer gomonkey.ApplyFunc(prepareDynamicResource, func(ctx *types2.InvokeProcessContext) (map[string]int64, error) {
+				return dynamicResourceSpecs, nil
+			}).Reset()
+			_, err := convertResourceSpecs(ctx, req)
+			convey.So(err, convey.ShouldBeNil)
+		})
+	})
 }
 
 func TestCheckErrorMsg(t *testing.T) {
@@ -561,6 +885,18 @@ func TestCheckErrorMsg(t *testing.T) {
 			err := checkErrorMsg(msg)
 			convey.So(err.Code(), convey.ShouldEqual, 123)
 			convey.So(err.Error(), convey.ShouldEqual, "123 msg")
+		})
+	})
+}
+
+func Test_kernelRequestHandler_accessFaaSSchedulerWithLibRuntime(t *testing.T) {
+	convey.Convey("Test kernelRequestHandler accessFaaSSchedulerWithLibRuntime", t, func() {
+		k := &kernelRequestHandler{
+			logger: log.GetLogger().With(zap.Any("traceId", "123456")),
+		}
+		convey.Convey("test access scheduler type", func() {
+			res := k.accessFaaSSchedulerWithLibRuntime()
+			convey.So(res, convey.ShouldBeFalse)
 		})
 	})
 }

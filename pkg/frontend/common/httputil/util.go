@@ -65,6 +65,7 @@ const (
 	invokeErrorCodeIndex          = 1
 	invokeErrorMessageIndex       = 2
 )
+
 const (
 	// MaxClientConcurrency -
 	MaxClientConcurrency = 10000
@@ -110,9 +111,8 @@ var (
 		sync.Once
 	}{}
 )
-var (
-	tcpDialer = fasthttp.TCPDialer{Concurrency: MaxClientConcurrency}
-)
+
+var tcpDialer = fasthttp.TCPDialer{Concurrency: MaxClientConcurrency}
 
 // GetHeartbeatClient return heart beat client
 func GetHeartbeatClient() *fasthttp.Client {
@@ -140,7 +140,7 @@ func GetSchedulerClient() *fasthttp.Client {
 
 func newSchedulerClient() *fasthttp.Client {
 	var tlsConfig *tls.Config
-	if config.GetConfig().HTTPSConfig.HTTPSEnable {
+	if config.GetConfig().HTTPSConfig != nil && config.GetConfig().HTTPSConfig.HTTPSEnable {
 		tlsConfig = commontls.GetClientTLSConfig()
 		if tlsConfig != nil {
 			tlsConfig.NextProtos = []string{"http/1.1"}

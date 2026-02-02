@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,7 @@ import (
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/common/faas_common/utils"
-	"frontend/pkg/frontend/config"
-	"frontend/pkg/frontend/instanceleasemanager"
+	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/subscriber"
 )
@@ -62,6 +62,8 @@ var (
 
 	// subject -
 	subject = subscriber.NewSubject()
+
+	enableAgentCRDRegistry = os.Getenv(constant.EnableAgentCRDRegistry) != ""
 )
 
 // GetFunctionMetaDataSubject -
@@ -96,6 +98,9 @@ func LoadFuncSpecWithPath(path string, traceID string) (*types.FuncSpec, bool) {
 
 // LoadFuncSpec load funcSpec by function key
 func LoadFuncSpec(funcKey string) (*types.FuncSpec, bool) {
+	if funcSpec := loadFromCrSpecMap(funcKey); funcSpec != nil {
+		return funcSpec, true
+	}
 	value, ok := funcSpecMap.Load(funcKey)
 	if !ok {
 		return fetchMetaEtcdWithSingleFlight(funcKey)
@@ -105,6 +110,21 @@ func LoadFuncSpec(funcKey string) (*types.FuncSpec, bool) {
 		return nil, false
 	}
 	return funcSpec, true
+}
+
+func loadFromCrSpecMap(funcKey string) *types.FuncSpec {
+	if enableAgentCRDRegistry {
+		value, ok := funcCrSpecMap.Load(funcKey)
+		if !ok {
+			return nil
+		}
+		funcSpec, ok := value.(*types.FuncSpec)
+		if !ok {
+			return nil
+		}
+		return funcSpec
+	}
+	return nil
 }
 
 // ProcessUpdate process update FuncSpec
@@ -166,7 +186,7 @@ func buildFuncSpec(functionKey string, value []byte, etcdType string) (*types.Fu
 	funcSpec := &types.FuncSpec{
 		ETCDType:          etcdType,
 		FunctionKey:       functionKey,
-		FuncMetaSignature: utils.GetFuncMetaSignature(funcMeta, config.GetConfig().RawStsConfig.StsEnable),
+		FuncMetaSignature: utils.GetFuncMetaSignature(funcMeta, false),
 		FuncMetaData:      funcMeta.FuncMetaData,
 		S3MetaData:        funcMeta.S3MetaData,
 		EnvMetaData:       funcMeta.EnvMetaData,
@@ -207,7 +227,7 @@ func ProcessDelete(etcdKey string, ETCDType string) error {
 	sf.Remove(functionKey)
 	schedulerproxy.Proxy.DeleteBalancer(functionKey)
 	log.GetLogger().Infof("delete function balancer :%s, type: %s", functionKey, ETCDType)
-	instanceleasemanager.GetInstanceManager().ClearFuncLeasePools(functionKey)
+	leaseadaptor.GetInstanceManager().ClearFuncLeasePools(functionKey)
 	return nil
 }
 

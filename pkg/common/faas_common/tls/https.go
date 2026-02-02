@@ -52,17 +52,18 @@ type HTTPSConfig struct {
 
 // InternalHTTPSConfig is for input config
 type InternalHTTPSConfig struct {
-	HTTPSEnable             bool   `json:"httpsEnable" yaml:"httpsEnable" valid:"optional"`
-	TLSProtocol             string `json:"tlsProtocol" yaml:"tlsProtocol" valid:"optional"`
-	TLSCiphers              string `json:"tlsCiphers" yaml:"tlsCiphers" valid:"optional"`
-	SSLBasePath             string `json:"sslBasePath" yaml:"sslBasePath" valid:"optional"`
-	RootCAFile              string `json:"rootCAFile" yaml:"rootCAFile" valid:"optional"`
-	ModuleCertFile          string `json:"moduleCertFile" yaml:"moduleCertFile" valid:"optional"`
-	ModuleKeyFile           string `json:"moduleKeyFile" yaml:"moduleKeyFile" valid:"optional"`
-	PwdFile                 string `json:"pwdFile" yaml:"pwdFile" valid:"optional"`
-	SecretName              string `json:"secretName" yaml:"secretName" valid:"optional"`
-	SSLDecryptTool          string `json:"sslDecryptTool" yaml:"sslDecryptTool" valid:"optional"`
-	DisableClientCertVerify bool   `json:"disEnableClientCertVerify" yaml:"disEnableClientCertVerify" valid:"optional"`
+	HTTPSEnable             bool     `json:"httpsEnable" yaml:"httpsEnable" valid:"optional"`
+	TLSProtocol             string   `json:"tlsProtocol" yaml:"tlsProtocol" valid:"optional"`
+	TLSCiphers              string   `json:"tlsCiphers" yaml:"tlsCiphers" valid:"optional"`
+	TLSCipherSlices         []string `json:"TLSCipherSlices" valid:"optional"`
+	SSLBasePath             string   `json:"sslBasePath" yaml:"sslBasePath" valid:"optional"`
+	RootCAFile              string   `json:"rootCAFile" yaml:"rootCAFile" valid:"optional"`
+	ModuleCertFile          string   `json:"moduleCertFile" yaml:"moduleCertFile" valid:"optional"`
+	ModuleKeyFile           string   `json:"moduleKeyFile" yaml:"moduleKeyFile" valid:"optional"`
+	PwdFile                 string   `json:"pwdFile" yaml:"pwdFile" valid:"optional"`
+	SecretName              string   `json:"secretName" yaml:"secretName" valid:"optional"`
+	SSLDecryptTool          string   `json:"sslDecryptTool" yaml:"sslDecryptTool" valid:"optional"`
+	DisableClientCertVerify bool     `json:"disEnableClientCertVerify" yaml:"disEnableClientCertVerify" valid:"optional"`
 }
 
 var (
@@ -190,12 +191,11 @@ func loadHTTPSConfig(config InternalHTTPSConfig) error {
 		minVersion = tls.VersionTLS12
 	}
 	httpsConfigs.MinVers = minVersion
-	cipherSuites := parseSSLCipherSuites(config.TLSCiphers)
+	cipherSuites := parseSSLCipherSuites(config.TLSCiphers, config.TLSCipherSlices)
 	if len(cipherSuites) == 0 {
 		return errors.New("invalid TLS ciphers")
 	}
 	httpsConfigs.CipherSuite = cipherSuites
-
 	return nil
 }
 
@@ -227,12 +227,12 @@ func GetX509CACertPool(caCertFilePath string) (*x509.CertPool, error) {
 
 	pool.AppendCertsFromPEM(caCertContent)
 	return pool, nil
-
 }
 
 // LoadServerTLSCertificate generates tls certificate by certfile and keyfile
 func LoadServerTLSCertificate(certFile, keyFile, passPhase, decryptTool string,
-	isHTTPS bool) ([]tls.Certificate, error) {
+	isHTTPS bool,
+) ([]tls.Certificate, error) {
 	certContent, keyContent, err := loadCertAndKeyBytes(certFile, keyFile, passPhase, decryptTool, isHTTPS)
 	utils.ClearStringMemory(passPhase)
 	utils.ClearStringMemory(httpsConfigs.KeyPassPhase)
@@ -256,7 +256,8 @@ func LoadServerTLSCertificate(certFile, keyFile, passPhase, decryptTool string,
 }
 
 func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
-	isHTTPS bool) (Content []byte, err error) {
+	isHTTPS bool,
+) (Content []byte, err error) {
 	if !isHTTPS {
 		plainkeyContent, err := localauth.Decrypt(string(keyContent))
 		if err != nil {
@@ -278,11 +279,11 @@ func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
 	}
 	keyContent = pem.EncodeToMemory(plainKeyBlock)
 	return keyContent, nil
-
 }
 
 func loadCertAndKeyBytes(certFilePath, keyFilePath, passPhase string, decryptTool string, isHTTPS bool) (
-	certPEMBlock, keyPEMBlock []byte, err error) {
+	certPEMBlock, keyPEMBlock []byte, err error,
+) {
 	certContent, err := ioutil.ReadFile(certFilePath)
 	if err != nil {
 		log.GetLogger().Errorf("failed to read cert file %s: %s", certFilePath, err.Error())
@@ -294,14 +295,7 @@ func loadCertAndKeyBytes(certFilePath, keyFilePath, passPhase string, decryptToo
 		log.GetLogger().Errorf("failed to read key file %s: %s", keyFilePath, err.Error())
 		return nil, nil, err
 	}
-	keyContent, err = containPassPhase(keyContent, passPhase, decryptTool, isHTTPS)
-	if err != nil {
-		log.GetLogger().Errorf("failed to decode keyContent, error is %s", err.Error())
-		return nil, nil, err
-	}
-
 	return certContent, keyContent, nil
-
 }
 
 func clearByteMemory(src []byte) {
@@ -328,8 +322,11 @@ func parseSSLProtocol(rawProtocol string) uint16 {
 	return 0
 }
 
-func parseSSLCipherSuites(ciphers string) []uint16 {
+func parseSSLCipherSuites(ciphers string, cipherSlices []string) []uint16 {
 	cipherSuiteNameList := strings.Split(ciphers, ",")
+	if len(cipherSuiteNameList) == 0 {
+		cipherSuiteNameList = cipherSlices
+	}
 	if len(cipherSuiteNameList) == 0 {
 		log.GetLogger().Errorf("input cipher suite is empty")
 		return nil
