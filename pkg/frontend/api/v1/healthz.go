@@ -58,5 +58,5 @@ func ClusterHealthHandler(ctx *gin.Context) {
 }
 
 func checkLocalDataSystemStatusReady() bool {
-	return !datasystemclient.GetStreamEnable() || datasystemclient.IsLocalDataSystemStatusReady()
+	return datasystemclient.IsLocalDataSystemStatusReady()
 }

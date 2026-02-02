@@ -36,7 +36,6 @@ import (
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
-	frontend "frontend/pkg/common/faas_common/grpc/pb/function"
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/monitor"
@@ -70,8 +69,7 @@ func constructFakeInvokeRequest(funcName, reqBody string, rw http.ResponseWriter
 	return ctx
 }
 
-type fakeClient struct {
-}
+type fakeClient struct{}
 
 func (f *fakeClient) AcquireInstance(functionKey string, req commontype.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
 	// TODO implement me
@@ -91,16 +89,20 @@ func (f *fakeClient) Invoke(req util.InvokeRequest) ([]byte, error) {
 func (f *fakeClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (f *fakeClient) KillRaw(killReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
 	InstanceID := ""
 	return InstanceID, nil
 }
+
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -127,8 +129,7 @@ func (f *fakeClient) IsDsHealth() bool {
 	return true
 }
 
-type fakeFailedClient struct {
-}
+type fakeFailedClient struct{}
 
 func (c *fakeFailedClient) AcquireInstance(functionKey string, req commontype.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
 	// TODO implement me
@@ -148,12 +149,15 @@ func (c *fakeFailedClient) Invoke(req util.InvokeRequest) ([]byte, error) {
 func (c *fakeFailedClient) IsLibruntime() bool {
 	return false
 }
+
 func (c *fakeFailedClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (c *fakeFailedClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
 	return nil, nil
 }
+
 func (c *fakeFailedClient) KillRaw(killReq []byte) ([]byte, error) {
 	return nil, nil
 }
@@ -185,10 +189,12 @@ func (c *fakeFailedClient) CreateInstance(req *functionsystem.CreateRequest) (*f
 	// TODO implement me
 	panic("implement me")
 }
+
 func (c *fakeFailedClient) InvokeInstance(req *functionsystem.InvokeRequest) (*functionsystem.NotifyRequest, error) {
 	// TODO implement me
 	panic("implement me")
 }
+
 func (c *fakeFailedClient) Kill(req *functionsystem.KillRequest) (*functionsystem.KillResponse, error) {
 	// TODO implement me
 	panic("implement me")
@@ -198,6 +204,7 @@ func (c *fakeFailedClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args
 	InstanceID := ""
 	return InstanceID, nil
 }
+
 func (c *fakeFailedClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -231,7 +238,8 @@ func Test_InvokeHandler(t *testing.T) {
 			return true
 		}),
 		gomonkey.ApplyMethodFunc(leaseadaptor.GetInstanceManager(), "AcquireInstance", func(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
-			logger api.FormatLogger) (*commontype.InstanceAllocationInfo, snerror.SNError) {
+			logger api.FormatLogger,
+		) (*commontype.InstanceAllocationInfo, snerror.SNError) {
 			return &commontype.InstanceAllocationInfo{}, nil
 		}),
 	}
@@ -337,7 +345,8 @@ func Test_InvokeHandler(t *testing.T) {
 		c := &fasthttp.Client{}
 		defer gomonkey.ApplyMethod(reflect.TypeOf(c),
 			"DoTimeout", func(c *fasthttp.Client, req *fasthttp.Request,
-				resp *fasthttp.Response, timeout time.Duration) error {
+				resp *fasthttp.Response, timeout time.Duration,
+			) error {
 				resp.Header.Set(constant.HeaderInnerCode, "0")
 				resp.Header.Set(constant.HeaderWorkerCost, "20")
 				resp.Header.Set(constant.HeaderCallNode, "node1")
@@ -352,7 +361,7 @@ func Test_InvokeHandler(t *testing.T) {
 			}).Reset()
 		defer gomonkey.ApplyFunc(config.GetConfig, func() *types.Config {
 			return &types.Config{
-				FunctionInvokeBackend: constant.BackendTypeFG,
+				FunctionInvokeBackend: constant.BackendTypeKernel,
 				MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 					RequestMemoryEvaluator: 2,
 				},
@@ -371,7 +380,6 @@ func Test_InvokeHandler(t *testing.T) {
 				InvokeMaxRetryTimes: 3,
 				RetryConfig:         &types.RetryConfig{},
 			}
-
 		}).Reset()
 		rw := httptest.NewRecorder()
 		ctx := constructFakeInvokeRequest(funcNameDemo, reqBody, rw)
@@ -400,7 +408,8 @@ func Test_InvokeHandler(t *testing.T) {
 		c := &fasthttp.Client{}
 		defer gomonkey.ApplyMethod(reflect.TypeOf(c),
 			"DoTimeout", func(c *fasthttp.Client, req *fasthttp.Request,
-				resp *fasthttp.Response, timeout time.Duration) error {
+				resp *fasthttp.Response, timeout time.Duration,
+			) error {
 				resp.Header.Set(constant.HeaderInnerCode, "200500")
 				resp.Header.Set(constant.HeaderWorkerCost, "20")
 				resp.Header.Set(constant.HeaderCallNode, "node1")
@@ -411,7 +420,7 @@ func Test_InvokeHandler(t *testing.T) {
 			}).Reset()
 		defer gomonkey.ApplyFunc(config.GetConfig, func() *types.Config {
 			return &types.Config{
-				FunctionInvokeBackend: constant.BackendTypeFG,
+				FunctionInvokeBackend: constant.BackendTypeKernel,
 				MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 					RequestMemoryEvaluator: 2,
 				},
@@ -508,10 +517,11 @@ func testFgStreamException(t *testing.T, funcNameDemo string, reqBody string) {
 		convey.So(rw.Body.String(), convey.ShouldContainSubstring, "mocked error")
 	})
 }
+
 func mockFgStreamReqConfig() func() *types.Config {
 	return func() *types.Config {
 		return &types.Config{
-			FunctionInvokeBackend: constant.BackendTypeFG,
+			FunctionInvokeBackend: constant.BackendTypeKernel,
 			MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 				RequestMemoryEvaluator: 2,
 			},
@@ -526,7 +536,8 @@ func mockFgStreamReqConfig() func() *types.Config {
 			LocalAuth: &localauth.AuthConfig{
 				AKey:     "ak",
 				SKey:     "sk",
-				Duration: 5},
+				Duration: 5,
+			},
 			InvokeMaxRetryTimes: 3,
 			RetryConfig:         &types.RetryConfig{},
 			StreamEnable:        true,

@@ -65,6 +65,7 @@ const (
 	invokeErrorCodeIndex          = 1
 	invokeErrorMessageIndex       = 2
 )
+
 const (
 	// MaxClientConcurrency -
 	MaxClientConcurrency = 10000
@@ -110,9 +111,8 @@ var (
 		sync.Once
 	}{}
 )
-var (
-	tcpDialer = fasthttp.TCPDialer{Concurrency: MaxClientConcurrency}
-)
+
+var tcpDialer = fasthttp.TCPDialer{Concurrency: MaxClientConcurrency}
 
 // GetHeartbeatClient return heart beat client
 func GetHeartbeatClient() *fasthttp.Client {
@@ -398,21 +398,6 @@ func AddAuthorizationHeaderForFG(proxyReq *fasthttp.Request) {
 		config.GetConfig().LocalAuth.SKey, httpconstant.AppID, config.GetConfig().LocalAuth.Duration)
 	proxyReq.Header.Set(constant.HeaderAuthTimestamp, timestamp)
 	proxyReq.Header.Set(constant.HeaderAuthorization, authorization)
-}
-
-// SignForSchedulerWithSts -
-func SignForSchedulerWithSts(req *fasthttp.Request) error {
-	if !config.GetConfig().RawStsConfig.StsEnable {
-		return nil
-	}
-	if config.GetConfig() == nil || config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.AccessKey == "" {
-		return fmt.Errorf("sts accessKey is empty")
-	}
-	if config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.SecretKey == "" {
-		return fmt.Errorf("sts secretKey is empty")
-	}
-	return localauth.SignWithHmacSha256(req, config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.AccessKey,
-		config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.SecretKey)
 }
 
 // ReadLimitedBody -

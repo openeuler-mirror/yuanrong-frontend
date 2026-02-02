@@ -97,6 +97,7 @@ func main() {
 		logAndPrintError(fmt.Sprintf("wait http server error: %s", err.Error()))
 	}
 }
+
 func logAndPrintError(errMessage string) {
 	log.GetLogger().Errorf(errMessage)
 	fmt.Println(errMessage)
@@ -138,8 +139,5 @@ func setupModuleFrontend(stopCh <-chan struct{}) error {
 func updateConfig() {
 	cfg := config.GetConfig()
 	monitor.SetMemoryControlConfig(cfg.MemoryControlConfig)
-	if cfg.FunctionInvokeBackend == constant.BackendTypeFG {
-		functiontask.GetBusProxies().UpdateConfig()
-	}
-
+	functiontask.GetBusProxies().UpdateConfig()
 }

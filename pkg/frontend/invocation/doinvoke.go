@@ -20,14 +20,12 @@ import (
 	"errors"
 	"time"
 
-	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/statuscode"
 	commontype "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/types"
@@ -77,9 +75,6 @@ func doInvokeWithRetry(ctx *types.InvokeProcessContext, funcSpec *commontype.Fun
 }
 
 func doInvoke(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) error {
-	if config.GetConfig().FunctionInvokeBackend == constant.BackendTypeFG {
-		return functionInvokeForFG(ctx, funcSpec)
-	}
 	kernelReqHandler := newKernelRequestHandler(ctx, funcSpec)
 	return kernelReqHandler.invoke()
 }

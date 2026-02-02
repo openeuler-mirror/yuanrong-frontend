@@ -23,7 +23,6 @@ import (
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/etcd3"
 	"frontend/pkg/common/faas_common/logger/log"
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functiontask"
 )
 
@@ -36,9 +35,6 @@ const (
 
 // StartWatchFunctionProxy -
 func startWatchFunctionProxy(stopCh <-chan struct{}) {
-	if config.GetConfig().FunctionInvokeBackend != constant.BackendTypeFG {
-		return
-	}
 	etcdClient := etcd3.GetRouterEtcdClient()
 	watcher := etcd3.NewEtcdWatcher(NodeEtcdPrefix, IsTaskNode, processFunctionTaskEvent, stopCh, etcdClient)
 	watcher.StartWatch()
@@ -69,7 +65,6 @@ func processFunctionTaskEvent(event *etcd3.Event) {
 
 // IsTaskNode /sn/workers/business/yrk/tenant/0/function/function-task/version/$latest/defaultaz/node01
 func IsTaskNode(event *etcd3.Event) bool {
-
 	strs := strings.Split(event.Key, constant.KeySeparator)
 	if len(strs) != ValidNodePathCount {
 		return true

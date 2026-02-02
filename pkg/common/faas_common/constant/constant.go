@@ -34,8 +34,6 @@ const (
 const (
 	// BackendTypeKernel -
 	BackendTypeKernel = iota
-	// BackendTypeFG -
-	BackendTypeFG
 )
 
 const (
@@ -466,6 +464,7 @@ const (
 	// DelLease for del a lease of client
 	DelLease = "DelLease"
 )
+
 const (
 	// MetaFuncKey key used to match functions within ETCD
 	MetaFuncKey = "/sn/functions/business/yrk/tenant/%s/function/%s/version/%s"

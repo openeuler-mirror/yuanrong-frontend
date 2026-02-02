@@ -27,7 +27,6 @@ import (
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/config"
 	"frontend/pkg/common/faas_common/redisclient"
-	"frontend/pkg/common/faas_common/sts/raw"
 	"frontend/pkg/common/faas_common/tls"
 	"frontend/pkg/common/faas_common/types"
 	wisecloudTypes "frontend/pkg/common/faas_common/wisecloudtool/types"
@@ -118,7 +117,6 @@ type Config struct {
 	DynamicPoolEnable bool `json:"dynamicPoolEnable" valid:"optional"`
 	// CaaS config
 	AuthenticationEnable bool                `json:"authenticationEnable" valid:"optional"`
-	RawStsConfig         raw.StsConfig       `json:"rawStsConfig,omitempty"`
 	TrafficLimitParams   *TrafficLimitParams `json:"trafficLimitParams" valid:"optional"`
 	NodeSelector         map[string]string   `json:"nodeSelector,omitempty"`
 	AzID                 string              `json:"azID" valid:"optional"`

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +35,6 @@ import (
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/common/faas_common/utils"
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/subscriber"
@@ -186,7 +186,7 @@ func buildFuncSpec(functionKey string, value []byte, etcdType string) (*types.Fu
 	funcSpec := &types.FuncSpec{
 		ETCDType:          etcdType,
 		FunctionKey:       functionKey,
-		FuncMetaSignature: utils.GetFuncMetaSignature(funcMeta, config.GetConfig().RawStsConfig.StsEnable),
+		FuncMetaSignature: utils.GetFuncMetaSignature(funcMeta, false),
 		FuncMetaData:      funcMeta.FuncMetaData,
 		S3MetaData:        funcMeta.S3MetaData,
 		EnvMetaData:       funcMeta.EnvMetaData,

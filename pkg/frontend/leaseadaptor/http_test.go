@@ -31,7 +31,6 @@ import (
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	commonconstant "frontend/pkg/common/faas_common/constant"
-	"frontend/pkg/common/faas_common/sts/raw"
 	"frontend/pkg/common/faas_common/tls"
 	commontypes "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/common/httputil"
@@ -76,7 +75,7 @@ func TestCreateBatchRetainArgs(t *testing.T) {
 		batch := &BatchRetainLeaseInfos{
 			targetName: "l1,l2,l3",
 			infos: map[string]*BatchRetainLeaseInfo{
-				"l1": &BatchRetainLeaseInfo{
+				"l1": {
 					ProcReqNum:    1,
 					AvgProcTime:   2,
 					MaxProcTime:   3,
@@ -85,7 +84,7 @@ func TestCreateBatchRetainArgs(t *testing.T) {
 					FunctionKey:   "123456/hello/latest",
 					PoolKey:       "",
 				},
-				"l2": &BatchRetainLeaseInfo{
+				"l2": {
 					ProcReqNum:    2,
 					AvgProcTime:   3,
 					MaxProcTime:   4,
@@ -94,7 +93,7 @@ func TestCreateBatchRetainArgs(t *testing.T) {
 					FunctionKey:   "123456/hello/latest",
 					PoolKey:       "",
 				},
-				"l3": &BatchRetainLeaseInfo{
+				"l3": {
 					ProcReqNum:    3,
 					AvgProcTime:   4,
 					MaxProcTime:   5,
@@ -245,7 +244,6 @@ func TestDoBatchRetainInvoke(t *testing.T) {
 
 func TestRequestScheduler(t *testing.T) {
 	Convey("Test requestScheduler", t, func() {
-
 		mockReq := &fasthttp.Request{}
 		testClient := &fasthttp.Client{}
 
@@ -312,18 +310,12 @@ func TestPrepareSchedulerRequest(t *testing.T) {
 		HTTPSConfig: &tls.InternalHTTPSConfig{
 			HTTPSEnable: true,
 		},
-		RawStsConfig: raw.StsConfig{
-			StsEnable: true,
-		},
 	}
 	config.SetConfig(testConfig)
 
 	err := prepareSchedulerRequest(req, dstHost, args, traceID)
 	assert.NotNil(t, err)
 
-	defer gomonkey.ApplyFunc(httputil.SignForSchedulerWithSts, func(req *fasthttp.Request) error {
-		return nil
-	}).Reset()
 	err = prepareSchedulerRequest(req, dstHost, args, traceID)
 
 	assert.NoError(t, err)

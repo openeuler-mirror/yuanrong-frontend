@@ -269,7 +269,8 @@ func (k *kernelRequestHandler) invoke() error {
 }
 
 func (k *kernelRequestHandler) handleInvokeError(snError snerror.SNError, instanceId string, logger api.FormatLogger) (
-	bool, error) {
+	bool, error,
+) {
 	if snError == nil {
 		return false, nil
 	}
@@ -354,7 +355,8 @@ func needDownGrade(schedulerInfo *commontype.InstanceInfo) bool {
 }
 
 func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.InvokeRequest,
-	logger api.FormatLogger) snerror.SNError {
+	logger api.FormatLogger,
+) snerror.SNError {
 	logger.Infof("send request %v to grpc", request)
 
 	invokeStart := time.Now()
@@ -403,7 +405,8 @@ func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.
 
 // Convert an http request to a POSIX invoke request
 func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
-	instanceId string, forceInvoke bool, legacySchedulerInfo *commontype.InstanceInfo) (*util.InvokeRequest, error) {
+	instanceId string, forceInvoke bool, legacySchedulerInfo *commontype.InstanceInfo,
+) (*util.InvokeRequest, error) {
 	resourceSpecs, err := util.ConvertResourceSpecs(ctx, funcSpec)
 	if err != nil {
 		return nil, err

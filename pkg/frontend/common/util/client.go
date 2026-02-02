@@ -18,10 +18,13 @@
 package util
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
+	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/httpconstant"
@@ -149,7 +152,8 @@ type defaultClient struct {
 }
 
 func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOption) (
-	*types.InstanceAllocationInfo, error) {
+	*types.InstanceAllocationInfo, error,
+) {
 	var err error
 	var instanceAllocation api.InstanceAllocation
 	functionMeta := api.FunctionMeta{

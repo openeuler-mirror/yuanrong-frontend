@@ -32,9 +32,7 @@ const (
 	readOneMB = 1024 * 1024
 )
 
-var (
-	upStreamContentTypes = []string{httpconstant.FormContentType, httpconstant.MultipartFormContentType}
-)
+var upStreamContentTypes = []string{httpconstant.FormContentType, httpconstant.MultipartFormContentType}
 
 // BuildStreamContext -
 func BuildStreamContext(ctx *gin.Context, processCtx *types.InvokeProcessContext) {
@@ -43,6 +41,11 @@ func BuildStreamContext(ctx *gin.Context, processCtx *types.InvokeProcessContext
 		// 下载流请求是一个普通的http请求，无法区分，因此所有场景rspStream都需要透传
 		RspStream: ctx.Writer,
 	}
+}
+
+// HTTPStreamInvokeHandler -
+func HTTPStreamInvokeHandler(ctx interface{}, timeout interface{}) error {
+	return nil
 }
 
 // IsHTTPUploadStream -

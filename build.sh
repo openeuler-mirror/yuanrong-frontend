@@ -30,6 +30,7 @@ BUILD_VERSION=v0.5.0
 export GO111MODULE=on
 export GONOSUMDB=*
 export CGO_ENABLED=1
+export GOPROXY=https://goproxy.cn,direct
 mkdir -p ${OUTPUT_DIR}
 # resolve missing go.sum entry
 go env -w "GOFLAGS"="-mod=mod"
@@ -81,6 +82,8 @@ mkdir -p "${MODULE_NAME}"
 SO_PATH="${TAR_OUT_DIR}/${MODULE_NAME}/${MODULE_NAME}.so"
 BIN_PATH="${TAR_OUT_DIR}/${MODULE_NAME}/${MODULE_NAME}"
 
+cd "${PROJECT_DIR}"
+
 CC='gcc -fstack-protector-strong -D_FORTIFY_SOURCE=2 -O2'
 go build -tags "module" -buildmode=pie -ldflags "${FLAGS}" \
 -o ${BIN_PATH} "${PROJECT_DIR}/cmd/${MODULE_NAME}/module_main.go"
@@ -90,7 +93,7 @@ go build -tags "${BUILD_TAG_FUNCTION}" -buildmode=plugin -ldflags "${FLAGS}" \
 -o ${SO_PATH} "${PROJECT_DIR}/cmd/${MODULE_NAME}/function_main.go"
 
 chmod -R 500 ${SO_PATH}
-cd "${MODULE_NAME}"
+cd "${TAR_OUT_DIR}/${MODULE_NAME}"
 zip -r "${MODULE_NAME}.zip" *
 
 cp "${PROJECT_DIR}/build/function_meta.json" "${TAR_OUT_DIR}/${MODULE_NAME}/${MODULE_NAME}_meta.json"

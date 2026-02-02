@@ -27,11 +27,9 @@ import (
 
 	"frontend/pkg/common/faas_common/alarm"
 	"frontend/pkg/common/faas_common/constant"
-	"frontend/pkg/common/faas_common/crypto"
 	"frontend/pkg/common/faas_common/etcd3"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/redisclient"
-	"frontend/pkg/common/faas_common/sts"
 	commonType "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/types"
@@ -133,22 +131,6 @@ func loadFunctionConfig(config *types.Config) error {
 	err = setAlarmEnv(config)
 	if err != nil {
 		return err
-	}
-	if config.RawStsConfig.StsEnable {
-		if err = sts.InitStsSDK(config.RawStsConfig.ServerConfig); err != nil {
-			log.GetLogger().Errorf("failed to init sts sdk, err: %s", err.Error())
-			return err
-		}
-		if err = os.Setenv(sts.EnvSTSEnable, "true"); err != nil {
-			log.GetLogger().Errorf("failed to set env of %s, err: %s", sts.EnvSTSEnable, err.Error())
-			return err
-		}
-		config.RawStsConfig.SensitiveConfigs.Auth =
-			sts.DecryptSystemAuthConfig(config.RawStsConfig.SensitiveConfigs.Auth)
-	}
-
-	if config.SccConfig.Enable && crypto.InitializeSCC(config.SccConfig) != nil {
-		return fmt.Errorf("failed to initialize scc")
 	}
 
 	return nil
