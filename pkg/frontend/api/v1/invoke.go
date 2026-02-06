@@ -228,6 +228,57 @@ func buildProcessContext(ctx *gin.Context, traceID string) (processCtx *types.In
 	return
 }
 
+// GinWriter 实现 ResponseWriter 接口
+type GinWriter struct {
+	Context *gin.Context
+}
+
+// SSEWrite SSE协议响应回传
+func (gw *GinWriter) SSEWrite(data []byte) (int, error) {
+	// 设置SSE响应头
+	if gw == nil || gw.Context == nil {
+		return 0, fmt.Errorf("context has nil")
+	}
+	gw.Context.Header("Content-Type", constant.HeaderAcceptEventStream)
+	gw.Context.Header("Cache-Control", "no-cache")
+	gw.Context.Header("Connection", "keep-alive")
+	gw.Context.Header("Transfer-Encoding", "chunked")
+	gw.Context.Header("X-Accel-Buffering", "no")
+
+	// 尝试写入数据，最多重试3次
+	sseEvent := fmt.Sprintf("data: %s\n\n", string(data))
+	maxRetries := 3
+	retryCount := 0
+	writer := gw.Context.Writer
+	for {
+		if writer == nil {
+			break
+		}
+		_, err := writer.Write([]byte(sseEvent))
+		if err == nil {
+			break
+		}
+		retryCount++
+		if retryCount >= maxRetries {
+			log.GetLogger().Errorf("SSE write response failed after %d retries, err: %v", maxRetries, err)
+			gw.Context.Abort()
+			return 0, err
+		}
+		time.Sleep(time.Second)
+	}
+
+	// 立即发送数据到客户端
+	if writer != nil {
+		writer.Flush()
+	}
+	return 0, nil
+}
+
+// ClientDisconnectChan -
+func (gw *GinWriter) ClientDisconnectChan() <-chan struct{} {
+	return gw.Context.Request.Context().Done()
+}
+
 func buildShortProcessContext(ctx *gin.Context, traceID string) (processCtx *types.InvokeProcessContext, err error) {
 	processCtx = types.CreateInvokeProcessContext()
 	processCtx.TraceID = traceID
