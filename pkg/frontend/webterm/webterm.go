@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -34,6 +33,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
+	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/util"
 )
 
@@ -62,47 +62,60 @@ type wsSession struct {
 	mu         sync.Mutex
 }
 
-// NodeAddressResponse 定义从 master 返回的节点地址响应结构
-// TODO: 根据实际接口调整字段
-type NodeAddressResponse struct {
-	NodeAddr string `json:"node_addr"` // 节点地址，如 "192.168.1.10:8080"
-	// 可根据需要添加其他字段，如：
-	// Status   string `json:"status"`
-	// Message  string `json:"message"`
+// InstanceStatus defines instance status structure
+type InstanceStatus struct {
+	Code     int    `json:"code"`     // Status code
+	ExitCode int    `json:"exitCode"` // Exit code
+	Msg      string `json:"msg"`      // Status message
+	Type     int    `json:"type"`     // Type
+	ErrCode  int    `json:"errCode"`  // Error code
 }
 
-// ContainerInfo 定义容器信息结构
-// TODO: 根据实际接口调整字段
-type ContainerInfo struct {
-	ID     string `json:"id"`     // 容器ID
-	Name   string `json:"name"`   // 容器名称
-	Status string `json:"status"` // 容器状态，如 "running", "stopped"
-	// 可根据需要添加其他字段，如：
-	// Image    string `json:"image"`
-	// NodeAddr string `json:"node_addr"`
-	// Created  string `json:"created"`
+// Resources defines resource configuration
+type Resources struct {
+	CPU    string `json:"cpu"`    // CPU quota, e.g. "2000m"
+	Memory string `json:"memory"` // Memory quota, e.g. "4Gi"
 }
 
-// ContainerListResponse 定义容器列表响应结构
-// TODO: 根据实际接口调整字段
-type ContainerListResponse struct {
-	Containers []ContainerInfo `json:"containers"`
-	// 可根据需要添加其他字段，如：
-	// Total int `json:"total"`
+// InstanceInfo defines instance information structure (corresponding to instance returned by master API)
+type InstanceInfo struct {
+	InstanceID       string          `json:"instanceID"`       // Instance ID
+	TenantID         string          `json:"tenantID"`         // Tenant ID
+	ContainerID      string          `json:"containerID"`      // Container ID
+	ProxyGrpcAddress string          `json:"proxyGrpcAddress"` // Proxy gRPC address
+	FunctionProxyID  string          `json:"functionProxyID"`  // Function Proxy ID
+	Function         string          `json:"function"`         // Function name
+	RuntimeAddress   string          `json:"runtimeAddress"`   // Runtime address
+	RuntimeID        string          `json:"runtimeID"`        // Runtime ID
+	InstanceStatus   InstanceStatus  `json:"instanceStatus"`   // Instance status
+	Resources        Resources       `json:"resources"`        // Resource configuration
+	StartTime        string          `json:"startTime"`        // Start time
+	RequestID        string          `json:"requestID"`        // Request ID
+	ParentID         string          `json:"parentID"`         // Parent ID
+	JobID            string          `json:"jobID"`            // Job ID
+	NodeIP           string          `json:"nodeIP"`           // Node IP
+	NodePort         string          `json:"nodePort"`         // Node port
 }
 
-// queryMaster 通用的 master 查询函数
-// apiPath: API 路径，如 "/api/v1/containers" 或 "/api/v1/container/node"
-// queryParams: 查询参数映射，如 map[string]string{"container": "xxx"}
-// result: 用于接收响应的结构体指针
+// InstanceListResponse defines instance list response structure (corresponding to master API response)
+type InstanceListResponse struct {
+	Instances []InstanceInfo `json:"instances"` // Instance list
+	Count     int            `json:"count"`     // Instance count
+	TenantID  string         `json:"tenantID"`  // Tenant ID
+}
+
+// queryMaster is a generic function to query the master
+// apiPath: API path, e.g. "/api/v1/containers" or "/api/v1/container/node"
+// queryParams: Query parameter map, e.g. map[string]string{"container": "xxx"}
+// result: Pointer to the structure to receive the response
 func queryMaster(apiPath string, queryParams map[string]string, result interface{}) error {
-	// 获取 master 地址
+	// Get master address
 	masterAddr := util.NewClient().GetActiveMasterAddr()
 	if masterAddr == "" {
 		return fmt.Errorf("failed to get master address")
 	}
 
-	// 构建查询URL
+	// Build query URL
 	var queryURL string
 	baseURL := fmt.Sprintf("http://%s%s", masterAddr, apiPath)
 	if len(queryParams) > 0 {
@@ -115,17 +128,17 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 		queryURL = baseURL
 	}
 
-	// 创建 HTTP 请求
+	// Create HTTP request
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// TODO: 根据需要添加请求头
+	// TODO: Add request headers as needed
 	// req.Header.Set("Authorization", "Bearer <token>")
 	req.Header.Set("Content-Type", "application/json")
 
-	// 发起 HTTP 请求，设置超时
+	// Make HTTP request with timeout
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
@@ -135,13 +148,13 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	}
 	defer resp.Body.Close()
 
-	// 检查响应状态码
+	// Check response status code
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("master returned error status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// 解析响应
+	// Parse response
 	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
 		return fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -149,48 +162,60 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	return nil
 }
 
-func getExecAddr(container string) (string, error) {
-	if container == "" {
-		return "", fmt.Errorf("container ID cannot be empty")
+func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
+	if instance == "" {
+		return InstanceInfo{}, fmt.Errorf("instance ID cannot be empty")
 	}
 
-	// TODO: 根据实际接口调整 API 路径
-	// 示例: /api/v1/container/{container}/node
-	// 或: /api/v1/nodes/query
-	apiPath := "/api/v1/container/node" // 替换为实际的 API 路径
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	// Query all instances and find the matching one
+	apiPath := "/instance-manager/query-tenant-instances"
 	queryParams := map[string]string{
-		"container": container,
+		"tenant_id": tenantID,
 	}
 
-	// 调用通用查询函数
-	var response NodeAddressResponse
+	// Call generic query function
+	var response InstanceListResponse
 	if err := queryMaster(apiPath, queryParams, &response); err != nil {
-		return "", err
+		return InstanceInfo{}, fmt.Errorf("failed to query instances: %w", err)
 	}
 
-	// TODO: 根据实际响应结构调整字段访问
-	if response.NodeAddr == "" {
-		return "", fmt.Errorf("node address is empty in response")
+	// Find matching instance (supports matching by instanceID)
+	for _, inst := range response.Instances {
+		if inst.InstanceID == instance {
+			if inst.ProxyGrpcAddress == "" {
+				return InstanceInfo{}, fmt.Errorf("proxy gRPC address is empty for instance %s", instance)
+			}
+			log.GetLogger().Infof("Instance %s found on node: %s (proxy: %s)", 
+				instance, inst.NodeIP, inst.ProxyGrpcAddress)
+			return inst, nil
+		}
 	}
 
-	log.Printf("Container %s is on node: %s", container, response.NodeAddr)
-	return response.NodeAddr, nil
+	return InstanceInfo{}, fmt.Errorf("instance %s not found", instance)
 }
 
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		log.GetLogger().Infof("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
 
 	sessionID := uuid.New().String()
-	log.Printf("WebSocket client connected, session: %s", sessionID)
+	log.GetLogger().Infof("WebSocket client connected, session: %s", sessionID)
 
-	// 从URL参数读取配置
+	// Read configuration from URL parameters
 	query := r.URL.Query()
-	container := query.Get("container")
+	instance := query.Get("instance")
+	tenantID := query.Get("tenant_id")
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
 	cmdStr := query.Get("command")
 	command := defaultCommand
@@ -217,15 +242,15 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 连接到 executor backend
-	addr, err := getExecAddr(container)
+	// Connect to executor backend
+	info, err := getExecAddr(instance, tenantID)
 	if err != nil {
-		log.Printf("Failed to get executor address: %v", err)
+		log.GetLogger().Infof("Failed to get executor address: %v", err)
 		return
 	}
-	grpcConn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	grpcConn, err := grpc.NewClient(info.ProxyGrpcAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Printf("Failed to connect to executor: %v", err)
+		log.GetLogger().Infof("Failed to connect to executor: %v", err)
 		return
 	}
 	defer grpcConn.Close()
@@ -236,7 +261,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	stream, err := client.ExecStream(ctx)
 	if err != nil {
-		log.Printf("Failed to create ExecStream: %v", err)
+		log.GetLogger().Infof("Failed to create ExecStream: %v", err)
 		return
 	}
 
@@ -248,14 +273,14 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		cancel:     cancel,
 	}
 
-	// 发送启动请求
-	log.Printf("Starting: container=%s, command=%v, tty=%v, size=%dx%d",
-		container, command, tty, cols, rows)
+	// Send start request
+	log.GetLogger().Infof("Starting: instance=%s, command=%v, tty=%v, size=%dx%d",
+		instance, command, tty, cols, rows)
 	err = stream.Send(&exec_service.ExecMessage{
 		SessionId: sessionID,
 		Payload: &exec_service.ExecMessage_StartRequest{
 			StartRequest: &exec_service.ExecStartRequest{
-				ContainerId: container,
+				ContainerId: info.ContainerID,
 				Command:     command,
 				Tty:         tty,
 				Rows:        rows,
@@ -264,13 +289,13 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		log.Printf("Failed to send start request: %v", err)
+		log.GetLogger().Infof("Failed to send start request: %v", err)
 		return
 	}
 
 	done := make(chan struct{})
 
-	// 从 gRPC 读取输出并发送到 WebSocket
+	// Read output from gRPC and send to WebSocket
 	go func() {
 		defer func() {
 			select {
@@ -283,11 +308,11 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			msg, err := stream.Recv()
 			if err == io.EOF {
-				log.Printf("Session %s: gRPC stream closed", sessionID)
+				log.GetLogger().Infof("Session %s: gRPC stream closed", sessionID)
 				return
 			}
 			if err != nil {
-				log.Printf("Session %s: gRPC recv error: %v", sessionID, err)
+				log.GetLogger().Infof("Session %s: gRPC recv error: %v", sessionID, err)
 				return
 			}
 
@@ -297,17 +322,17 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				err := conn.WriteMessage(websocket.BinaryMessage, payload.OutputData.Data)
 				session.mu.Unlock()
 				if err != nil {
-					log.Printf("WebSocket write error: %v", err)
+					log.GetLogger().Infof("WebSocket write error: %v", err)
 					return
 				}
 
 			case *exec_service.ExecMessage_Status:
-				log.Printf("Session %s: status=%v, exit_code=%d, error=%s",
+				log.GetLogger().Infof("Session %s: status=%v, exit_code=%d, error=%s",
 					sessionID, payload.Status.Status, payload.Status.ExitCode, payload.Status.ErrorMessage)
 
 				if payload.Status.Status == exec_service.ExecStatusResponse_EXITED ||
 					payload.Status.Status == exec_service.ExecStatusResponse_ERROR {
-					// 通知WebSocket客户端进程已退出
+				// Notify WebSocket client that process has exited
 					session.mu.Lock()
 					conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Process exited]\r\n"))
 					conn.WriteControl(websocket.CloseMessage,
@@ -320,7 +345,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 从 WebSocket 读取输入并发送到 gRPC
+	// Read input from WebSocket and send to gRPC
 	go func() {
 		defer func() {
 			select {
@@ -334,14 +359,14 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
 				if !websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
-					log.Printf("WebSocket read error: %v", err)
+					log.GetLogger().Infof("WebSocket read error: %v", err)
 				}
 				return
 			}
 
 			switch messageType {
 			case websocket.TextMessage:
-				// 检查是否是resize消息 (格式: "RESIZE:cols:rows")
+				// Check if it's a resize message (format: "RESIZE:cols:rows")
 				if len(message) > 7 && string(message[:7]) == "RESIZE:" {
 					var newCols, newRows int32
 					if n, _ := fmt.Sscanf(string(message), "RESIZE:%d:%d", &newCols, &newRows); n == 2 {
@@ -355,7 +380,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 							},
 						})
 						if err != nil {
-							log.Printf("gRPC resize error: %v", err)
+							log.GetLogger().Infof("gRPC resize error: %v", err)
 						}
 						break
 					}
@@ -371,7 +396,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					},
 				})
 				if err != nil {
-					log.Printf("gRPC send error: %v", err)
+					log.GetLogger().Infof("gRPC send error: %v", err)
 					return
 				}
 			}
@@ -379,34 +404,50 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-done
-	log.Printf("Session %s disconnected", sessionID)
+	log.GetLogger().Infof("Session %s disconnected", sessionID)
 }
 
-// handleInstances 返回容器列表，从 master 查询
+// HandleInstances returns instance list, queried from master
 func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// TODO: 根据实际接口调整 API 路径
-	// 示例: /api/v1/containers 或 /api/v1/containers/list
-	apiPath := "/api/v1/containers" // 替换为实际的 API 路径
-	
-	// 可以根据需要添加查询参数，如分页、过滤等
-	queryParams := map[string]string{}
-	// 示例: queryParams["status"] = "running"
-	// 示例: queryParams["limit"] = "100"
-
-	// 调用通用查询函数
-	var response ContainerListResponse
-	if err := queryMaster(apiPath, queryParams, &response); err != nil {
-		log.Printf("Failed to query containers from master: %v", err)
-		// 查询失败时返回空列表，而不是报错，以便前端可以继续工作
-		response.Containers = []ContainerInfo{}
+	// Get tenant_id from request parameters, use default if not provided
+	tenantID := r.URL.Query().Get("tenant_id")
+	if tenantID == "" {
+		tenantID = "default"
 	}
 
-	// 返回容器列表
-	if err := json.NewEncoder(w).Encode(response.Containers); err != nil {
-		log.Printf("Error encoding containers: %v", err)
+	// Call master's instance management API
+	apiPath := "/instance-manager/query-tenant-instances"
+	queryParams := map[string]string{
+		"tenant_id": tenantID,
+	}
+
+	// Call generic query function
+	var response InstanceListResponse
+	if err := queryMaster(apiPath, queryParams, &response); err != nil {
+		log.GetLogger().Infof("Failed to query instances from master: %v", err)
+		// Return empty list on query failure instead of error, so frontend can continue
+		response.Instances = []InstanceInfo{}
+	}
+
+	// Convert to frontend expected format (simplified instance info)
+	instances := make([]map[string]interface{}, 0, len(response.Instances))
+	for _, inst := range response.Instances {
+		instance := map[string]interface{}{
+			"id":       inst.InstanceID,
+			"name":     inst.Function,
+			"status":   inst.InstanceStatus.Msg,
+			"nodeIP":   inst.NodeIP,
+			"nodePort": inst.NodePort,
+		}
+		instances = append(instances, instance)
+	}
+
+	// Return instance list
+	if err := json.NewEncoder(w).Encode(instances); err != nil {
+		log.GetLogger().Infof("Error encoding instances: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }
@@ -518,8 +559,8 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <div id="header">
         <h1>🖥️ Remote Exec Terminal</h1>
         <div id="status">
-            <select id="container-selector" title="Select container">
-                <option value="">Loading containers...</option>
+            <select id="container-selector" title="Select instance">
+                <option value="">Loading instances...</option>
             </select>
             <button id="refresh-btn" title="Refresh container list">🔄</button>
             <span id="status-text">Connecting...</span>
@@ -536,37 +577,37 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <script src="/terminal/static/xterm.js"></script>
     <script src="/terminal/static/xterm-addon-fit.js"></script>
     <script>
-        // 加载容器列表
-        async function loadContainers() {
+        // 加载实例列表
+        async function loadInstances() {
             try {
                 const response = await fetch('/api/instances');
-                const containers = await response.json();
+                const instances = await response.json();
                 const selector = document.getElementById('container-selector');
                 
                 // 清空选项
                 selector.innerHTML = '';
                 
-                // 获取当前容器（从URL参数）
+                // 获取当前实例（从URL参数）
                 const params = new URLSearchParams(window.location.search);
-                const currentContainer = params.get('container') || '';
+                const currentInstance = params.get('instance') || '';
                 
-                // 只显示前10个容器
-                const displayContainers = containers.slice(0, 10);
+                // 只显示前10个实例
+                const displayInstances = instances.slice(0, 10);
                 
-                // 添加容器选项
-                displayContainers.forEach(container => {
+                // 添加实例选项
+                displayInstances.forEach(instance => {
                     const option = document.createElement('option');
-                    option.value = container.id;
-                    option.textContent = container.name + ' (' + container.status + ')';
-                    if (container.id === currentContainer || container.name === currentContainer) {
+                    option.value = instance.id;
+                    option.textContent = instance.name + ' (' + instance.status + ')';
+                    if (instance.id === currentInstance || instance.name === currentInstance) {
                         option.selected = true;
                     }
                     selector.appendChild(option);
                 });
                 
-                // 如果当前容器不在前10个列表中，但存在于完整列表中，添加它
-                if (currentContainer && !displayContainers.some(c => c.id === currentContainer || c.name === currentContainer)) {
-                    const fullMatch = containers.find(c => c.id === currentContainer || c.name === currentContainer);
+                // 如果当前实例不在前10个列表中，但存在于完整列表中，添加它
+                if (currentInstance && !displayInstances.some(c => c.id === currentInstance || c.name === currentInstance)) {
+                    const fullMatch = instances.find(c => c.id === currentInstance || c.name === currentInstance);
                     if (fullMatch) {
                         const option = document.createElement('option');
                         option.value = fullMatch.id;
@@ -574,10 +615,10 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         option.selected = true;
                         selector.appendChild(option);
                     } else {
-                        // 当前容器不在完整列表中，添加自定义容器
+                        // 当前实例不在完整列表中，添加自定义实例
                         const option = document.createElement('option');
-                        option.value = currentContainer;
-                        option.textContent = currentContainer;
+                        option.value = currentInstance;
+                        option.textContent = currentInstance;
                         option.selected = true;
                         selector.appendChild(option);
                     }
@@ -591,80 +632,80 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 
                 const manualOption = document.createElement('option');
                 manualOption.value = '__manual_input__';
-                manualOption.textContent = '✏️ 手动输入容器ID...';
+                manualOption.textContent = '✏️ 手动输入实例ID...';
                 selector.appendChild(manualOption);
             } catch (error) {
-                console.error('Failed to load containers:', error);
+                console.error('Failed to load instances:', error);
                 const selector = document.getElementById('container-selector');
                 selector.innerHTML = '<option value="">Failed to load</option>';
             }
         }
         
-        // 切换容器
-        function switchContainer(containerId) {
+        // 切换实例
+        function switchInstance(instanceId) {
             const params = new URLSearchParams(window.location.search);
-            if (containerId) {
-                params.set('container', containerId);
+            if (instanceId) {
+                params.set('instance', instanceId);
             } else {
-                params.delete('container');
+                params.delete('instance');
             }
-            // 重新加载页面并带上新的容器参数
+            // 重新加载页面并带上新的实例参数
             window.location.search = params.toString();
         }
         
         // 初始化
         document.addEventListener('DOMContentLoaded', () => {
-            // 检查是否有容器参数
+            // 检查是否有实例参数
             const params = new URLSearchParams(window.location.search);
-            const currentContainer = params.get('container');
+            const currentInstance = params.get('instance');
             
-            // 如果没有容器参数，弹出输入框要求用户输入
-            if (!currentContainer) {
-                const containerId = prompt('请输入容器名称或容器ID:', '');
-                if (containerId && containerId.trim()) {
-                    // 用户输入了容器ID，重定向到带有该参数的URL
-                    params.set('container', containerId.trim());
+            // 如果没有实例参数，弹出输入框要求用户输入
+            if (!currentInstance) {
+                const instanceId = prompt('请输入实例名称或实例ID:', '');
+                if (instanceId && instanceId.trim()) {
+                    // 用户输入了实例ID，重定向到带有该参数的URL
+                    params.set('instance', instanceId.trim());
                     window.location.search = params.toString();
                     return; // 停止后续初始化，等待页面重新加载
                 } else {
                     // 用户取消或没有输入，显示错误信息
                     document.getElementById('terminal').innerHTML = 
                         '<div style="color: #f44336; padding: 20px; text-align: center;">' +
-                        '<h2>⚠️ 未指定容器</h2>' +
-                        '<p>请刷新页面并输入容器名称或容器ID</p>' +
+                        '<h2>⚠️ 未指定实例</h2>' +
+                        '<p>请刷新页面并输入实例名称或实例ID</p>' +
                         '</div>';
-                    document.getElementById('status-text').textContent = 'No container specified';
+                    document.getElementById('status-text').textContent = 'No instance specified';
                     return; // 停止后续初始化
                 }
             }
             
-            loadContainers();
+            loadInstances();
             
-            // 容器选择器事件
+            // 实例选择器事件
             document.getElementById('container-selector').addEventListener('change', (e) => {
                 const selectedValue = e.target.value;
                 
                 // 如果选择了手动输入选项
                 if (selectedValue === '__manual_input__') {
-                    const containerId = prompt('请输入容器名称或容器ID:', '');
-                    if (containerId && containerId.trim()) {
-                        // 用户输入了容器ID，切换到该容器
-                        switchContainer(containerId.trim());
+                    const instanceId = prompt('请输入实例名称或实例ID:', '');
+                    if (instanceId && instanceId.trim()) {
+                        // 用户输入了实例ID，切换到该实例
+                        switchInstance(instanceId.trim());
                     } else {
-                        // 用户取消或没有输入，恢复到当前选中的容器
+                        // 用户取消或没有输入，恢复到当前选中的实例
                         const params = new URLSearchParams(window.location.search);
-                        const currentContainer = params.get('container');
-                        e.target.value = currentContainer || '';
+                        const currentInstance = params.get('instance');
+                        e.target.value = currentInstance || '';
                     }
                 } else {
-                    // 正常切换容器
-                    switchContainer(selectedValue);
+                    // 正常切换实例
+                    switchInstance(selectedValue);
                 }
             });
             
             // 刷新按钮事件
             document.getElementById('refresh-btn').addEventListener('click', () => {
-                loadContainers();
+                loadInstances();
             });
             
             // 初始化 Terminal（只有在有容器ID时才执行）
