@@ -78,6 +78,7 @@ type invokerLibruntime interface {
 	SetTenantID(tenantID string) error
 	IsHealth() bool
 	IsDsHealth() bool
+	GetActiveMasterAddr() string
 }
 
 var clientLibruntime invokerLibruntime
@@ -136,6 +137,7 @@ type Client interface {
 	KillByLibRt(instanceID string, signal int, payload []byte) (err error)
 	IsHealth() bool
 	IsDsHealth() bool
+	GetActiveMasterAddr() string
 }
 
 // NewClient return a client used to invoke other functions
@@ -303,6 +305,10 @@ func (c *defaultClient) handleEvent(objID string, sseChan *SSEChan, req InvokeRe
 			}
 		}
 	}
+}
+
+func (c *defaultClient) GetActiveMasterAddr() string {
+	return c.clientLibruntime.GetActiveMasterAddr()
 }
 
 func convertInvokeOption(req InvokeRequest) api.InvokeOptions {

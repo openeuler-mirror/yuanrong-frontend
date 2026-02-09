@@ -20,6 +20,9 @@
 package api
 
 import (
+	"io/fs"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 
 	"frontend/pkg/common/constants"
@@ -33,6 +36,7 @@ import (
 	v1 "frontend/pkg/frontend/api/v1"
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/frontendsdkadapter/handler"
+	"frontend/pkg/frontend/webterm"
 )
 
 const (
@@ -125,4 +129,14 @@ func InitRoute(r *gin.Engine) {
 		jobGroup.DELETE(commonJob.PathDeleteJobs, job.DeleteJobHandler)
 		jobGroup.POST(commonJob.PathStopJobs, job.StopJobHandler)
 	}
+
+	// web terminal
+	terminalGroup := r.Group("/terminal")
+	{
+		terminalGroup.GET("", gin.WrapF(webterm.HandleIndex))
+		terminalGroup.GET("/ws", gin.WrapF(webterm.HandleWebSocket))
+		staticFS, _ := fs.Sub(webterm.StaticFiles, "static")
+		terminalGroup.GET("/static/*filepath", gin.WrapH(http.StripPrefix("/terminal/static", http.FileServer(http.FS(staticFS)))))
+	}
+	r.GET("api/instances", gin.WrapF(webterm.HandleInstances))    
 }

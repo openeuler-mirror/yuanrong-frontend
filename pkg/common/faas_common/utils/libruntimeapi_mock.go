@@ -268,6 +268,11 @@ func (f *FakeLibruntimeSdkClient) IsDsHealth() bool {
 	return true
 }
 
+// GetActiveMasterAddr for getting active master address
+func (f *FakeLibruntimeSdkClient) GetActiveMasterAddr() string {
+	return "mockMasterAddr"
+}
+
 // FakeStreamProducer -
 type FakeStreamProducer struct{}
 

@@ -129,6 +129,10 @@ func (f *fakeClient) IsDsHealth() bool {
 	return true
 }
 
+func (f *fakeClient) GetActiveMasterAddr() string {
+	return "mockMasterAddr"
+}
+
 type fakeFailedClient struct{}
 
 func (c *fakeFailedClient) AcquireInstance(functionKey string, req commontype.AcquireOption) (*commontype.InstanceAllocationInfo, error) {
@@ -168,6 +172,10 @@ func (f *fakeFailedClient) IsHealth() bool {
 
 func (f *fakeFailedClient) IsDsHealth() bool {
 	return true
+}
+
+func (f *fakeFailedClient) GetActiveMasterAddr() string {
+	return "mockMasterAddr"
 }
 
 // Invoke -
