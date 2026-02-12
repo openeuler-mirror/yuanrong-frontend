@@ -299,12 +299,12 @@ func TestSignWithHmacSha256(t *testing.T) {
 		convey.Convey("when success", func() {
 			req := &fasthttp.Request{}
 			req.Header.SetMethod("GET")
-			req.SetRequestURI("http://7.218.80.122:31223" + "/invoke")
+			req.SetRequestURI("http://127.0.0.1:8080" + "/invoke")
 			req.Header.Set("key1", "value1")
 			req.Header.Set("key2", "value2")
 			req.Header.Set(constant.HeaderSignedHeader, "key1;key2")
 			ak := "yuanrong"
-			sk := "C0ECCDF386D96B8BF90562BC4F25C7608A8AA8D84003F088FCDC5E8606314A81"
+			sk := "A1B2C3D4E5F6"
 			err := SignWithHmacSha256(req, ak, sk)
 			convey.So(err, convey.ShouldBeNil)
 			convey.So(string(req.Header.Peek(constant.HeaderAuthorization)), convey.ShouldNotBeEmpty)
@@ -317,12 +317,12 @@ func TestVerifySignWithHmacSha256(t *testing.T) {
 		convey.Convey("when success", func() {
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.Header.SetMethod("GET")
-			ctx.Request.SetRequestURI("http://7.218.80.122:31223" + "/invoke")
+			ctx.Request.SetRequestURI("http://127.0.0.1:8080" + "/invoke")
 			ctx.Request.Header.Set("key1", "value1")
 			ctx.Request.Header.Set("key2", "value2")
 			ctx.Request.Header.Set(constant.HeaderSignedHeader, "key1;key2")
 			ak := "yuanrong"
-			sk := "C0ECCDF386D96B8BF90562BC4F25C7608A8AA8D84003F088FCDC5E8606314A81"
+			sk := "A1B2C3D4E5F6"
 			err := SignWithHmacSha256(&ctx.Request, ak, sk)
 			convey.So(err, convey.ShouldBeNil)
 			convey.So(string(ctx.Request.Header.Peek(constant.HeaderAuthorization)), convey.ShouldNotBeEmpty)
@@ -449,10 +449,10 @@ func Test_sign(t *testing.T) {
 				},
 				Timestamp: "1767616334465",
 				AK:        "yuanrong",
-				SK:        "C0ECCDF386D96B8BF90562BC4F25C7608A8AA8D84003F088FCDC5E8606314A81",
+				SK:        "A1B2C3D4E5F6",
 			}
 			res := sign(req)
-			convey.So(res, convey.ShouldEqual, "f23b3988d84003482f5a559bde7224b3f6c20f211fb5ebf37eb1c8612c02e24b")
+			convey.So(res, convey.ShouldEqual, "e111cc2b6dcd8cb4a0818c3950132e625a13cddea87a61f2cc5432ce49a25914")
 		})
 	})
 }
@@ -500,7 +500,7 @@ func Test_buildSignedHeadersString(t *testing.T) {
 func Test_buildSignature(t *testing.T) {
 	convey.Convey("Test buildSignature", t, func() {
 		convey.Convey("when buildSignature success", func() {
-			sysSK := "C0ECCDF386D96B8BF90562BC4F25C7608A8AA8D84003F088FCDC5E8606314A81"
+			sysSK := "A1B2C3D4E5F6"
 			data := "hello world"
 			res := buildSignature(sysSK, data)
 			convey.So(res, convey.ShouldNotBeEmpty)
