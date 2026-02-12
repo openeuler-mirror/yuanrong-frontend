@@ -181,7 +181,7 @@ func InvokeHandler(ctx *gin.Context) {
 	log.GetLogger().Infof("%s|receive instance invoke request, remoteClientID: %s", traceID, remoteClientID)
 
 	// JWT authentication check: validate X-Auth header before invoking
-	if config.GetConfig().EnableFuncTokenAuth {
+	if config.GetConfig().IamConfig.EnableFuncTokenAuth {
 		authHeader := ctx.Request.Header.Get(jwtauth.HeaderXAuth)
 		if authHeader != "" {
 			// Parse JWT to get role

@@ -115,7 +115,7 @@ func (jwt *ParsedJWT) ValidateTenantID(expectedTenantID string) error {
 
 // ValidateWithIamServer sends a request to IAM server to validate the token
 func ValidateWithIamServer(authHeader string, traceID string) error {
-	iamServerAddress := config.GetConfig().IamServerAddress
+	iamServerAddress := config.GetConfig().IamConfig.Addr
 	if iamServerAddress == "" {
 		log.GetLogger().Warnf("IAM server address is not configured, skipping IAM validation, traceID %s", traceID)
 		return nil

@@ -199,6 +199,13 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 }
 
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Log client certificate info if TLS is enabled (verification already done at TLS handshake)
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		clientCert := r.TLS.PeerCertificates[0]
+		log.GetLogger().Infof("Client connected with certificate: Subject=%s, Issuer=%s",
+			clientCert.Subject.String(), clientCert.Issuer.String())
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.GetLogger().Infof("WebSocket upgrade error: %v", err)
