@@ -141,6 +141,8 @@ type Config struct {
 	NodeAffinityPolicy     string           `json:"nodeAffinityPolicy" valid:"optional"`
 	AuthConfig             AuthConfig       `json:"authConfig" valid:"optional"`
 	WiseCloudConfig        WiseCloudConfig  `json:"wiseCloudConfig" valid:"optional"`
+	IamServerAddress       string           `json:"iamServerAddress" valid:"optional"`
+	EnableFuncTokenAuth    bool             `json:"enableFuncTokenAuth" valid:"optional"`
 }
 
 // WiseCloudConfig -
