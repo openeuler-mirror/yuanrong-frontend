@@ -202,7 +202,7 @@ func deepCopyArgs(args []*api.Arg, tenantID string) []api.Arg {
 func (c *defaultClient) Invoke(req InvokeRequest) ([]byte, error) {
 	log.GetLogger().Debugf("invoke by instanceId: %s", req.InstanceID)
 	funcMeta := api.FunctionMeta{FuncID: req.Function, Api: api.FaaSApi}
-	funcArgs := deepCopyArgs(req.Args, "")
+	funcArgs := deepCopyArgs(req.Args, req.TenantID)
 	invokeOpts := convertCommonInvokeOption(req)
 	invokeOpts.RetryTimes = req.RetryTimes
 	invokeOpts.ForceInvoke = req.ForceInvoke
