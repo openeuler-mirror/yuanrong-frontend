@@ -18,8 +18,6 @@
 package frontend
 
 import (
-	"fmt"
-	"frontend/pkg/frontend/config"
 	"io"
 	"net/http"
 	"strconv"
@@ -31,7 +29,6 @@ import (
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/httputil"
-	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/serverstatus"
@@ -180,40 +177,7 @@ func InvokeHandler(ctx *gin.Context) {
 	remoteClientID, traceID := getHeaderPrams(ctx)
 	log.GetLogger().Infof("%s|receive instance invoke request, remoteClientID: %s", traceID, remoteClientID)
 
-	// JWT authentication check: validate X-Auth header before invoking
-	if config.GetConfig().IamConfig.EnableFuncTokenAuth {
-		authHeader := ctx.Request.Header.Get(jwtauth.HeaderXAuth)
-		if authHeader != "" {
-			// Parse JWT to get role
-			parsedJWT, err := jwtauth.ParseJWT(authHeader)
-			if err != nil {
-				log.GetLogger().Errorf("JWT parsing failed for instance invoke, traceID %s: %v", traceID, err)
-				httpCode = http.StatusUnauthorized
-				hasError = true
-				SetCtxResponse(ctx, []byte(fmt.Sprintf("authentication failed: %v", err)), httpCode)
-				return
-			}
-			// Check role: only allow developer role
-			role := parsedJWT.Payload.Role
-			if role != jwtauth.RoleDeveloper {
-				log.GetLogger().Errorf("JWT role validation failed for instance invoke, expected developer but got %s, traceID %s", role, traceID)
-				httpCode = http.StatusUnauthorized
-				hasError = true
-				SetCtxResponse(ctx, []byte(fmt.Sprintf("authentication failed: role %s is not allowed, only developer role is permitted", role)), httpCode)
-				return
-			}
-			log.GetLogger().Debugf("JWT authentication passed for instance invoke, role: developer, traceID %s", traceID)
-			// After role validation passes, send request to IAM server
-			if err := jwtauth.ValidateWithIamServer(authHeader, traceID); err != nil {
-				log.GetLogger().Errorf("IAM server validation failed, traceID %s: %v", traceID, err)
-				httpCode = http.StatusUnauthorized
-				hasError = true
-				SetCtxResponse(ctx, []byte(fmt.Sprintf("authentication failed: %v", err)), httpCode)
-				return
-			}
-			log.GetLogger().Infof("IAM server validation passed for instance invoke, traceID %s", traceID)
-		}
-	}
+	// JWT authentication is handled by middleware
 
 	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {

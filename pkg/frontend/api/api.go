@@ -36,6 +36,7 @@ import (
 	v1 "frontend/pkg/frontend/api/v1"
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/frontendsdkadapter/handler"
+	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/webterm"
 )
 
@@ -84,6 +85,16 @@ const (
 
 // InitRoute -
 func InitRoute(r *gin.Engine) {
+	// Apply invoke preprocessing middleware to:
+	// 1. Mark invoke URLs for role-based authentication
+	// 2. Detect public functions and skip JWT authentication
+	r.Use(middleware.InvokePreprocessMiddleware())
+	
+	// Apply global JWT authentication middleware with whitelist support
+	// For invoke URLs: allow RoleUser and RoleDeveloper
+	// For other URLs: only allow RoleDeveloper
+	r.Use(middleware.GlobalJWTAuthMiddleware())
+
 	r.GET(urlGetHealthCheck, v1.HealthzHandler)
 	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)                    // Health check
 	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))       // Invocation

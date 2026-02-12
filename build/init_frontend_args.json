@@ -10,8 +10,10 @@
     "regionName": "",
     "nodeAffinity": "",
     "defaultTenantLimitQuota": -1,
-    "iamServerAddress": "{iam_server_address}",
-    "enableFuncTokenAuth": {enable_func_token_auth},
+    "iamConfig":{
+      "addr": "{iam_server_address}",
+      "enableFuncTokenAuth": {enable_func_token_auth}
+    },
     "alarmConfig": {
       "enableAlarm": false,
       "minInsStartInterval": 15,

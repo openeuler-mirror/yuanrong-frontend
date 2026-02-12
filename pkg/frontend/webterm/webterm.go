@@ -227,7 +227,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	cmdStr := query.Get("command")
 	command := defaultCommand
 	if cmdStr != "" {
-		command = []string{"/bin/sh", "-c", cmdStr}
+		command = []string{cmdStr}
 	}
 
 	tty := defaultTTY

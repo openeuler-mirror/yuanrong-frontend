@@ -19,16 +19,35 @@ package middleware
 import (
 	"testing"
 
-	"github.com/agiledragon/gomonkey/v2"
 	"github.com/smartystreets/goconvey/convey"
 
 	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/types"
 )
 
+// mockResponseHandlerForBodySize implements responsehandler.HandlerInterface for testing
+type mockResponseHandlerForBodySize struct{}
+
+func (m *mockResponseHandlerForBodySize) SetResponseFromFrontend(ctx *types.InvokeProcessContext, innerCode int, message interface{}) {
+	// Do nothing in test
+}
+
+func (m *mockResponseHandlerForBodySize) SetResponseFromInvocation(ctx *types.InvokeProcessContext,
+	message []byte) (*types.CallResp, snerror.SNError) {
+	return nil, nil
+}
+
 func TestBodySizeChecker(t *testing.T) {
+	// Set up mock response handler
+	originalHandler := responsehandler.Handler
+	responsehandler.Handler = &mockResponseHandlerForBodySize{}
+	defer func() {
+		responsehandler.Handler = originalHandler
+	}()
+
 	tests := []struct {
 		name                     string
 		ctx                      *types.InvokeProcessContext
@@ -100,9 +119,7 @@ func TestBodySizeChecker(t *testing.T) {
 			shouldFail: true,
 		},
 	}
-	patch := gomonkey.ApplyFunc(responsehandler.SetErrorInContext, func(ctx *types.InvokeProcessContext, innerCode int, message interface{}) {
-	})
-	defer patch.Reset()
+
 	convey.Convey("Test BodySizeChecker", t, func() {
 		for _, tt := range tests {
 			convey.Convey(tt.name, func() {
