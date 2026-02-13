@@ -42,12 +42,10 @@ const (
 func InvokePreprocessMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
-		
+
 		// Check if this is an invoke URL
 		if isInvokeURL(path) {
-			// Mark as invoke URL for downstream middleware
-			c.Set(isInvokeURLKey, true)
-			
+
 			// Extract function key and check if it's public
 			funcKey, err := extractFunctionKey(c)
 			if err != nil {
@@ -63,6 +61,9 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 				c.Next()
 				return
 			}
+
+			// Mark as invoke URL for downstream middleware
+			c.Set(isInvokeURLKey, true)
 
 			// Load function metadata to check if it's public
 			funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
@@ -99,12 +100,12 @@ func isInvokeURL(path string) bool {
 	// Check for short invoke URL pattern: /{tenant-id}/{namespace}/{function}/
 	// This is a simplified check - the actual routing will validate if it matches
 	// Only consider paths that don't start with /serverless/ to avoid false positives
-	if !strings.HasPrefix(path, "/serverless/") {
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) == 3 {
-			// Could be tenant-id/namespace/function
-			return true
-		}
+	if !strings.HasPrefix(path, "/serverless/") &&
+		!strings.HasPrefix(path, "/datasystem/") &&
+		!strings.HasPrefix(path, "/client/") &&
+		!strings.HasPrefix(path, "/frontend/") &&
+		strings.Count(path, "/") == 3 {
+		return true
 	}
 
 	return false

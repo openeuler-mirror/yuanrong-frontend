@@ -38,6 +38,12 @@ type AuthWhitelistRule struct {
 // For dynamic function-level authentication (e.g., public functions),
 var defaultAuthWhitelist = []AuthWhitelistRule{
 	{
+		Path:      "/",
+		Methods:   []string{"GET"},
+		MatchType: "exact",
+		SkipAuth:  true,
+	},
+	{
 		Path:      "/healthz",
 		Methods:   []string{"GET"},
 		MatchType: "exact",
@@ -61,7 +67,21 @@ var defaultAuthWhitelist = []AuthWhitelistRule{
 		MatchType: "exact",
 		SkipAuth:  true,
 	},
-	// Note: /terminal paths removed from whitelist - now require JWT authentication
+	// Terminal static resources (CSS, JS) don't require authentication
+	{
+		Path:      "/terminal/static/",
+		Methods:   []string{"GET"},
+		MatchType: "prefix",
+		SkipAuth:  true,
+	},
+	// Terminal WebSocket endpoint - authentication handled inside handler
+	{
+		Path:      "/terminal/ws",
+		Methods:   []string{"GET"},
+		MatchType: "exact",
+		SkipAuth:  true,
+	},
+	// Note: Other /terminal paths (e.g., /terminal) require JWT authentication
 }
 
 // customAuthWhitelist can be configured at runtime
@@ -129,6 +149,7 @@ func GlobalJWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 		method := c.Request.Method
+		log.GetLogger().Debugf("Path %s %s JWT authentication", method, path)
 
 		// Check if path is in whitelist
 		if isInAuthWhitelist(path, method) {

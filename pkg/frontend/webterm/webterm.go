@@ -34,7 +34,9 @@ import (
 
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
+	"frontend/pkg/frontend/config"
 )
 
 //go:embed static/*
@@ -199,6 +201,37 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 }
 
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Authenticate JWT token from query parameter or header
+	if config.GetConfig().IamConfig.EnableFuncTokenAuth {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			token = r.Header.Get("X-Auth")
+		}
+		if token == "" {
+			log.GetLogger().Errorf("WebSocket authentication failed: no token provided")
+			http.Error(w, "authentication failed: no token provided", http.StatusUnauthorized)
+			return
+		}
+
+		// Parse JWT to validate
+		parsedJWT, err := jwtauth.ParseJWT(token)
+		if err != nil {
+			log.GetLogger().Errorf("WebSocket JWT parsing failed: %v", err)
+			http.Error(w, "authentication failed: invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate with IAM server
+		if err := jwtauth.ValidateWithIamServer(token, r.Header.Get("X-Trace-ID")); err != nil {
+			log.GetLogger().Errorf("WebSocket IAM server validation failed: %v", err)
+			http.Error(w, "authentication failed: IAM server validation failed", http.StatusUnauthorized)
+			return
+		}
+
+		log.GetLogger().Infof("WebSocket JWT authentication passed, role: %s, tenant: %s",
+			parsedJWT.Payload.Role, parsedJWT.Payload.Sub)
+	}
+
 	// Log client certificate info if TLS is enabled (verification already done at TLS handshake)
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		clientCert := r.TLS.PeerCertificates[0]
@@ -444,10 +477,8 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	for _, inst := range response.Instances {
 		instance := map[string]interface{}{
 			"id":       inst.InstanceID,
-			"name":     inst.Function,
+			"function": inst.Function,
 			"status":   inst.InstanceStatus.Msg,
-			"nodeIP":   inst.NodeIP,
-			"nodePort": inst.NodePort,
 		}
 		instances = append(instances, instance)
 	}
@@ -570,6 +601,83 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             font-size: 12px;
             text-align: center;
         }
+        /* 自定义对话框样式 */
+        #custom-dialog-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%%;
+            height: 100%%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+        #custom-dialog {
+            background: #2d2d30;
+            border: 1px solid #3e3e42;
+            border-radius: 5px;
+            padding: 20px;
+            min-width: 400px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+        #custom-dialog h2 {
+            margin: 0 0 20px 0;
+            color: #d4d4d4;
+            font-size: 18px;
+            font-weight: normal;
+        }
+        #custom-dialog .form-group {
+            margin-bottom: 15px;
+        }
+        #custom-dialog label {
+            display: block;
+            margin-bottom: 5px;
+            color: #d4d4d4;
+            font-size: 13px;
+        }
+        #custom-dialog input {
+            width: 100%%;
+            padding: 8px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 3px;
+            color: #d4d4d4;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+        #custom-dialog input:focus {
+            outline: none;
+            border-color: #007acc;
+        }
+        #custom-dialog .button-group {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        #custom-dialog button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        #custom-dialog .btn-primary {
+            background: #007acc;
+            color: white;
+        }
+        #custom-dialog .btn-primary:hover {
+            background: #005a9e;
+        }
+        #custom-dialog .btn-secondary {
+            background: #3c3c3c;
+            color: #d4d4d4;
+        }
+        #custom-dialog .btn-secondary:hover {
+            background: #4c4c4c;
+        }
     </style>
 </head>
 <body>
@@ -591,16 +699,100 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         Press Ctrl+C to interrupt | Connection: <span id="ws-url"></span>
     </div>
 
+    <!-- 自定义输入对话框 -->
+    <div id="custom-dialog-overlay">
+        <div id="custom-dialog">
+            <h2>🖥️ 连接配置</h2>
+            <div class="form-group">
+                <label for="dialog-instance">实例名称或ID *</label>
+                <input type="text" id="dialog-instance" placeholder="请输入实例名称或实例ID">
+            </div>
+            <div class="form-group">
+                <label for="dialog-tenant">租户ID（Tenant ID）</label>
+                <input type="text" id="dialog-tenant" value="default" placeholder="默认为 default">
+            </div>
+            <div class="button-group">
+                <button class="btn-secondary" onclick="cancelDialog()">取消</button>
+                <button class="btn-primary" onclick="submitDialog()">连接</button>
+            </div>
+        </div>
+    </div>
+
     <script src="%s/terminal/static/xterm.js"></script>
     <script src="%s/terminal/static/xterm-addon-fit.js"></script>
+    <script>
+        // 显示自定义对话框
+        function showCustomDialog() {
+            const overlay = document.getElementById('custom-dialog-overlay');
+            overlay.style.display = 'flex';
+            document.getElementById('dialog-instance').focus();
+            
+            // 支持回车键提交
+            const inputs = document.querySelectorAll('#custom-dialog input');
+            inputs.forEach(input => {
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        submitDialog();
+                    }
+                });
+            });
+        }
+        
+        // 取消对话框
+        function cancelDialog() {
+            document.getElementById('terminal').innerHTML = 
+                '<div style="color: #f44336; padding: 20px; text-align: center;">' +
+                '<h2>⚠️ 未指定实例</h2>' +
+                '<p>请刷新页面重新输入连接信息</p>' +
+                '</div>';
+            document.getElementById('status-text').textContent = 'No instance specified';
+            document.getElementById('custom-dialog-overlay').style.display = 'none';
+        }
+        
+        // 提交对话框
+        function submitDialog() {
+            const instance = document.getElementById('dialog-instance').value.trim();
+            const tenant = document.getElementById('dialog-tenant').value.trim() || 'default';
+            
+            if (!instance) {
+                alert('请输入实例名称或ID');
+                document.getElementById('dialog-instance').focus();
+                return;
+            }
+            
+            // 构建新的URL参数，保留现有的token
+            const currentParams = new URLSearchParams(window.location.search);
+            const token = currentParams.get('token');
+            
+            const params = new URLSearchParams();
+            params.set('instance', instance);
+            params.set('tenant_id', tenant);
+            if (token) {
+                params.set('token', token);
+            }
+            
+            // 重定向到带有参数的URL
+            window.location.search = params.toString();
+        }
+    </script>
     <script>
         // 加载实例列表
         async function loadInstances() {
             try {
-                // 获取 tenant_id 参数
+                // 获取 tenant_id 和 token 参数
                 const params = new URLSearchParams(window.location.search);
                 const tenantId = params.get('tenant_id') || 'default';
-                const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId));
+                const token = params.get('token') || '';
+                
+                // 构建请求选项
+                const fetchOptions = {};
+                if (token) {
+                    fetchOptions.headers = {
+                        'X-Auth': token
+                    };
+                }
+                
+                const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId), fetchOptions);
                 const instances = await response.json();
                 const selector = document.getElementById('container-selector');
                 
@@ -608,7 +800,6 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 selector.innerHTML = '';
                 
                 // 获取当前实例（从URL参数）
-                const params = new URLSearchParams(window.location.search);
                 const currentInstance = params.get('instance') || '';
                 
                 // 只显示前10个实例
@@ -679,24 +870,10 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const params = new URLSearchParams(window.location.search);
             const currentInstance = params.get('instance');
             
-            // 如果没有实例参数，弹出输入框要求用户输入
+            // 如果没有实例参数，显示自定义对话框要求用户输入
             if (!currentInstance) {
-                const instanceId = prompt('请输入实例名称或实例ID:', '');
-                if (instanceId && instanceId.trim()) {
-                    // 用户输入了实例ID，重定向到带有该参数的URL
-                    params.set('instance', instanceId.trim());
-                    window.location.search = params.toString();
-                    return; // 停止后续初始化，等待页面重新加载
-                } else {
-                    // 用户取消或没有输入，显示错误信息
-                    document.getElementById('terminal').innerHTML = 
-                        '<div style="color: #f44336; padding: 20px; text-align: center;">' +
-                        '<h2>⚠️ 未指定实例</h2>' +
-                        '<p>请刷新页面并输入实例名称或实例ID</p>' +
-                        '</div>';
-                    document.getElementById('status-text').textContent = 'No instance specified';
-                    return; // 停止后续初始化
-                }
+                showCustomDialog();
+                return; // 停止后续初始化，等待用户输入
             }
             
             loadInstances();
@@ -768,6 +945,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
             // 初始化 WebSocket 连接
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            // 保留所有 URL 参数（包括 token）
             const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + window.location.search;
             document.getElementById('ws-url').textContent = wsUrl;
             

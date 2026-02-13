@@ -89,7 +89,7 @@ func InitRoute(r *gin.Engine) {
 	// 1. Mark invoke URLs for role-based authentication
 	// 2. Detect public functions and skip JWT authentication
 	r.Use(middleware.InvokePreprocessMiddleware())
-	
+
 	// Apply global JWT authentication middleware with whitelist support
 	// For invoke URLs: allow RoleUser and RoleDeveloper
 	// For other URLs: only allow RoleDeveloper
@@ -149,5 +149,11 @@ func InitRoute(r *gin.Engine) {
 		staticFS, _ := fs.Sub(webterm.StaticFiles, "static")
 		terminalGroup.GET("/static/*filepath", gin.WrapH(http.StripPrefix("/terminal/static", http.FileServer(http.FS(staticFS)))))
 	}
-	r.GET("api/instances", gin.WrapF(webterm.HandleInstances))    
+	r.GET("api/instances", gin.WrapF(webterm.HandleInstances))
+
+	// Function invoke tool (requires authentication)
+	r.GET("/functions", gin.WrapF(webterm.HandleInvokePage))
+
+	// Welcome/introduction page (no authentication required)
+	r.GET("/", gin.WrapF(webterm.HandleWelcome))
 }

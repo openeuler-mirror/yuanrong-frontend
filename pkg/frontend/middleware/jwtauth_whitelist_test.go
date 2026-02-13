@@ -37,6 +37,18 @@ func TestIsInAuthWhitelist(t *testing.T) {
 		expected bool
 	}{
 		{
+			name:     "root path GET - should be in whitelist",
+			path:     "/",
+			method:   "GET",
+			expected: true,
+		},
+		{
+			name:     "root path POST - should not be in whitelist",
+			path:     "/",
+			method:   "POST",
+			expected: false,
+		},
+		{
 			name:     "healthz GET - should be in whitelist",
 			path:     "/healthz",
 			method:   "GET",
@@ -73,16 +85,22 @@ func TestIsInAuthWhitelist(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "terminal - should not be in whitelist (removed)",
+			name:     "terminal ws - should be in whitelist (auth handled in handler)",
 			path:     "/terminal/ws",
 			method:   "GET",
-			expected: false,
+			expected: true,
 		},
 		{
-			name:     "terminal static - should not be in whitelist (removed)",
+			name:     "terminal static - should be in whitelist (public resources)",
 			path:     "/terminal/static/style.css",
 			method:   "GET",
-			expected: false,
+			expected: true,
+		},
+		{
+			name:     "terminal static JS - should be in whitelist",
+			path:     "/terminal/static/xterm.js",
+			method:   "GET",
+			expected: true,
 		},
 		{
 			name:     "invoke endpoint - should not be in whitelist",
