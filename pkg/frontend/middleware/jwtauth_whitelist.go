@@ -27,10 +27,10 @@ import (
 
 // AuthWhitelistRule defines a rule for authentication whitelist
 type AuthWhitelistRule struct {
-	Path       string   // URL path pattern
-	Methods    []string // HTTP methods (empty means all methods)
-	MatchType  string   // "exact" or "prefix"
-	SkipAuth   bool     // If true, skip authentication for this path
+	Path      string   // URL path pattern
+	Methods   []string // HTTP methods (empty means all methods)
+	MatchType string   // "exact" or "prefix"
+	SkipAuth  bool     // If true, skip authentication for this path
 }
 
 // defaultAuthWhitelist contains default paths that skip authentication
@@ -39,6 +39,12 @@ type AuthWhitelistRule struct {
 var defaultAuthWhitelist = []AuthWhitelistRule{
 	{
 		Path:      "/",
+		Methods:   []string{"GET"},
+		MatchType: "exact",
+		SkipAuth:  true,
+	},
+	{
+		Path:      "/api-docs",
 		Methods:   []string{"GET"},
 		MatchType: "exact",
 		SkipAuth:  true,

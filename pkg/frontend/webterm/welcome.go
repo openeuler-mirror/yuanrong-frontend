@@ -85,6 +85,11 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
             margin-left: auto;
             margin-right: auto;
         }
+        @media (max-width: 768px) {
+            .features {
+                grid-template-columns: 1fr;
+            }
+        }
         .feature {
             background: #f7fafc;
             padding: 20px;
@@ -137,6 +142,34 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
         .cta-group {
             margin-top: 20px;
         }
+        .docs-section {
+            margin-top: 40px;
+            padding-top: 24px;
+            border-top: 1px solid #e2e8f0;
+            text-align: center;
+        }
+        .docs-section h3 {
+            font-size: 16px;
+            color: #4a5568;
+            margin-bottom: 12px;
+        }
+        .docs-links {
+            display: flex;
+            justify-content: center;
+            gap: 32px;
+            flex-wrap: wrap;
+        }
+        .docs-link {
+            display: inline-block;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+        .docs-link:hover {
+            color: #764ba2;
+            text-decoration: underline;
+        }
         .footer {
             margin-top: 40px;
             padding-top: 20px;
@@ -176,13 +209,21 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
             <a href="%s/functions" class="cta-button secondary">Function Invoke →</a>
         </div>
 
+        <div class="docs-section">
+            <h3>📚 开发者资源</h3>
+            <div class="docs-links">
+                <a href="%s/api-docs" class="docs-link">API 文档 →</a>
+                <a href="http://docs.openyuanrong.org/" class="docs-link" target="_blank">官方文档 →</a>
+            </div>
+        </div>
+
         <div class="footer">
             <p>Powered by YuanRong Serverless Platform</p>
             <p>© 2025-2026 Huawei Technologies Co., Ltd. All rights reserved.</p>
         </div>
     </div>
 </body>
-</html>`, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }

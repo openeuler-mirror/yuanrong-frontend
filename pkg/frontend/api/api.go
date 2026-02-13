@@ -154,6 +154,9 @@ func InitRoute(r *gin.Engine) {
 	// Function invoke tool (requires authentication)
 	r.GET("/functions", gin.WrapF(webterm.HandleInvokePage))
 
+	// API documentation page (no authentication required)
+	r.GET("/api-docs", gin.WrapF(webterm.HandleAPIDoc))
+
 	// Welcome/introduction page (no authentication required)
 	r.GET("/", gin.WrapF(webterm.HandleWelcome))
 }
