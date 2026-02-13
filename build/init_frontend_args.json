@@ -88,7 +88,8 @@
       "moduleKeyFile": "module.key",
       "pwdFile": "cert_pwd",
       "secretName": "https-secret",
-      "sslDecryptTool": "SCC"
+      "sslDecryptTool": "SCC",
+      "clientAuthType": "RequireAndVerifyClientCert"
     },
     "routerEtcd": {
       "servers": [

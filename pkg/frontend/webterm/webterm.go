@@ -79,22 +79,22 @@ type Resources struct {
 
 // InstanceInfo defines instance information structure (corresponding to instance returned by master API)
 type InstanceInfo struct {
-	InstanceID       string          `json:"instanceID"`       // Instance ID
-	TenantID         string          `json:"tenantID"`         // Tenant ID
-	ContainerID      string          `json:"containerID"`      // Container ID
-	ProxyGrpcAddress string          `json:"proxyGrpcAddress"` // Proxy gRPC address
-	FunctionProxyID  string          `json:"functionProxyID"`  // Function Proxy ID
-	Function         string          `json:"function"`         // Function name
-	RuntimeAddress   string          `json:"runtimeAddress"`   // Runtime address
-	RuntimeID        string          `json:"runtimeID"`        // Runtime ID
-	InstanceStatus   InstanceStatus  `json:"instanceStatus"`   // Instance status
-	Resources        Resources       `json:"resources"`        // Resource configuration
-	StartTime        string          `json:"startTime"`        // Start time
-	RequestID        string          `json:"requestID"`        // Request ID
-	ParentID         string          `json:"parentID"`         // Parent ID
-	JobID            string          `json:"jobID"`            // Job ID
-	NodeIP           string          `json:"nodeIP"`           // Node IP
-	NodePort         string          `json:"nodePort"`         // Node port
+	InstanceID       string         `json:"instanceID"`       // Instance ID
+	TenantID         string         `json:"tenantID"`         // Tenant ID
+	ContainerID      string         `json:"containerID"`      // Container ID
+	ProxyGrpcAddress string         `json:"proxyGrpcAddress"` // Proxy gRPC address
+	FunctionProxyID  string         `json:"functionProxyID"`  // Function Proxy ID
+	Function         string         `json:"function"`         // Function name
+	RuntimeAddress   string         `json:"runtimeAddress"`   // Runtime address
+	RuntimeID        string         `json:"runtimeID"`        // Runtime ID
+	InstanceStatus   InstanceStatus `json:"instanceStatus"`   // Instance status
+	Resources        Resources      `json:"resources"`        // Resource configuration
+	StartTime        string         `json:"startTime"`        // Start time
+	RequestID        string         `json:"requestID"`        // Request ID
+	ParentID         string         `json:"parentID"`         // Parent ID
+	JobID            string         `json:"jobID"`            // Job ID
+	NodeIP           string         `json:"nodeIP"`           // Node IP
+	NodePort         string         `json:"nodePort"`         // Node port
 }
 
 // InstanceListResponse defines instance list response structure (corresponding to master API response)
@@ -189,7 +189,7 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 			if inst.ProxyGrpcAddress == "" {
 				return InstanceInfo{}, fmt.Errorf("proxy gRPC address is empty for instance %s", instance)
 			}
-			log.GetLogger().Infof("Instance %s found on node: %s (proxy: %s)", 
+			log.GetLogger().Infof("Instance %s found on node: %s (proxy: %s)",
 				instance, inst.NodeIP, inst.ProxyGrpcAddress)
 			return inst, nil
 		}
@@ -339,7 +339,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 				if payload.Status.Status == exec_service.ExecStatusResponse_EXITED ||
 					payload.Status.Status == exec_service.ExecStatusResponse_ERROR {
-				// Notify WebSocket client that process has exited
+					// Notify WebSocket client that process has exited
 					session.mu.Lock()
 					conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Process exited]\r\n"))
 					conn.WriteControl(websocket.CloseMessage,
@@ -460,7 +460,17 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleIndex(w http.ResponseWriter, r *http.Request) {
-	html := `<!DOCTYPE html>
+	// Get path prefix from X-Forwarded-Prefix header (set by traefik/reverse proxy)
+	// or from environment variable, default to empty string
+	pathPrefix := r.Header.Get("X-Forwarded-Prefix")
+	if pathPrefix == "" {
+		// Fallback to environment variable if header is not set
+		// Set PATH_PREFIX environment variable in deployment config if needed
+		// For example: PATH_PREFIX=/frontend
+		// pathPrefix = os.Getenv("PATH_PREFIX")
+	}
+
+	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
     <title>Remote Exec Terminal</title>
@@ -469,7 +479,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         This page uses xterm.js - Copyright (c) 2017-2022, The xterm.js authors
         Licensed under the MIT License - https://github.com/xtermjs/xterm.js
     -->
-    <link rel="stylesheet" href="/terminal/static/xterm.css" />
+    <link rel="stylesheet" href="%s/terminal/static/xterm.css" />
     <style>
         body {
             margin: 0;
@@ -534,7 +544,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         .status-indicator {
             width: 8px;
             height: 8px;
-            border-radius: 50%;
+            border-radius: 50%%;
             background: #666;
         }
         .status-indicator.connected {
@@ -550,7 +560,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             overflow: hidden;
         }
         #terminal {
-            height: 100%;
+            height: 100%%;
         }
         #footer {
             background: #2d2d30;
@@ -581,13 +591,16 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         Press Ctrl+C to interrupt | Connection: <span id="ws-url"></span>
     </div>
 
-    <script src="/terminal/static/xterm.js"></script>
-    <script src="/terminal/static/xterm-addon-fit.js"></script>
+    <script src="%s/terminal/static/xterm.js"></script>
+    <script src="%s/terminal/static/xterm-addon-fit.js"></script>
     <script>
         // 加载实例列表
         async function loadInstances() {
             try {
-                const response = await fetch('/api/instances');
+                // 获取 tenant_id 参数
+                const params = new URLSearchParams(window.location.search);
+                const tenantId = params.get('tenant_id') || 'default';
+                const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId));
                 const instances = await response.json();
                 const selector = document.getElementById('container-selector');
                 
@@ -755,7 +768,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
             // 初始化 WebSocket 连接
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = protocol + '//' + window.location.host + '/terminal/ws' + window.location.search;
+            const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + window.location.search;
             document.getElementById('ws-url').textContent = wsUrl;
             
             const ws = new WebSocket(wsUrl);
@@ -816,30 +829,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }); // 结束 DOMContentLoaded
     </script>
 </body>
-</html>`
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }
-
-// func main() {
-// 	port := flag.Int("port", 8080, "HTTP server port")
-// 	command := flag.String("command", "/bin/bash", "Default command to execute")
-// 	tty := flag.Bool("tty", true, "Allocate a pseudo-TTY")
-// 	rows := flag.Int("rows", 24, "Default terminal rows")
-// 	cols := flag.Int("cols", 80, "Default terminal columns")
-// 	flag.Parse()
-
-// 	defaultCommand = []string{*command}
-// 	defaultTTY = *tty
-// 	defaultRows = int32(*rows)
-// 	defaultCols = int32(*cols)
-
-// 	http.HandleFunc("/", HandleIndex)
-// 	http.HandleFunc("/ws", HandleWebSocket)
-// 	http.HandleFunc("/api/instances", HandleInstances)
-// 	http.Handle("/static/", http.FileServer(http.FS(StaticFiles)))
-// 	addr := fmt.Sprintf(":%d", *port)
-// 	if err := http.ListenAndServe(addr, nil); err != nil {
-// 		log.Fatal("ListenAndServe error: ", err)
-// 	}
-// }
