@@ -22,7 +22,6 @@
 package datasystemclient
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -32,7 +31,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
@@ -795,9 +793,9 @@ func Test_uploadWithKeyKvClient(t *testing.T) {
 			defer p.Reset()
 			key, b, err := uploadWithKey([]byte("value"), &Config{NeedEncrypt: true, KeyPrefix: "aaa"}, api.SetParam{},
 				"")
-			convey.So(key, convey.ShouldEqual, "")
+			convey.So(key, convey.ShouldEqual, "1")
 			convey.So(b, convey.ShouldBeFalse)
-			convey.So(err, convey.ShouldNotBeNil)
+			convey.So(err, convey.ShouldBeNil)
 		})
 		convey.Convey("test set tenantID fail", func() {
 			patches := []*gomonkey.Patches{
@@ -1041,6 +1039,10 @@ func (f *invokerLibruntimeMock) IsHealth() bool {
 
 func (f *invokerLibruntimeMock) IsDsHealth() bool {
 	return true
+}
+
+func (f *invokerLibruntimeMock) GetActiveMasterAddr() string {
+	return "mockMasterAddr"
 }
 
 func TestKVGet(t *testing.T) {
@@ -1427,26 +1429,5 @@ func Test_receiveStream(t *testing.T) {
 		}, consumer, ginCtx)
 		convey.So(rw.flushFlag, convey.ShouldBeTrue)
 		convey.So(called, convey.ShouldEqual, 1)
-	})
-}
-
-func Test_createAesCryptor(t *testing.T) {
-	convey.Convey(" test createAesCryptor", t, func() {
-		// secBase64 := "cANhJ2LdE93A/d/tRJH1Lf32GzMEriQTVS91SMZ1Qp8="
-		pa := gomonkey.ApplyFunc(StartWatch, func(dataSystemKeyPrefixList []string, stopCh <-chan struct{}) {})
-		defer func() {
-			time.Sleep(200 * time.Millisecond)
-			pa.Reset()
-		}()
-		convey.Convey("01. error, data key is nil", func() {
-			cpt, err := createAesCryptor("tenantA", nil)
-			convey.So(err, convey.ShouldNotBeNil)
-			convey.So(cpt, convey.ShouldBeNil)
-		})
-		convey.Convey("02. ok, data key is not nil", func() {
-			cpt, err := createAesCryptor("tenantA", []byte("abcdefg"))
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(cpt, convey.ShouldNotBeNil)
-		})
 	})
 }

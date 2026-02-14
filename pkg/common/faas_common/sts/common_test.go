@@ -20,14 +20,10 @@ package sts
 import (
 	"testing"
 
-	"github.com/agiledragon/gomonkey/v2"
-	"github.com/magiconair/properties"
 	"github.com/smartystreets/goconvey/convey"
 
-	"frontend/pkg/common/faas_common/sts/raw"
 	"frontend/pkg/common/faas_common/tls"
 	"frontend/pkg/common/faas_common/utils"
-	mockUtils "frontend/pkg/common/faas_common/utils"
 )
 
 func TestGenerateSecretVolumeMounts(t *testing.T) {

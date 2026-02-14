@@ -26,6 +26,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -41,6 +42,10 @@ var (
 	// KubeClientSet -
 	KubeClientSet  *KubeClient
 	kubeClientOnce sync.Once
+
+	// dynamicClient -
+	dynamicClient     dynamic.Interface
+	dynamicClientOnce sync.Once
 )
 
 // GetkubeClient is used to obtain a K8S Client
@@ -65,6 +70,25 @@ func GetkubeClient() *KubeClient {
 		}
 	})
 	return KubeClientSet
+}
+
+// GetDynamicClient Get Dynamic Client
+func GetDynamicClient() dynamic.Interface {
+	dynamicClientOnce.Do(func() {
+		// create Kubernetes config
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			log.GetLogger().Errorf("Failed to create Kubernetes config: %s", err.Error())
+			return
+		}
+		// create dynamic client
+		dynamicClient, err = dynamic.NewForConfig(config)
+		if err != nil {
+			log.GetLogger().Errorf("failed to create dynamic client: %s", err.Error())
+			return
+		}
+	})
+	return dynamicClient
 }
 
 // DeleteK8sService -

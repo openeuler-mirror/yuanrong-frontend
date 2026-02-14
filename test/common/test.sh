@@ -44,7 +44,7 @@ run_gocover_report()
     mkdir -p "${OUTPUT_PATH}"
 
     cd ${SRC_PATH}
-    go test -v -gcflags=all=-l -covermode="${GOCOVER_MODE}" -coverprofile="$OUTPUT_PATH/common.cover" -coverpkg="./..." "./..."
+    go test -gcflags=all=-l -covermode="${GOCOVER_MODE}" -coverprofile="$OUTPUT_PATH/common.cover" -coverpkg="./..." "./..."
 
     if [ $? -ne 0 ]; then
         log_error "failed to go test common"

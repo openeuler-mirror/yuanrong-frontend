@@ -18,21 +18,16 @@ package invocation
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
-	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/statuscode"
 	commontype "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
-	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/responsehandler"
-	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/types"
 )
 
@@ -48,57 +43,9 @@ func InvokeHandler(ctx *types.InvokeProcessContext) error {
 	var err error
 	traceID := ctx.TraceID
 	funcKey := ctx.FuncKey
-	funcSpec, exist := functionmeta.LoadFuncSpec(funcKey)
-	if !exist {
-		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
-		log.GetLogger().Errorf("function %s doesn't exist in cache", funcKey)
-		return errors.New("function doesn't exist")
-	}
-
-	// JWT authentication check: validate X-Auth header before invoking
-	// Skip authentication if function is public
-	if !funcSpec.FuncMetaData.IsFuncPublic && config.GetConfig().EnableFuncTokenAuth {
-		authHeader := ctx.ReqHeader[jwtauth.HeaderXAuth]
-		if authHeader != "" {
-			// Parse JWT to get role
-			parsedJWT, err := jwtauth.ParseJWT(authHeader)
-			if err != nil {
-				log.GetLogger().Errorf("JWT parsing failed for function %s, traceID %s: %v", funcKey, traceID, err)
-				responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusUnAuthorized, fmt.Sprintf("authentication failed: %v", err))
-				return fmt.Errorf("JWT parsing failed: %v", err)
-			}
-			// Check role and validate tenant ID accordingly
-			role := parsedJWT.Payload.Role
-			expectedTenantID := funcSpec.FuncMetaData.TenantID
-
-			if role == jwtauth.RoleDeveloper {
-				// For developer role, validate tenant ID
-				if err := parsedJWT.ValidateTenantID(expectedTenantID); err != nil {
-					log.GetLogger().Errorf("JWT tenant ID validation failed for function %s, traceID %s: %v", funcKey, traceID, err)
-					responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusUnAuthorized, fmt.Sprintf("authentication failed: %v", err))
-					return fmt.Errorf("JWT tenant ID validation failed: %v", err)
-				}
-				log.GetLogger().Infof("JWT authentication passed for function %s, role: developer, traceID %s", funcKey, traceID)
-			} else if role == jwtauth.RoleUser {
-				// For user role, skip tenant ID validation
-				log.GetLogger().Infof("JWT authentication passed for function %s, role: user, skipping tenant ID validation, traceID %s", funcKey, traceID)
-			} else {
-				// only check roles of user or develop. other role just skip
-			}
-			// After role-based validation passes, send request to IAM server
-			if err := jwtauth.ValidateWithIamServer(authHeader, traceID); err != nil {
-				log.GetLogger().Errorf("IAM server validation failed for function %s, traceID %s: %v", funcKey, traceID, err)
-				responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusUnAuthorized, fmt.Sprintf("IAM server validation failed: %v", err))
-				return fmt.Errorf("IAM server validation failed: %v", err)
-			}
-			log.GetLogger().Infof("IAM server validation passed for function %s, traceID %s", funcKey, traceID)
-		} else {
-			log.GetLogger().Errorf("token auth is needed while token is empty for function %s, traceID %s", funcKey, traceID)
-			responsehandler.SetErrorInContext(ctx, statuscode.FrontendStatusUnAuthorized, fmt.Sprintf("token is empty for function: %s", funcKey))
-			return fmt.Errorf("token is empty for function: %s", funcKey)
-		}
-	} else {
-		log.GetLogger().Infof("Skipping JWT authentication for public function %s, traceID %s", funcKey, traceID)
+	funcSpec, err := getFuncSpec(ctx, funcKey)
+	if err != nil {
+		return err
 	}
 
 	sessionId := ctx.ReqHeader[httpconstant.HeaderInstanceSession]
@@ -128,16 +75,22 @@ func doInvokeWithRetry(ctx *types.InvokeProcessContext, funcSpec *commontype.Fun
 }
 
 func doInvoke(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) error {
-	if config.GetConfig().FunctionInvokeBackend == constant.BackendTypeFG {
-		return functionInvokeForFG(ctx, funcSpec)
-	}
 	kernelReqHandler := newKernelRequestHandler(ctx, funcSpec)
 	return kernelReqHandler.invoke()
 }
 
 func resetSchedulerProxy(ctx *types.InvokeProcessContext) {
 	if ctx.TrafficLimited {
-		schedulerproxy.Proxy.Reset()
 		ctx.TrafficLimited = false
 	}
+}
+
+func getFuncSpec(ctx *types.InvokeProcessContext, funcKey string) (*commontype.FuncSpec, error) {
+	spec, exist := functionmeta.LoadFuncSpec(funcKey)
+	if !exist {
+		responsehandler.SetErrorInContext(ctx, statuscode.FuncMetaNotFound, "function metadata not found")
+		log.GetLogger().Errorf("function %s doesn't exist in cache", funcKey)
+		return nil, errors.New("function doesn't exist")
+	}
+	return spec, nil
 }

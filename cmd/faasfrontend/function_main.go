@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -202,6 +204,10 @@ func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct
 	util.SetAPIClientLibruntime(rt)
 	schedulerproxy.Proxy.RTAPI = rt
 	cfg := config.GetConfig()
+	enableStream := os.Getenv(constant.EnableStream)
+	if strings.ToLower(enableStream) == "true" {
+		datasystemclient.SetStreamEnable(true)
+	}
 	datasystemclient.InitDataSystemLibruntime(cfg.DataSystemConfig, rt, stopChLibrt)
 	monitor.SetMemoryControlConfig(cfg.MemoryControlConfig)
 	if err := monitor.InitMemMonitor(stopCh); err != nil {

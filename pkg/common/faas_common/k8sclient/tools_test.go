@@ -29,11 +29,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	k8testing "k8s.io/client-go/testing"
 )
+
+var inClusterConfigFunc = rest.InClusterConfig
+
+type mockK8sClient struct {
+	createConfigError    error
+	createClientError    error
+	expectedConfigCalled bool
+}
 
 func TestGetkubeClient(t *testing.T) {
 	defer gomonkey.ApplyFunc(rest.InClusterConfig, func() (*rest.Config, error) {
@@ -476,4 +485,40 @@ func TestKubeClient_CreateOrUpdateConfigMap(t *testing.T) {
 		err := KubeClientSet.CreateOrUpdateConfigMap(configmap)
 		convey.So(err, convey.ShouldNotBeNil)
 	})
+}
+
+func (m *mockK8sClient) InClusterConfig() (*rest.Config, error) {
+	m.expectedConfigCalled = true
+	return &rest.Config{}, m.createConfigError
+}
+
+func (m *mockK8sClient) NewForConfig(_ *rest.Config) (dynamic.Interface, error) {
+	return nil, m.createClientError
+}
+
+func TestNewDynamicClient_Success(t *testing.T) {
+	dynamicClient = nil
+	dynamicClientOnce = sync.Once{}
+	mock := &mockK8sClient{}
+	oldInClusterConfig := inClusterConfigFunc
+	inClusterConfigFunc = mock.InClusterConfig
+	defer func() { inClusterConfigFunc = oldInClusterConfig }()
+	client := GetDynamicClient()
+	if client == nil {
+		t.Fatal("Expected non-nil client, got nil")
+	}
+}
+
+func TestNewDynamicClient_Singleton(t *testing.T) {
+	dynamicClient = nil
+	dynamicClientOnce = sync.Once{}
+	mock := &mockK8sClient{}
+	oldInClusterConfig := inClusterConfigFunc
+	inClusterConfigFunc = mock.InClusterConfig
+	defer func() { inClusterConfigFunc = oldInClusterConfig }()
+	client1 := GetDynamicClient()
+	client2 := GetDynamicClient()
+	if client1 != client2 {
+		t.Error("Expected singleton instance, got different clients")
+	}
 }

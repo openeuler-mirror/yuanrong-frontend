@@ -89,7 +89,8 @@ data:
             "moduleKeyFile": "module.key",
             "pwdFile": "cert_pwd",
             "secretName": {{ quote .Values.global.mutualSSLConfig.secretName }},
-            "sslDecryptTool": {{ quote .Values.global.mutualSSLConfig.sslDecryptTool }}
+            "sslDecryptTool": {{ quote .Values.global.mutualSSLConfig.sslDecryptTool }},
+            "clientAuthType": {{ quote .Values.global.mutualSSLConfig.clientAuthType | default "RequireAndVerifyClientCert" }}
           },
           "routerEtcd": {
             "servers": ["{{ .Values.global.etcdManagement.detcd }}"],

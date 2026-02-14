@@ -20,10 +20,11 @@ package stream
 
 import (
 	"errors"
-	"github.com/google/uuid"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/types"
@@ -102,4 +103,9 @@ func CheckIsResponseStream(responseStreamName string) bool {
 		return false
 	}
 	return res.isStream
+}
+
+// StartListenFrontendResponseStream -
+func StartListenFrontendResponseStream(stopCh <-chan struct{}) error {
+	return nil
 }

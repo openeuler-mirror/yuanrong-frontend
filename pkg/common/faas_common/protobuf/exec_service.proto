@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package exec_service;
+
+option go_package = "frontend/pkg/common/faas_common/grpc/pb/exec_service;exec_service";
+
+// ExecService 提供与容器交互的双向流接口
+service ExecService {
+  // ExecStream 建立与容器的双向流连接
+  // 客户端发送命令输入，服务端返回输出
+  rpc ExecStream(stream ExecMessage) returns (stream ExecMessage) {}
+}
+
+// ExecMessage 是统一的消息类型，使用 oneof 区分不同的 payload
+message ExecMessage {
+  // 会话 ID，用于标识一个 exec 会话
+  string session_id = 1;
+
+  oneof payload {
+    // 启动会话请求（客户端 -> 服务端）
+    ExecStartRequest start_request = 2;
+
+    // 输入数据（客户端 -> 服务端）
+    ExecInputData input_data = 3;
+
+    // 窗口大小调整（客户端 -> 服务端，仅 TTY 模式）
+    ExecResizeRequest resize = 4;
+
+    // 输出数据（服务端 -> 客户端）
+    ExecOutputData output_data = 5;
+
+    // 状态响应（服务端 -> 客户端）
+    ExecStatusResponse status = 6;
+  }
+}
+
+// ExecStartRequest 启动一个新的 exec 会话
+message ExecStartRequest {
+  // 容器 ID 或名称
+  string container_id = 1;
+
+  // 要执行的命令，默认为 ["/bin/sh"]
+  repeated string command = 2;
+
+  // 是否启用 TTY 模式
+  // true: 使用 docker exec -ti，支持完整交互式终端
+  // false: 使用 docker exec -i，基础模式
+  bool tty = 3;
+
+  // 终端初始行数（仅 TTY 模式有效）
+  int32 rows = 4;
+
+  // 终端初始列数（仅 TTY 模式有效）
+  int32 cols = 5;
+
+  // 环境变量
+  map<string, string> env = 6;
+
+  // 工作目录（可选）
+  string working_dir = 7;
+
+  // 用户（可选）
+  string user = 8;
+}
+
+// ExecInputData 包含发送到容器 stdin 的数据
+message ExecInputData {
+  // 输入数据（二进制安全）
+  bytes data = 1;
+}
+
+// ExecResizeRequest 用于调整终端窗口大小（仅 TTY 模式）
+message ExecResizeRequest {
+  // 新的行数
+  int32 rows = 1;
+
+  // 新的列数
+  int32 cols = 2;
+}
+
+// ExecOutputData 包含容器输出的数据
+message ExecOutputData {
+  // 输出流类型
+  enum StreamType {
+    STDOUT = 0;
+    STDERR = 1;
+  }
+
+  // 标识是 stdout 还是 stderr
+  StreamType stream_type = 1;
+
+  // 输出数据（二进制安全，可能包含 ANSI 序列）
+  bytes data = 2;
+}
+
+// ExecStatusResponse 包含会话状态信息
+message ExecStatusResponse {
+  // 会话状态
+  enum Status {
+    // 会话已启动
+    STARTED = 0;
+
+    // 会话运行中
+    RUNNING = 1;
+
+    // 进程已退出
+    EXITED = 2;
+
+    // 发生错误
+    ERROR = 3;
+  }
+
+  // 当前状态
+  Status status = 1;
+
+  // 进程退出码（仅当 status == EXITED 时有效）
+  int32 exit_code = 2;
+
+  // 错误信息（仅当 status == ERROR 时有效）
+  string error_message = 3;
+}

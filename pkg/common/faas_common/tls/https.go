@@ -37,32 +37,39 @@ const urlIndex = 1
 
 // HTTPSConfig is for needed HTTPS config
 type HTTPSConfig struct {
-	CipherSuite             []uint16
-	MinVers                 uint16
-	MaxVers                 uint16
-	CACertFile              string
-	CertFile                string
-	SecretKeyFile           string
-	PwdFilePath             string
-	KeyPassPhase            string
-	SecretName              string
-	DecryptTool             string
-	DisableClientCertVerify bool
+	CipherSuite    []uint16
+	MinVers        uint16
+	MaxVers        uint16
+	CACertFile     string
+	CertFile       string
+	SecretKeyFile  string
+	PwdFilePath    string
+	KeyPassPhase   string
+	SecretName     string
+	DecryptTool    string
+	ClientAuthType tls.ClientAuthType
 }
 
 // InternalHTTPSConfig is for input config
 type InternalHTTPSConfig struct {
-	HTTPSEnable             bool   `json:"httpsEnable" yaml:"httpsEnable" valid:"optional"`
-	TLSProtocol             string `json:"tlsProtocol" yaml:"tlsProtocol" valid:"optional"`
-	TLSCiphers              string `json:"tlsCiphers" yaml:"tlsCiphers" valid:"optional"`
-	SSLBasePath             string `json:"sslBasePath" yaml:"sslBasePath" valid:"optional"`
-	RootCAFile              string `json:"rootCAFile" yaml:"rootCAFile" valid:"optional"`
-	ModuleCertFile          string `json:"moduleCertFile" yaml:"moduleCertFile" valid:"optional"`
-	ModuleKeyFile           string `json:"moduleKeyFile" yaml:"moduleKeyFile" valid:"optional"`
-	PwdFile                 string `json:"pwdFile" yaml:"pwdFile" valid:"optional"`
-	SecretName              string `json:"secretName" yaml:"secretName" valid:"optional"`
-	SSLDecryptTool          string `json:"sslDecryptTool" yaml:"sslDecryptTool" valid:"optional"`
-	DisableClientCertVerify bool   `json:"disEnableClientCertVerify" yaml:"disEnableClientCertVerify" valid:"optional"`
+	HTTPSEnable             bool     `json:"httpsEnable" yaml:"httpsEnable" valid:"optional"`
+	TLSProtocol             string   `json:"tlsProtocol" yaml:"tlsProtocol" valid:"optional"`
+	TLSCiphers              string   `json:"tlsCiphers" yaml:"tlsCiphers" valid:"optional"`
+	TLSCipherSlices         []string `json:"TLSCipherSlices" valid:"optional"`
+	SSLBasePath             string   `json:"sslBasePath" yaml:"sslBasePath" valid:"optional"`
+	RootCAFile              string   `json:"rootCAFile" yaml:"rootCAFile" valid:"optional"`
+	ModuleCertFile          string   `json:"moduleCertFile" yaml:"moduleCertFile" valid:"optional"`
+	ModuleKeyFile           string   `json:"moduleKeyFile" yaml:"moduleKeyFile" valid:"optional"`
+	PwdFile        string `json:"pwdFile" yaml:"pwdFile" valid:"optional"`
+	SecretName     string `json:"secretName" yaml:"secretName" valid:"optional"`
+	SSLDecryptTool string `json:"sslDecryptTool" yaml:"sslDecryptTool" valid:"optional"`
+	// ClientAuthType specifies the TLS client authentication mode:
+	//   - NoClientCert: One-way TLS, client cert not required (most common HTTPS scenario)
+	//   - RequestClientCert: Request but don't require client cert
+	//   - RequireAnyClientCert: Require client cert but don't verify it
+	//   - VerifyClientCertIfGiven: Verify client cert only if provided
+	//   - RequireAndVerifyClientCert: Mutual TLS (mTLS), require and verify client cert
+	ClientAuthType string `json:"clientAuthType" yaml:"clientAuthType" valid:"optional"`
 }
 
 var (
@@ -131,16 +138,20 @@ func loadCerts(path string, filename string) string {
 }
 
 func loadTLSConfig() error {
-	clientAuthMode := tls.RequireAndVerifyClientCert
-	if httpsConfigs.DisableClientCertVerify {
-		clientAuthMode = tls.NoClientCert
-	}
+	clientAuthMode := httpsConfigs.ClientAuthType
 	var pool *x509.CertPool
+	var err error
 
-	pool, err := GetX509CACertPool(httpsConfigs.CACertFile)
-	if err != nil {
-		log.GetLogger().Errorf("failed to GetX509CACertPool: %s", err.Error())
-		return err
+	// Only load CA cert pool for mutual TLS (two-way authentication)
+	if clientAuthMode == tls.RequireAndVerifyClientCert || clientAuthMode == tls.VerifyClientCertIfGiven {
+		pool, err = GetX509CACertPool(httpsConfigs.CACertFile)
+		if err != nil {
+			log.GetLogger().Errorf("failed to GetX509CACertPool: %s", err.Error())
+			return err
+		}
+		log.GetLogger().Infof("Using TLS client auth mode: %v", clientAuthMode)
+	} else {
+		log.GetLogger().Infof("Client certificate verification disabled, using TLS client auth mode: %v", clientAuthMode)
 	}
 
 	var certs []tls.Certificate
@@ -168,18 +179,21 @@ func loadTLSConfig() error {
 
 // loadHTTPSConfig loads the protocol and ciphers of TLS
 func loadHTTPSConfig(config InternalHTTPSConfig) error {
+	// Parse client auth type
+	clientAuthType := parseClientAuthType(config.ClientAuthType)
+	
 	httpsConfigs = &HTTPSConfig{
-		MinVers:                 tls.VersionTLS12,
-		MaxVers:                 tls.VersionTLS12,
-		CipherSuite:             nil,
-		CACertFile:              loadCerts(config.SSLBasePath, config.RootCAFile),
-		CertFile:                loadCerts(config.SSLBasePath, config.ModuleCertFile),
-		SecretKeyFile:           loadCerts(config.SSLBasePath, config.ModuleKeyFile),
-		PwdFilePath:             "",
-		KeyPassPhase:            "",
-		SecretName:              config.SecretName,
-		DecryptTool:             config.SSLDecryptTool,
-		DisableClientCertVerify: config.DisableClientCertVerify,
+		MinVers:        tls.VersionTLS12,
+		MaxVers:        tls.VersionTLS12,
+		CipherSuite:    nil,
+		CACertFile:     loadCerts(config.SSLBasePath, config.RootCAFile),
+		CertFile:       loadCerts(config.SSLBasePath, config.ModuleCertFile),
+		SecretKeyFile:  loadCerts(config.SSLBasePath, config.ModuleKeyFile),
+		PwdFilePath:    "",
+		KeyPassPhase:   "",
+		SecretName:     config.SecretName,
+		DecryptTool:    config.SSLDecryptTool,
+		ClientAuthType: clientAuthType,
 	}
 
 	minVersion := parseSSLProtocol(config.TLSProtocol)
@@ -190,12 +204,11 @@ func loadHTTPSConfig(config InternalHTTPSConfig) error {
 		minVersion = tls.VersionTLS12
 	}
 	httpsConfigs.MinVers = minVersion
-	cipherSuites := parseSSLCipherSuites(config.TLSCiphers)
+	cipherSuites := parseSSLCipherSuites(config.TLSCiphers, config.TLSCipherSlices)
 	if len(cipherSuites) == 0 {
 		return errors.New("invalid TLS ciphers")
 	}
 	httpsConfigs.CipherSuite = cipherSuites
-
 	return nil
 }
 
@@ -227,12 +240,12 @@ func GetX509CACertPool(caCertFilePath string) (*x509.CertPool, error) {
 
 	pool.AppendCertsFromPEM(caCertContent)
 	return pool, nil
-
 }
 
 // LoadServerTLSCertificate generates tls certificate by certfile and keyfile
 func LoadServerTLSCertificate(certFile, keyFile, passPhase, decryptTool string,
-	isHTTPS bool) ([]tls.Certificate, error) {
+	isHTTPS bool,
+) ([]tls.Certificate, error) {
 	certContent, keyContent, err := loadCertAndKeyBytes(certFile, keyFile, passPhase, decryptTool, isHTTPS)
 	utils.ClearStringMemory(passPhase)
 	utils.ClearStringMemory(httpsConfigs.KeyPassPhase)
@@ -256,7 +269,8 @@ func LoadServerTLSCertificate(certFile, keyFile, passPhase, decryptTool string,
 }
 
 func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
-	isHTTPS bool) (Content []byte, err error) {
+	isHTTPS bool,
+) (Content []byte, err error) {
 	if !isHTTPS {
 		plainkeyContent, err := localauth.Decrypt(string(keyContent))
 		if err != nil {
@@ -278,11 +292,11 @@ func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
 	}
 	keyContent = pem.EncodeToMemory(plainKeyBlock)
 	return keyContent, nil
-
 }
 
 func loadCertAndKeyBytes(certFilePath, keyFilePath, passPhase string, decryptTool string, isHTTPS bool) (
-	certPEMBlock, keyPEMBlock []byte, err error) {
+	certPEMBlock, keyPEMBlock []byte, err error,
+) {
 	certContent, err := ioutil.ReadFile(certFilePath)
 	if err != nil {
 		log.GetLogger().Errorf("failed to read cert file %s: %s", certFilePath, err.Error())
@@ -294,14 +308,7 @@ func loadCertAndKeyBytes(certFilePath, keyFilePath, passPhase string, decryptToo
 		log.GetLogger().Errorf("failed to read key file %s: %s", keyFilePath, err.Error())
 		return nil, nil, err
 	}
-	keyContent, err = containPassPhase(keyContent, passPhase, decryptTool, isHTTPS)
-	if err != nil {
-		log.GetLogger().Errorf("failed to decode keyContent, error is %s", err.Error())
-		return nil, nil, err
-	}
-
 	return certContent, keyContent, nil
-
 }
 
 func clearByteMemory(src []byte) {
@@ -320,6 +327,30 @@ func loadCACertBytes(caCertFilePath string) ([]byte, error) {
 	return caCertContent, nil
 }
 
+func parseClientAuthType(authType string) tls.ClientAuthType {
+	// Default to RequireAndVerifyClientCert (mutual TLS) if not specified
+	if authType == "" {
+		return tls.RequireAndVerifyClientCert
+	}
+	
+	// Parse ClientAuthType string
+	switch authType {
+	case "NoClientCert":
+		return tls.NoClientCert
+	case "RequestClientCert":
+		return tls.RequestClientCert
+	case "RequireAnyClientCert":
+		return tls.RequireAnyClientCert
+	case "VerifyClientCertIfGiven":
+		return tls.VerifyClientCertIfGiven
+	case "RequireAndVerifyClientCert":
+		return tls.RequireAndVerifyClientCert
+	default:
+		log.GetLogger().Errorf("invalid client auth type: %s, using default RequireAndVerifyClientCert", authType)
+		return tls.RequireAndVerifyClientCert
+	}
+}
+
 func parseSSLProtocol(rawProtocol string) uint16 {
 	if protocol, ok := tlsVersionMap[rawProtocol]; ok {
 		return protocol
@@ -328,8 +359,11 @@ func parseSSLProtocol(rawProtocol string) uint16 {
 	return 0
 }
 
-func parseSSLCipherSuites(ciphers string) []uint16 {
+func parseSSLCipherSuites(ciphers string, cipherSlices []string) []uint16 {
 	cipherSuiteNameList := strings.Split(ciphers, ",")
+	if len(cipherSuiteNameList) == 0 {
+		cipherSuiteNameList = cipherSlices
+	}
 	if len(cipherSuiteNameList) == 0 {
 		log.GetLogger().Errorf("input cipher suite is empty")
 		return nil

@@ -26,12 +26,12 @@
         "created": "2023-01-16 10:20:15.135 UTC",
         "statefulFlag": false,
         "hookHandler": {
-            "call": "com.huawei.services.handler.FaaSExecutor.faasCallHandler",
-            "checkpoint": "com.huawei.services.handler.FaaSExecutor.faasCheckPointHandler",
-            "init": "com.huawei.services.handler.FaaSExecutor.faasInitHandler",
-            "recover": "com.huawei.services.handler.FaaSExecutor.faasRecoverHandler",
-            "shutdown": "com.huawei.services.handler.FaaSExecutor.faasShutDownHandler",
-            "signal": "com.huawei.services.handler.FaaSExecutor.faasSignalHandler"
+            "call": "org.yuanrong.services.handler.FaaSExecutor.faasCallHandler",
+            "checkpoint": "org.yuanrong.services.handler.FaaSExecutor.faasCheckPointHandler",
+            "init": "org.yuanrong.services.handler.FaaSExecutor.faasInitHandler",
+            "recover": "org.yuanrong.services.handler.FaaSExecutor.faasRecoverHandler",
+            "shutdown": "org.yuanrong.services.handler.FaaSExecutor.faasShutDownHandler",
+            "signal": "org.yuanrong.services.handler.FaaSExecutor.faasSignalHandler"
         }
     },
     "codeMetaData": {

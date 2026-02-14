@@ -332,3 +332,16 @@ func TestSetAlarmEnv(t *testing.T) {
 	}})
 	assert.Nil(t, err)
 }
+
+func TestInitWatchConfig(t *testing.T) {
+	convey.Convey("Test initWatchConfig", t, func() {
+		convey.Convey("when the file path is not found", func() {
+			config := &types.Config{
+				WatchedConfigFilePath: "/home/config/config.json",
+			}
+			stopChan := make(chan struct{})
+			err := initWatchConfig(config, stopChan)
+			convey.So(err, convey.ShouldBeNil)
+		})
+	})
+}
