@@ -1,7 +1,7 @@
 # 路径前缀配置说明
 
 ## 概述
-当通过 Traefik 或其他反向代理部署 frontend 服务时，可能需要在路径前添加前缀（如 `/frontend`）。`webterm.go` 已支持自动获取路径前缀。
+当通过 Traefik 或其他反向代理部署 frontend 服务时，可能需要在路径前添加前缀（如 `/frontend`）。`webui` 包已支持自动获取路径前缀。
 
 ## 工作原理
 
@@ -40,14 +40,12 @@ labels:
 - Traefik 会自动设置 `X-Forwarded-Prefix: /frontend`
 - 中间件 `stripprefix` 会去除 `/frontend` 前缀后转发给后端服务
 - 后端服务收到的请求路径为 `/terminal/ws`，但请求头包含 `X-Forwarded-Prefix: /frontend`
-- `webterm.go` 会读取此请求头，自动在返回的 HTML 中补全路径前缀
-
-### 方式二：使用环境变量
+  - 代码会读取此请求头，自动在返回的 HTML 中补全路径前缀
 
 如果需要使用环境变量，需先修改代码：
 
 ```go
-// webterm.go 中取消此行注释
+// 在相应的 handler 中取消此行注释
 pathPrefix = os.Getenv("PATH_PREFIX")
 ```
 
@@ -117,9 +115,9 @@ services:
 
 ## 相关代码
 
-主要修改位于 `webterm.go` 的 `HandleIndex` 函数：
-- 第 465-471 行：获取路径前缀
-- 第 473-857 行：使用 `fmt.Sprintf` 动态生成带前缀的 HTML
+主要修改位于 `webterm.go`（Web Terminal 页面处理器）的 `HandleIndex` 函数：
+- 获取路径前缀逻辑
+- 使用 `fmt.Sprintf` 动态生成带前缀的 HTML
 
 影响的路径：
 - `/terminal/static/xterm.css`

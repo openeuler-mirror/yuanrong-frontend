@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package webterm
+package webui
 
 import (
 	"fmt"
@@ -75,43 +75,6 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
             margin-bottom: 40px;
             line-height: 1.8;
             color: #4a5568;
-        }
-        .features {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 24px;
-            margin-bottom: 40px;
-            max-width: 600px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-        @media (max-width: 768px) {
-            .features {
-                grid-template-columns: 1fr;
-            }
-        }
-        .feature {
-            background: #f7fafc;
-            padding: 20px;
-            border-radius: 8px;
-            transition: transform 0.2s;
-        }
-        .feature:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-        .feature-icon {
-            font-size: 32px;
-            margin-bottom: 12px;
-        }
-        .feature-title {
-            font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 8px;
-        }
-        .feature-desc {
-            font-size: 14px;
-            color: #718096;
         }
         .cta-button {
             display: inline-block;
@@ -189,19 +152,6 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
             <p><strong>YuanRong Frontend Platform</strong> 为开发者提供了一站式的 Web 管理界面，
             支持函数调用、容器实例管理、在线终端访问等多种功能。
             无需安装任何客户端软件，通过浏览器即可完成所有开发和运维操作。</p>
-        </div>
-
-        <div class="features">
-            <div class="feature">
-                <div class="feature-icon">💻</div>
-                <div class="feature-title">Web Terminal</div>
-                <div class="feature-desc">在线访问容器实例终端</div>
-            </div>
-            <div class="feature">
-                <div class="feature-icon">🛠️</div>
-                <div class="feature-title">函数调试</div>
-                <div class="feature-desc">可视化测试 Serverless 函数</div>
-            </div>
         </div>
 
         <div class="cta-group">

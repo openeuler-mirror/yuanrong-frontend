@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package webterm
+package webui
 
 import (
 	"context"
@@ -530,10 +530,25 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             justify-content: space-between;
             align-items: center;
         }
+        #header .left-section {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
         #header h1 {
             margin: 0;
             font-size: 16px;
             font-weight: normal;
+        }
+        .back-link {
+            color: #ccc;
+            text-decoration: none;
+            opacity: 0.8;
+            transition: opacity 0.2s;
+            font-size: 14px;
+        }
+        .back-link:hover {
+            opacity: 1;
         }
         #status {
             display: flex;
@@ -682,7 +697,10 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div id="header">
-        <h1>🖥️ Remote Exec Terminal</h1>
+        <div class="left-section">
+            <a href="%s/" class="back-link">← 首页</a>
+            <h1>🖥️ Remote Exec Terminal</h1>
+        </div>
         <div id="status">
             <select id="container-selector" title="Select instance">
                 <option value="">Loading instances...</option>
@@ -1007,7 +1025,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }); // 结束 DOMContentLoaded
     </script>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }

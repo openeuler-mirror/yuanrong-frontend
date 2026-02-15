@@ -37,7 +37,7 @@ import (
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/frontendsdkadapter/handler"
 	"frontend/pkg/frontend/middleware"
-	"frontend/pkg/frontend/webterm"
+	"frontend/pkg/frontend/webui"
 )
 
 const (
@@ -144,19 +144,19 @@ func InitRoute(r *gin.Engine) {
 	// web terminal
 	terminalGroup := r.Group("/terminal")
 	{
-		terminalGroup.GET("", gin.WrapF(webterm.HandleIndex))
-		terminalGroup.GET("/ws", gin.WrapF(webterm.HandleWebSocket))
-		staticFS, _ := fs.Sub(webterm.StaticFiles, "static")
+		terminalGroup.GET("", gin.WrapF(webui.HandleIndex))
+		terminalGroup.GET("/ws", gin.WrapF(webui.HandleWebSocket))
+		staticFS, _ := fs.Sub(webui.StaticFiles, "static")
 		terminalGroup.GET("/static/*filepath", gin.WrapH(http.StripPrefix("/terminal/static", http.FileServer(http.FS(staticFS)))))
 	}
-	r.GET("api/instances", gin.WrapF(webterm.HandleInstances))
+	r.GET("api/instances", gin.WrapF(webui.HandleInstances))
 
 	// Function invoke tool (requires authentication)
-	r.GET("/functions", gin.WrapF(webterm.HandleInvokePage))
+	r.GET("/functions", gin.WrapF(webui.HandleInvokePage))
 
 	// API documentation page (no authentication required)
-	r.GET("/api-docs", gin.WrapF(webterm.HandleAPIDoc))
+	r.GET("/api-docs", gin.WrapF(webui.HandleAPIDoc))
 
 	// Welcome/introduction page (no authentication required)
-	r.GET("/", gin.WrapF(webterm.HandleWelcome))
+	r.GET("/", gin.WrapF(webui.HandleWelcome))
 }

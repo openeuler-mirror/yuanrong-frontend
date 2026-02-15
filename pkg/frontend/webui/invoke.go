@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package webterm
+package webui
 
 import (
 	"fmt"
@@ -50,6 +50,18 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
             color: white;
             padding: 16px 24px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .back-link {
+            display: inline-block;
+            color: white;
+            text-decoration: none;
+            margin-bottom: 8px;
+            opacity: 0.9;
+            transition: opacity 0.2s;
+            font-size: 14px;
+        }
+        .back-link:hover {
+            opacity: 1;
         }
         .header h1 {
             font-size: 24px;
@@ -225,6 +237,7 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div class="header">
+        <a href="%s/" class="back-link">← 返回首页</a>
         <h1>🚀 Function Invoke Tool</h1>
         <div class="subtitle">开发者调试工具 - 快速测试和调试 Serverless 函数</div>
     </div>
@@ -495,7 +508,7 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
         });
     </script>
 </body>
-</html>`, pathPrefix)
+</html>`, pathPrefix, pathPrefix)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))

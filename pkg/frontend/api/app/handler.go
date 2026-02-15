@@ -62,9 +62,13 @@ func CreateHandler(ctx *gin.Context) {
 func SubmitApp(reqBody *job.SubmitRequest) (map[string]string, int, error) {
 	logger := log.GetLogger().With(zap.Any("SubmissionId", reqBody.SubmissionId))
 	logger.Debugf("start to submit app")
+	functionID := reqBody.FunctionID
+	if functionID == "" {
+		functionID = constant.AppFuncId
+	}
 	funcMeta := api.FunctionMeta{
 		FuncName: constant.FunctionNameApp,
-		FuncID:   constant.AppFuncId,
+		FuncID:   functionID,
 		Api:      api.ActorApi,
 		Language: api.Python,
 		Name:     &reqBody.SubmissionId,

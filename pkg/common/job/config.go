@@ -53,6 +53,7 @@ type SubmitRequest struct {
 	EntrypointNumCpus   float64            `form:"entrypoint_num_cpus" json:"entrypoint_num_cpus" valid:"optional"`
 	EntrypointNumGpus   float64            `form:"entrypoint_num_gpus" json:"entrypoint_num_gpus" valid:"optional"`
 	EntrypointMemory    int                `form:"entrypoint_memory" json:"entrypoint_memory" valid:"optional"`
+	FunctionID          string             `form:"function_id" json:"function_id" valid:"optional"`
 }
 
 // RuntimeEnv args of invoking create_app

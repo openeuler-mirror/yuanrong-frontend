@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package webterm
+package webui
 
 import (
 	"fmt"
