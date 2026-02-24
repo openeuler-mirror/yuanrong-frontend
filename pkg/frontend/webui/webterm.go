@@ -805,6 +805,35 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             cursor: not-allowed;
             opacity: 0.6;
         }
+        #custom-dialog .tab-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #3e3e42;
+        }
+        #custom-dialog .tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        #custom-dialog .tab:hover {
+            color: #d4d4d4;
+        }
+        #custom-dialog .tab.active {
+            color: #007acc;
+            border-bottom-color: #007acc;
+        }
+        #custom-dialog .tab-content {
+            display: none;
+        }
+        #custom-dialog .tab-content.active {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -856,18 +885,47 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <div id="custom-dialog-overlay">
         <div id="custom-dialog">
             <h2>🖥️ 连接配置</h2>
-            <div class="form-group">
-                <label for="dialog-instance">实例名称或ID *</label>
-                <input type="text" id="dialog-instance" placeholder="请输入实例名称或实例ID">
+            
+            <!-- 选项卡 -->
+            <div class="tab-container">
+                <button class="tab active" onclick="switchTab('connect')">连接实例</button>
+                <button class="tab" onclick="switchTab('create')">创建Sandbox</button>
             </div>
-            <div class="form-group">
-                <label for="dialog-tenant">租户ID（Tenant ID）</label>
-                <input type="text" id="dialog-tenant" value="default" placeholder="默认为 default">
+            
+            <!-- 连接实例选项卡内容 -->
+            <div id="connect-tab" class="tab-content active">
+                <div class="form-group">
+                    <label for="dialog-instance">实例名称或ID *</label>
+                    <input type="text" id="dialog-instance" placeholder="请输入实例名称或实例ID">
+                </div>
+                <div class="form-group">
+                    <label for="dialog-tenant">租户ID（Tenant ID）</label>
+                    <input type="text" id="dialog-tenant" value="default" placeholder="默认为 default">
+                </div>
+                <div class="button-group">
+                    <button class="btn-secondary" onclick="cancelDialog()">取消</button>
+                    <button class="btn-primary" onclick="submitDialog()">连接</button>
+                </div>
             </div>
-            <div class="button-group">
-                <button class="btn-secondary" onclick="cancelDialog()">取消</button>
-                <button class="btn-create" id="create-sandbox-btn" onclick="createTempSandbox()">创建临时Sandbox</button>
-                <button class="btn-primary" onclick="submitDialog()">连接</button>
+            
+            <!-- 创建Sandbox选项卡内容 -->
+            <div id="create-tab" class="tab-content">
+                <div class="form-group">
+                    <label for="sandbox-namespace">Namespace</label>
+                    <input type="text" id="sandbox-namespace" value="sandbox" placeholder="默认为 sandbox">
+                </div>
+                <div class="form-group">
+                    <label for="sandbox-name">Name</label>
+                    <input type="text" id="sandbox-name" placeholder="默认随机生成UUID">
+                </div>
+                <div class="form-group">
+                    <label for="sandbox-tenant">租户ID（Tenant ID）</label>
+                    <input type="text" id="sandbox-tenant" value="default" placeholder="默认为 default">
+                </div>
+                <div class="button-group">
+                    <button class="btn-secondary" onclick="cancelDialog()">取消</button>
+                    <button class="btn-create" id="submit-sandbox-btn" onclick="submitSandboxCreation()">创建并连接</button>
+                </div>
             </div>
         </div>
     </div>
@@ -875,6 +933,183 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <script src="%s/terminal/static/xterm.js"></script>
     <script src="%s/terminal/static/xterm-addon-fit.js"></script>
     <script>
+        // 生成UUID
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+        
+        // 切换选项卡
+        function switchTab(tabName) {
+            // 更新选项卡按钮状态
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // 更新内容区域
+            const connectTab = document.getElementById('connect-tab');
+            const createTab = document.getElementById('create-tab');
+            
+            if (tabName === 'connect') {
+                connectTab.classList.add('active');
+                createTab.classList.remove('active');
+            } else if (tabName === 'create') {
+                connectTab.classList.remove('active');
+                createTab.classList.add('active');
+                
+                // 切换到创建选项卡时，自动生成UUID
+                const nameInput = document.getElementById('sandbox-name');
+                if (!nameInput.value) {
+                    nameInput.value = generateUUID();
+                }
+            }
+        }
+        
+        // 提交创建Sandbox
+        async function submitSandboxCreation() {
+            const namespace = document.getElementById('sandbox-namespace').value.trim() || 'sandbox';
+            const name = document.getElementById('sandbox-name').value.trim() || generateUUID();
+            const tenant = document.getElementById('sandbox-tenant').value.trim() || 'default';
+            const submitBtn = document.getElementById('submit-sandbox-btn');
+            
+            try {
+                // 禁用按钮并显示加载状态
+                submitBtn.disabled = true;
+                submitBtn.textContent = '⏳ 创建中...';
+                
+                // 获取当前token
+                const currentParams = new URLSearchParams(window.location.search);
+                const token = currentParams.get('token');
+                
+                // 构建请求payload
+                const payload = {
+                    entrypoint: 'python -m yr.sandbox.sandbox --name ' + name + ' --namespace ' + namespace,
+                    runtime_env: {
+                        working_dir: '/tmp'
+                    }
+                };
+                
+                // 构建请求选项
+                const fetchOptions = {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                };
+                
+                if (token) {
+                    fetchOptions.headers['X-Auth'] = token;
+                }
+                
+                // 调用创建作业API
+                const response = await fetch('%s/api/jobs', fetchOptions);
+                
+                if (!response.ok) {
+                    throw new Error('创建作业失败: ' + response.status);
+                }
+                
+                const result = await response.json();
+                
+                // 检查返回的submission_id
+                if (!result.submission_id) {
+                    throw new Error('API返回的数据中没有找到submission_id');
+                }
+                
+                const submissionId = result.submission_id;
+                submitBtn.textContent = '⏳ 等待就绪...';
+                
+                // 轮询作业状态
+                await pollJobStatus(submissionId, namespace, name, tenant, token);
+                
+            } catch (error) {
+                console.error('创建Sandbox失败:', error);
+                alert('创建Sandbox失败: ' + error.message);
+                
+                // 恢复按钮状态
+                submitBtn.disabled = false;
+                submitBtn.textContent = '创建并连接';
+            }
+        }
+        
+        // 轮询作业状态
+        async function pollJobStatus(submissionId, namespace, name, tenant, token) {
+            const maxAttempts = 60; // 最多轮询60次
+            const pollInterval = 2000; // 每2秒轮询一次
+            let attempts = 0;
+            
+            const poll = async () => {
+                try {
+                    // 构建请求选项
+                    const fetchOptions = {};
+                    if (token) {
+                        fetchOptions.headers = {
+                            'X-Auth': token
+                        };
+                    }
+                    
+                    // 查询作业状态
+                    const response = await fetch('%s/api/jobs/' + encodeURIComponent(submissionId), fetchOptions);
+                    
+                    if (!response.ok) {
+                        throw new Error('查询作业状态失败: ' + response.status);
+                    }
+                    
+                    const jobInfo = await response.json();
+                    const status = jobInfo.status;
+                    
+                    if (status === 'SUCCEEDED') {
+                        // 执行成功，跳转到webterminal
+                        const instanceId = namespace + '-' + name;
+                        const params = new URLSearchParams();
+                        params.set('instance', instanceId);
+                        params.set('tenant_id', tenant);
+                        if (token) {
+                            params.set('token', token);
+                        }
+                        window.location.search = params.toString();
+                        return;
+                    } else if (status === 'FAILED') {
+                        // 执行失败
+                        document.getElementById('custom-dialog-overlay').style.display = 'none';
+                        alert('Sandbox创建失败: 作业执行失败\n' + (jobInfo.message || ''));
+                        document.getElementById('submit-sandbox-btn').disabled = false;
+                        document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
+                        return;
+                    } else if (status === 'STOPPED') {
+                        // 被停止
+                        document.getElementById('custom-dialog-overlay').style.display = 'none';
+                        alert('Sandbox创建失败: 作业被停止\n' + (jobInfo.message || ''));
+                        document.getElementById('submit-sandbox-btn').disabled = false;
+                        document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
+                        return;
+                    } else if (status === 'PENDING' || status === 'RUNNING') {
+                        // 正在执行中，继续轮询
+                        attempts++;
+                        if (attempts >= maxAttempts) {
+                            throw new Error('等待超时，请稍后在实例列表中查看');
+                        }
+                        setTimeout(poll, pollInterval);
+                        return;
+                    } else {
+                        // 未知状态
+                        throw new Error('未知的作业状态: ' + status);
+                    }
+                } catch (error) {
+                    document.getElementById('custom-dialog-overlay').style.display = 'none';
+                    alert('查询作业状态失败: ' + error.message);
+                    document.getElementById('submit-sandbox-btn').disabled = false;
+                    document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
+                }
+            };
+            
+            // 开始轮询
+            poll();
+        }
+        
         // 显示自定义对话框
         function showCustomDialog() {
             const overlay = document.getElementById('custom-dialog-overlay');
@@ -901,71 +1136,6 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 '</div>';
             document.getElementById('status-text').textContent = 'No instance specified';
             document.getElementById('custom-dialog-overlay').style.display = 'none';
-        }
-        
-        // 创建临时Sandbox
-        async function createTempSandbox() {
-            const tenant = document.getElementById('dialog-tenant').value.trim() || 'default';
-            const createBtn = document.getElementById('create-sandbox-btn');
-            
-            try {
-                // 禁用按钮并显示加载状态
-                createBtn.disabled = true;
-                createBtn.textContent = '创建中...';
-                
-                // 获取当前token
-                const currentParams = new URLSearchParams(window.location.search);
-                const token = currentParams.get('token');
-                
-                // 构建请求选项
-                const fetchOptions = {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({action: 'create'})
-                };
-                
-                if (token) {
-                    fetchOptions.headers['X-Auth'] = token;
-                }
-                
-                // 调用创建sandbox的API
-                const response = await fetch('%s/default/default/sandbox', fetchOptions);
-                
-                if (!response.ok) {
-                    throw new Error('创建Sandbox失败: ' + response.status);
-                }
-                
-                const result = await response.json();
-                
-                // 检查返回的instance字段
-                if (!result.instance) {
-                    throw new Error('API返回的数据中没有找到instance字段');
-                }
-                
-                // 获取instance
-                const instanceId = result.instance;
-                
-                // 使用返回的instanceid连接webterminal
-                const params = new URLSearchParams();
-                params.set('instance', instanceId);
-                params.set('tenant_id', tenant);
-                if (token) {
-                    params.set('token', token);
-                }
-                
-                // 重定向到带有参数的URL
-                window.location.search = params.toString();
-                
-            } catch (error) {
-                console.error('创建临时Sandbox失败:', error);
-                alert('创建临时Sandbox失败: ' + error.message);
-                
-                // 恢复按钮状态
-                createBtn.disabled = false;
-                createBtn.textContent = '创建临时Sandbox';
-            }
         }
         
         // 提交对话框
@@ -1273,7 +1443,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }); // 结束 DOMContentLoaded
     </script>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }
