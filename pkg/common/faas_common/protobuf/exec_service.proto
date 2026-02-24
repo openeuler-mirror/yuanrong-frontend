@@ -61,6 +61,9 @@ message ExecStartRequest {
 
   // 用户（可选）
   string user = 8;
+
+  // 实例 ID（用于 session 引用计数）
+  string instance_id = 9;
 }
 
 // ExecInputData 包含发送到容器 stdin 的数据

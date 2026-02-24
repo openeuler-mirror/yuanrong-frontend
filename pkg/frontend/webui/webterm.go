@@ -325,6 +325,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Tty:         tty,
 				Rows:        rows,
 				Cols:        cols,
+                InstanceId:  info.InstanceID,
 			},
 		},
 	})
@@ -885,13 +886,13 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <div id="custom-dialog-overlay">
         <div id="custom-dialog">
             <h2>🖥️ 连接配置</h2>
-            
+
             <!-- 选项卡 -->
             <div class="tab-container">
                 <button class="tab active" onclick="switchTab('connect')">连接实例</button>
                 <button class="tab" onclick="switchTab('create')">创建Sandbox</button>
             </div>
-            
+
             <!-- 连接实例选项卡内容 -->
             <div id="connect-tab" class="tab-content active">
                 <div class="form-group">
@@ -907,7 +908,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     <button class="btn-primary" onclick="submitDialog()">连接</button>
                 </div>
             </div>
-            
+
             <!-- 创建Sandbox选项卡内容 -->
             <div id="create-tab" class="tab-content">
                 <div class="form-group">
@@ -941,25 +942,25 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 return v.toString(16);
             });
         }
-        
+
         // 切换选项卡
         function switchTab(tabName) {
             // 更新选项卡按钮状态
             const tabs = document.querySelectorAll('.tab');
             tabs.forEach(tab => tab.classList.remove('active'));
             event.target.classList.add('active');
-            
+
             // 更新内容区域
             const connectTab = document.getElementById('connect-tab');
             const createTab = document.getElementById('create-tab');
-            
+
             if (tabName === 'connect') {
                 connectTab.classList.add('active');
                 createTab.classList.remove('active');
             } else if (tabName === 'create') {
                 connectTab.classList.remove('active');
                 createTab.classList.add('active');
-                
+
                 // 切换到创建选项卡时，自动生成UUID
                 const nameInput = document.getElementById('sandbox-name');
                 if (!nameInput.value) {
@@ -967,23 +968,23 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 }
             }
         }
-        
+
         // 提交创建Sandbox
         async function submitSandboxCreation() {
             const namespace = document.getElementById('sandbox-namespace').value.trim() || 'sandbox';
             const name = document.getElementById('sandbox-name').value.trim() || generateUUID();
             const tenant = document.getElementById('sandbox-tenant').value.trim() || 'default';
             const submitBtn = document.getElementById('submit-sandbox-btn');
-            
+
             try {
                 // 禁用按钮并显示加载状态
                 submitBtn.disabled = true;
                 submitBtn.textContent = '⏳ 创建中...';
-                
+
                 // 获取当前token
                 const currentParams = new URLSearchParams(window.location.search);
                 const token = currentParams.get('token');
-                
+
                 // 构建请求payload
                 const payload = {
                     entrypoint: 'python -m yr.sandbox.sandbox --name ' + name + ' --namespace ' + namespace,
@@ -991,7 +992,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         working_dir: '/tmp'
                     }
                 };
-                
+
                 // 构建请求选项
                 const fetchOptions = {
                     method: 'POST',
@@ -1000,47 +1001,47 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     },
                     body: JSON.stringify(payload)
                 };
-                
+
                 if (token) {
                     fetchOptions.headers['X-Auth'] = token;
                 }
-                
+
                 // 调用创建作业API
                 const response = await fetch('%s/api/jobs', fetchOptions);
-                
+
                 if (!response.ok) {
                     throw new Error('创建作业失败: ' + response.status);
                 }
-                
+
                 const result = await response.json();
-                
+
                 // 检查返回的submission_id
                 if (!result.submission_id) {
                     throw new Error('API返回的数据中没有找到submission_id');
                 }
-                
+
                 const submissionId = result.submission_id;
                 submitBtn.textContent = '⏳ 等待就绪...';
-                
+
                 // 轮询作业状态
                 await pollJobStatus(submissionId, namespace, name, tenant, token);
-                
+
             } catch (error) {
                 console.error('创建Sandbox失败:', error);
                 alert('创建Sandbox失败: ' + error.message);
-                
+
                 // 恢复按钮状态
                 submitBtn.disabled = false;
                 submitBtn.textContent = '创建并连接';
             }
         }
-        
+
         // 轮询作业状态
         async function pollJobStatus(submissionId, namespace, name, tenant, token) {
             const maxAttempts = 60; // 最多轮询60次
             const pollInterval = 2000; // 每2秒轮询一次
             let attempts = 0;
-            
+
             const poll = async () => {
                 try {
                     // 构建请求选项
@@ -1050,17 +1051,17 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                             'X-Auth': token
                         };
                     }
-                    
+
                     // 查询作业状态
                     const response = await fetch('%s/api/jobs/' + encodeURIComponent(submissionId), fetchOptions);
-                    
+
                     if (!response.ok) {
                         throw new Error('查询作业状态失败: ' + response.status);
                     }
-                    
+
                     const jobInfo = await response.json();
                     const status = jobInfo.status;
-                    
+
                     if (status === 'SUCCEEDED') {
                         // 执行成功，跳转到webterminal
                         const instanceId = namespace + '-' + name;
@@ -1105,17 +1106,17 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
                 }
             };
-            
+
             // 开始轮询
             poll();
         }
-        
+
         // 显示自定义对话框
         function showCustomDialog() {
             const overlay = document.getElementById('custom-dialog-overlay');
             overlay.style.display = 'flex';
             document.getElementById('dialog-instance').focus();
-            
+
             // 支持回车键提交
             const inputs = document.querySelectorAll('#custom-dialog input');
             inputs.forEach(input => {
@@ -1126,10 +1127,10 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 });
             });
         }
-        
+
         // 取消对话框
         function cancelDialog() {
-            document.getElementById('terminal').innerHTML = 
+            document.getElementById('terminal').innerHTML =
                 '<div style="color: #f44336; padding: 20px; text-align: center;">' +
                 '<h2>⚠️ 未指定实例</h2>' +
                 '<p>请刷新页面重新输入连接信息</p>' +
@@ -1137,29 +1138,29 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             document.getElementById('status-text').textContent = 'No instance specified';
             document.getElementById('custom-dialog-overlay').style.display = 'none';
         }
-        
+
         // 提交对话框
         function submitDialog() {
             const instance = document.getElementById('dialog-instance').value.trim();
             const tenant = document.getElementById('dialog-tenant').value.trim() || 'default';
-            
+
             if (!instance) {
                 alert('请输入实例名称或ID');
                 document.getElementById('dialog-instance').focus();
                 return;
             }
-            
+
             // 构建新的URL参数，保留现有的token
             const currentParams = new URLSearchParams(window.location.search);
             const token = currentParams.get('token');
-            
+
             const params = new URLSearchParams();
             params.set('instance', instance);
             params.set('tenant_id', tenant);
             if (token) {
                 params.set('token', token);
             }
-            
+
             // 重定向到带有参数的URL
             window.location.search = params.toString();
         }
@@ -1170,7 +1171,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         let pageSize = 10;
         let totalInstances = 0;
         let allInstances = [];
-        
+
         // 加载实例列表
         async function loadInstances(page = 1) {
             try {
@@ -1178,7 +1179,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 const params = new URLSearchParams(window.location.search);
                 const tenantId = params.get('tenant_id') || 'default';
                 const token = params.get('token') || '';
-                
+
                 // 构建请求选项
                 const fetchOptions = {};
                 if (token) {
@@ -1186,36 +1187,36 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         'X-Auth': token
                     };
                 }
-                
+
                 const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId), fetchOptions);
                 const instances = await response.json();
-                
+
                 // 保存所有实例数据
                 allInstances = instances;
                 totalInstances = instances.length;
                 currentPage = page;
-                
+
                 const listContainer = document.getElementById('instance-list');
-                
+
                 // 清空列表
                 listContainer.innerHTML = '';
-                
+
                 // 获取当前实例（从URL参数）
                 const currentInstance = params.get('instance') || '';
-                
+
                 // 如果没有实例，显示提示
                 if (instances.length === 0) {
                     listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">暂无实例</div>';
                     updatePaginationUI();
                     return;
                 }
-                
+
                 // 计算分页
                 const totalPages = Math.ceil(totalInstances / pageSize);
                 const startIndex = (currentPage - 1) * pageSize;
                 const endIndex = Math.min(startIndex + pageSize, totalInstances);
                 const pageInstances = instances.slice(startIndex, endIndex);
-                
+
                 // 渲染实例列表
                 pageInstances.forEach(instance => {
                     const item = document.createElement('div');
@@ -1223,11 +1224,11 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     if (instance.id === currentInstance) {
                         item.classList.add('active');
                     }
-                    
+
                     const idDiv = document.createElement('div');
                     idDiv.className = 'instance-id';
                     idDiv.textContent = instance.id;
-                    
+
                     const statusDiv = document.createElement('div');
                     statusDiv.className = 'instance-status';
                     const status = instance.status || 'unknown';
@@ -1238,21 +1239,21 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     } else if (status.toLowerCase().includes('stop') || status.toLowerCase().includes('error')) {
                         statusDiv.classList.add('stopped');
                     }
-                    
+
                     item.appendChild(idDiv);
                     item.appendChild(statusDiv);
-                    
+
                     // 点击切换实例
                     item.addEventListener('click', () => {
                         switchInstance(instance.id);
                     });
-                    
+
                     listContainer.appendChild(item);
                 });
-                
+
                 // 更新分页UI
                 updatePaginationUI();
-                
+
             } catch (error) {
                 console.error('Failed to load instances:', error);
                 const listContainer = document.getElementById('instance-list');
@@ -1260,13 +1261,13 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 updatePaginationUI();
             }
         }
-        
+
         // 更新分页UI
         function updatePaginationUI() {
             const totalPages = Math.ceil(totalInstances / pageSize);
             const startIndex = (currentPage - 1) * pageSize + 1;
             const endIndex = Math.min(currentPage * pageSize, totalInstances);
-            
+
             // 更新页面信息
             const pageInfoText = document.getElementById('page-info-text');
             if (totalInstances === 0) {
@@ -1274,14 +1275,14 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             } else {
                 pageInfoText.textContent = startIndex + '-' + endIndex + ' / ' + totalInstances;
             }
-            
+
             // 更新按钮状态
             document.getElementById('first-page-btn').disabled = currentPage === 1;
             document.getElementById('prev-page-btn').disabled = currentPage === 1;
             document.getElementById('next-page-btn').disabled = currentPage >= totalPages;
             document.getElementById('last-page-btn').disabled = currentPage >= totalPages;
         }
-        
+
         // 切换实例
         function switchInstance(instanceId) {
             const params = new URLSearchParams(window.location.search);
@@ -1293,54 +1294,54 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             // 重新加载页面并带上新的实例参数
             window.location.search = params.toString();
         }
-        
+
         // 初始化
         document.addEventListener('DOMContentLoaded', () => {
             // 检查是否有实例参数
             const params = new URLSearchParams(window.location.search);
             const currentInstance = params.get('instance');
-            
+
             // 如果没有实例参数，显示自定义对话框要求用户输入
             if (!currentInstance) {
                 showCustomDialog();
                 return; // 停止后续初始化，等待用户输入
             }
-            
+
             loadInstances();
-            
+
             // 手动输入实例按钮事件
             document.getElementById('add-instance-btn').addEventListener('click', () => {
                 showCustomDialog();
             });
-            
+
             // 刷新按钮事件
             document.getElementById('refresh-btn').addEventListener('click', () => {
                 loadInstances(currentPage);
             });
-            
+
             // 分页按钮事件
             document.getElementById('first-page-btn').addEventListener('click', () => {
                 loadInstances(1);
             });
-            
+
             document.getElementById('prev-page-btn').addEventListener('click', () => {
                 if (currentPage > 1) {
                     loadInstances(currentPage - 1);
                 }
             });
-            
+
             document.getElementById('next-page-btn').addEventListener('click', () => {
                 const totalPages = Math.ceil(totalInstances / pageSize);
                 if (currentPage < totalPages) {
                     loadInstances(currentPage + 1);
                 }
             });
-            
+
             document.getElementById('last-page-btn').addEventListener('click', () => {
                 const totalPages = Math.ceil(totalInstances / pageSize);
                 loadInstances(totalPages);
             });
-            
+
             // 初始化 Terminal（只有在有容器ID时才执行）
             const term = new Terminal({
                 cursorBlink: true,
@@ -1371,7 +1372,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
             const fitAddon = new FitAddon.FitAddon();
             term.loadAddon(fitAddon);
-            
+
             term.open(document.getElementById('terminal'));
             fitAddon.fit();
 
@@ -1384,14 +1385,14 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             // 保留所有 URL 参数（包括 token）
             const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + window.location.search;
             document.getElementById('ws-url').textContent = wsUrl;
-            
+
             const ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 
             ws.onopen = () => {
                 document.getElementById('status-text').textContent = 'Connected';
                 document.getElementById('status-indicator').classList.add('connected');
-                
+
                 // 稍微延迟发送终端尺寸，确保后端已经初始化PTY
                 setTimeout(() => {
                     if (ws.readyState === WebSocket.OPEN) {
@@ -1401,7 +1402,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         ws.send('RESIZE:' + cols + ':' + rows);
                     }
                 }, 100);
-                
+
                 term.focus();
             };
 
