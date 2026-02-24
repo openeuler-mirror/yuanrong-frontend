@@ -555,38 +555,6 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             align-items: center;
             gap: 10px;
         }
-        #container-selector {
-            background: #3c3c3c;
-            color: #d4d4d4;
-            border: 1px solid #555;
-            padding: 4px 8px;
-            border-radius: 3px;
-            font-size: 13px;
-            cursor: pointer;
-            outline: none;
-        }
-        #container-selector:hover {
-            background: #4c4c4c;
-        }
-        #container-selector option {
-            background: #3c3c3c;
-        }
-        #refresh-btn {
-            background: #3c3c3c;
-            color: #d4d4d4;
-            border: 1px solid #555;
-            padding: 4px 8px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 14px;
-            outline: none;
-        }
-        #refresh-btn:hover {
-            background: #4c4c4c;
-        }
-        #refresh-btn:active {
-            background: #2c2c2c;
-        }
         .status-indicator {
             width: 8px;
             height: 8px;
@@ -599,6 +567,138 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }
         .status-indicator.disconnected {
             background: #f44336;
+        }
+        #main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #sidebar {
+            width: 280px;
+            background: #252526;
+            border-right: 1px solid #3e3e42;
+            display: flex;
+            flex-direction: column;
+        }
+        #sidebar-header {
+            padding: 12px 16px;
+            background: #2d2d30;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #sidebar-header h2 {
+            margin: 0;
+            font-size: 13px;
+            font-weight: normal;
+            color: #ccc;
+        }
+        #refresh-btn {
+            background: transparent;
+            color: #d4d4d4;
+            border: none;
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 14px;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+        }
+        #refresh-btn:hover {
+            opacity: 1;
+        }
+        #instance-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 4px 0;
+        }
+        .instance-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            color: #ccc;
+            font-size: 13px;
+            border-left: 3px solid transparent;
+            transition: background 0.2s;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .instance-item:hover {
+            background: #2a2d2e;
+        }
+        .instance-item.active {
+            background: #37373d;
+            border-left-color: #007acc;
+        }
+        .instance-item .instance-id {
+            font-weight: 500;
+            color: #d4d4d4;
+        }
+        .instance-item .instance-status {
+            font-size: 11px;
+        }
+        .instance-item .instance-status.running {
+            color: #4caf50;
+        }
+        .instance-item .instance-status.stopped {
+            color: #f44336;
+        }
+        #pagination {
+            padding: 8px 16px;
+            background: #2d2d30;
+            border-top: 1px solid #3e3e42;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            color: #888;
+        }
+        #pagination .page-info {
+            flex: 1;
+        }
+        #pagination .page-controls {
+            display: flex;
+            gap: 5px;
+        }
+        #pagination button {
+            background: transparent;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        #pagination button:hover:not(:disabled) {
+            background: #4c4c4c;
+            border-color: #007acc;
+        }
+        #pagination button:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        #sidebar-footer {
+            padding: 10px 16px;
+            background: #2d2d30;
+            border-top: 1px solid #3e3e42;
+        }
+        #add-instance-btn {
+            width: 100%%;
+            background: #3c3c3c;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            padding: 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+            outline: none;
+            transition: background 0.2s;
+        }
+        #add-instance-btn:hover {
+            background: #4c4c4c;
         }
         #terminal-container {
             flex: 1;
@@ -693,6 +793,18 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         #custom-dialog .btn-secondary:hover {
             background: #4c4c4c;
         }
+        #custom-dialog .btn-create {
+            background: #28a745;
+            color: white;
+        }
+        #custom-dialog .btn-create:hover {
+            background: #218838;
+        }
+        #custom-dialog .btn-create:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
     </style>
 </head>
 <body>
@@ -702,16 +814,39 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             <h1>🖥️ Remote Exec Terminal</h1>
         </div>
         <div id="status">
-            <select id="container-selector" title="Select instance">
-                <option value="">Loading instances...</option>
-            </select>
-            <button id="refresh-btn" title="Refresh container list">🔄</button>
             <span id="status-text">Connecting...</span>
             <div class="status-indicator" id="status-indicator"></div>
         </div>
     </div>
-    <div id="terminal-container">
-        <div id="terminal"></div>
+    <div id="main-container">
+        <div id="sidebar">
+            <div id="sidebar-header">
+                <h2>实例列表</h2>
+                <button id="refresh-btn" title="刷新实例列表">🔄</button>
+            </div>
+            <div id="instance-list">
+                <div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">
+                    加载中...
+                </div>
+            </div>
+            <div id="pagination">
+                <div class="page-info">
+                    <span id="page-info-text">-</span>
+                </div>
+                <div class="page-controls">
+                    <button id="first-page-btn" title="首页">«</button>
+                    <button id="prev-page-btn" title="上一页">‹</button>
+                    <button id="next-page-btn" title="下一页">›</button>
+                    <button id="last-page-btn" title="末页">»</button>
+                </div>
+            </div>
+            <div id="sidebar-footer">
+                <button id="add-instance-btn">✏️ 手动输入实例ID</button>
+            </div>
+        </div>
+        <div id="terminal-container">
+            <div id="terminal"></div>
+        </div>
     </div>
     <div id="footer">
         Press Ctrl+C to interrupt | Connection: <span id="ws-url"></span>
@@ -731,6 +866,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             </div>
             <div class="button-group">
                 <button class="btn-secondary" onclick="cancelDialog()">取消</button>
+                <button class="btn-create" id="create-sandbox-btn" onclick="createTempSandbox()">创建临时Sandbox</button>
                 <button class="btn-primary" onclick="submitDialog()">连接</button>
             </div>
         </div>
@@ -767,6 +903,71 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             document.getElementById('custom-dialog-overlay').style.display = 'none';
         }
         
+        // 创建临时Sandbox
+        async function createTempSandbox() {
+            const tenant = document.getElementById('dialog-tenant').value.trim() || 'default';
+            const createBtn = document.getElementById('create-sandbox-btn');
+            
+            try {
+                // 禁用按钮并显示加载状态
+                createBtn.disabled = true;
+                createBtn.textContent = '创建中...';
+                
+                // 获取当前token
+                const currentParams = new URLSearchParams(window.location.search);
+                const token = currentParams.get('token');
+                
+                // 构建请求选项
+                const fetchOptions = {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({action: 'create'})
+                };
+                
+                if (token) {
+                    fetchOptions.headers['X-Auth'] = token;
+                }
+                
+                // 调用创建sandbox的API
+                const response = await fetch('%s/default/default/sandbox', fetchOptions);
+                
+                if (!response.ok) {
+                    throw new Error('创建Sandbox失败: ' + response.status);
+                }
+                
+                const result = await response.json();
+                
+                // 检查返回的instance字段
+                if (!result.instance) {
+                    throw new Error('API返回的数据中没有找到instance字段');
+                }
+                
+                // 获取instance
+                const instanceId = result.instance;
+                
+                // 使用返回的instanceid连接webterminal
+                const params = new URLSearchParams();
+                params.set('instance', instanceId);
+                params.set('tenant_id', tenant);
+                if (token) {
+                    params.set('token', token);
+                }
+                
+                // 重定向到带有参数的URL
+                window.location.search = params.toString();
+                
+            } catch (error) {
+                console.error('创建临时Sandbox失败:', error);
+                alert('创建临时Sandbox失败: ' + error.message);
+                
+                // 恢复按钮状态
+                createBtn.disabled = false;
+                createBtn.textContent = '创建临时Sandbox';
+            }
+        }
+        
         // 提交对话框
         function submitDialog() {
             const instance = document.getElementById('dialog-instance').value.trim();
@@ -794,8 +995,14 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }
     </script>
     <script>
+        // 分页配置
+        let currentPage = 1;
+        let pageSize = 10;
+        let totalInstances = 0;
+        let allInstances = [];
+        
         // 加载实例列表
-        async function loadInstances() {
+        async function loadInstances(page = 1) {
             try {
                 // 获取 tenant_id 和 token 参数
                 const params = new URLSearchParams(window.location.search);
@@ -812,62 +1019,97 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 
                 const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId), fetchOptions);
                 const instances = await response.json();
-                const selector = document.getElementById('container-selector');
                 
-                // 清空选项
-                selector.innerHTML = '';
+                // 保存所有实例数据
+                allInstances = instances;
+                totalInstances = instances.length;
+                currentPage = page;
+                
+                const listContainer = document.getElementById('instance-list');
+                
+                // 清空列表
+                listContainer.innerHTML = '';
                 
                 // 获取当前实例（从URL参数）
                 const currentInstance = params.get('instance') || '';
                 
-                // 只显示前10个实例
-                const displayInstances = instances.slice(0, 10);
-                
-                // 添加实例选项
-                displayInstances.forEach(instance => {
-                    const option = document.createElement('option');
-                    option.value = instance.id;
-                    option.textContent = instance.name + ' (' + instance.status + ')';
-                    if (instance.id === currentInstance || instance.name === currentInstance) {
-                        option.selected = true;
-                    }
-                    selector.appendChild(option);
-                });
-                
-                // 如果当前实例不在前10个列表中，但存在于完整列表中，添加它
-                if (currentInstance && !displayInstances.some(c => c.id === currentInstance || c.name === currentInstance)) {
-                    const fullMatch = instances.find(c => c.id === currentInstance || c.name === currentInstance);
-                    if (fullMatch) {
-                        const option = document.createElement('option');
-                        option.value = fullMatch.id;
-                        option.textContent = fullMatch.name + ' (' + fullMatch.status + ')';
-                        option.selected = true;
-                        selector.appendChild(option);
-                    } else {
-                        // 当前实例不在完整列表中，添加自定义实例
-                        const option = document.createElement('option');
-                        option.value = currentInstance;
-                        option.textContent = currentInstance;
-                        option.selected = true;
-                        selector.appendChild(option);
-                    }
+                // 如果没有实例，显示提示
+                if (instances.length === 0) {
+                    listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">暂无实例</div>';
+                    updatePaginationUI();
+                    return;
                 }
                 
-                // 添加分隔线和手动输入选项
-                const separator = document.createElement('option');
-                separator.disabled = true;
-                separator.textContent = '──────────────';
-                selector.appendChild(separator);
+                // 计算分页
+                const totalPages = Math.ceil(totalInstances / pageSize);
+                const startIndex = (currentPage - 1) * pageSize;
+                const endIndex = Math.min(startIndex + pageSize, totalInstances);
+                const pageInstances = instances.slice(startIndex, endIndex);
                 
-                const manualOption = document.createElement('option');
-                manualOption.value = '__manual_input__';
-                manualOption.textContent = '✏️ 手动输入实例ID...';
-                selector.appendChild(manualOption);
+                // 渲染实例列表
+                pageInstances.forEach(instance => {
+                    const item = document.createElement('div');
+                    item.className = 'instance-item';
+                    if (instance.id === currentInstance) {
+                        item.classList.add('active');
+                    }
+                    
+                    const idDiv = document.createElement('div');
+                    idDiv.className = 'instance-id';
+                    idDiv.textContent = instance.id;
+                    
+                    const statusDiv = document.createElement('div');
+                    statusDiv.className = 'instance-status';
+                    const status = instance.status || 'unknown';
+                    statusDiv.textContent = '● ' + status;
+                    // 简单的状态颜色判断
+                    if (status.toLowerCase().includes('running') || status.toLowerCase().includes('ready')) {
+                        statusDiv.classList.add('running');
+                    } else if (status.toLowerCase().includes('stop') || status.toLowerCase().includes('error')) {
+                        statusDiv.classList.add('stopped');
+                    }
+                    
+                    item.appendChild(idDiv);
+                    item.appendChild(statusDiv);
+                    
+                    // 点击切换实例
+                    item.addEventListener('click', () => {
+                        switchInstance(instance.id);
+                    });
+                    
+                    listContainer.appendChild(item);
+                });
+                
+                // 更新分页UI
+                updatePaginationUI();
+                
             } catch (error) {
                 console.error('Failed to load instances:', error);
-                const selector = document.getElementById('container-selector');
-                selector.innerHTML = '<option value="">Failed to load</option>';
+                const listContainer = document.getElementById('instance-list');
+                listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #f44336; font-size: 12px;">加载失败</div>';
+                updatePaginationUI();
             }
+        }
+        
+        // 更新分页UI
+        function updatePaginationUI() {
+            const totalPages = Math.ceil(totalInstances / pageSize);
+            const startIndex = (currentPage - 1) * pageSize + 1;
+            const endIndex = Math.min(currentPage * pageSize, totalInstances);
+            
+            // 更新页面信息
+            const pageInfoText = document.getElementById('page-info-text');
+            if (totalInstances === 0) {
+                pageInfoText.textContent = '无数据';
+            } else {
+                pageInfoText.textContent = startIndex + '-' + endIndex + ' / ' + totalInstances;
+            }
+            
+            // 更新按钮状态
+            document.getElementById('first-page-btn').disabled = currentPage === 1;
+            document.getElementById('prev-page-btn').disabled = currentPage === 1;
+            document.getElementById('next-page-btn').disabled = currentPage >= totalPages;
+            document.getElementById('last-page-btn').disabled = currentPage >= totalPages;
         }
         
         // 切换实例
@@ -896,31 +1138,37 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             
             loadInstances();
             
-            // 实例选择器事件
-            document.getElementById('container-selector').addEventListener('change', (e) => {
-                const selectedValue = e.target.value;
-                
-                // 如果选择了手动输入选项
-                if (selectedValue === '__manual_input__') {
-                    const instanceId = prompt('请输入实例名称或实例ID:', '');
-                    if (instanceId && instanceId.trim()) {
-                        // 用户输入了实例ID，切换到该实例
-                        switchInstance(instanceId.trim());
-                    } else {
-                        // 用户取消或没有输入，恢复到当前选中的实例
-                        const params = new URLSearchParams(window.location.search);
-                        const currentInstance = params.get('instance');
-                        e.target.value = currentInstance || '';
-                    }
-                } else {
-                    // 正常切换实例
-                    switchInstance(selectedValue);
-                }
+            // 手动输入实例按钮事件
+            document.getElementById('add-instance-btn').addEventListener('click', () => {
+                showCustomDialog();
             });
             
             // 刷新按钮事件
             document.getElementById('refresh-btn').addEventListener('click', () => {
-                loadInstances();
+                loadInstances(currentPage);
+            });
+            
+            // 分页按钮事件
+            document.getElementById('first-page-btn').addEventListener('click', () => {
+                loadInstances(1);
+            });
+            
+            document.getElementById('prev-page-btn').addEventListener('click', () => {
+                if (currentPage > 1) {
+                    loadInstances(currentPage - 1);
+                }
+            });
+            
+            document.getElementById('next-page-btn').addEventListener('click', () => {
+                const totalPages = Math.ceil(totalInstances / pageSize);
+                if (currentPage < totalPages) {
+                    loadInstances(currentPage + 1);
+                }
+            });
+            
+            document.getElementById('last-page-btn').addEventListener('click', () => {
+                const totalPages = Math.ceil(totalInstances / pageSize);
+                loadInstances(totalPages);
             });
             
             // 初始化 Terminal（只有在有容器ID时才执行）
@@ -1025,7 +1273,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }); // 结束 DOMContentLoaded
     </script>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }
