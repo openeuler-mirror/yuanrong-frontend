@@ -33,6 +33,7 @@ import (
 	frontend "frontend/pkg/frontend/api/functionsystem"
 	"frontend/pkg/frontend/api/job"
 	"frontend/pkg/frontend/api/lease"
+	"frontend/pkg/frontend/api/metaservice"
 	v1 "frontend/pkg/frontend/api/v1"
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/frontendsdkadapter/handler"
@@ -140,6 +141,8 @@ func InitRoute(r *gin.Engine) {
 		jobGroup.DELETE(commonJob.PathDeleteJobs, job.DeleteJobHandler)
 		jobGroup.POST(commonJob.PathStopJobs, job.StopJobHandler)
 	}
+
+	metaservice.RegisterFunctionRoutes(r)
 
 	// web terminal
 	terminalGroup := r.Group("/terminal")

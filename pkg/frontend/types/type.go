@@ -141,6 +141,7 @@ type Config struct {
 	VerifyFilePath          string           `json:"verifyFilePath" valid:"optional"`
 	WiseCloudConfig         WiseCloudConfig  `json:"wiseCloudConfig" valid:"optional"`
 	IamConfig               IamConfig        `json:"iamConfig" valid:"optional"`
+	MetaServiceAddress      string           `json:"metaServiceAddress" valid:"optional"`
 	EnableEvent             bool             `json:"enableEvent" valid:"optional"`
 	WatchedConfigFilePath   string           `json:"watchedConfigFilePath" valid:"optional"`
 	AccessFaaSSchedulerType string           `json:"accessFaaSSchedulerType" valid:"optional"`

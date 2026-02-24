@@ -1,4 +1,3 @@
 .idea
 pkg/common/faas_common/grpc/pb
 output/
-build/

@@ -14,6 +14,7 @@
       "addr": "{iam_server_address}",
       "enableFuncTokenAuth": {enable_func_token_auth}
     },
+    "metaServiceAddress": "{meta_service_address}",
     "alarmConfig": {
       "enableAlarm": false,
       "minInsStartInterval": 15,
