@@ -146,12 +146,12 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
     <div class="container">
         <div class="logo">🌐</div>
         <h1>YuanRong Frontend Platform</h1>
-        <p class="subtitle">Serverless 平台 Web 管理门户</p>
+        <p class="subtitle">Serverless Platform Web Management Portal</p>
         
         <div class="description">
-            <p><strong>YuanRong Frontend Platform</strong> 为开发者提供了一站式的 Web 管理界面，
-            支持函数调用、容器实例管理、在线终端访问等多种功能。
-            无需安装任何客户端软件，通过浏览器即可完成所有开发和运维操作。</p>
+            <p><strong>YuanRong Frontend Platform</strong> provides developers with an all-in-one web management interface,
+            supporting function invocation, container instance management, online terminal access, and more.
+            No client software installation required — manage everything through your browser.</p>
         </div>
 
         <div class="cta-group">
@@ -160,10 +160,10 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
         </div>
 
         <div class="docs-section">
-            <h3>📚 开发者资源</h3>
+            <h3>📚 Developer Resources</h3>
             <div class="docs-links">
-                <a href="%s/api-docs" class="docs-link">API 文档 →</a>
-                <a href="http://docs.openyuanrong.org/" class="docs-link" target="_blank">官方文档 →</a>
+                <a href="%s/api-docs" class="docs-link">API Docs →</a>
+                <a href="http://docs.openyuanrong.org/" class="docs-link" target="_blank">Official Docs →</a>
             </div>
         </div>
 

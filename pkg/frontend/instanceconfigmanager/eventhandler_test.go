@@ -88,9 +88,9 @@ func TestProcessUpdate(t *testing.T) {
 
 		// Verify results
 		assert.Equal(t, 1, len(manager.instanceConfigMaps))
-		assert.Equal(t, 2, len(manager.instanceConfigMaps["12345678901234561234567890123456/0@test111@yrfunc111/latest"]))
-		assert.Equal(t, 1, int(manager.instanceConfigMaps["12345678901234561234567890123456/0@test111@yrfunc111/latest"][""].InstanceMetaData.MinInstance))
-		assert.Equal(t, 1, int(manager.instanceConfigMaps["12345678901234561234567890123456/0@test111@yrfunc111/latest"]["aaa"].InstanceMetaData.MinInstance))
+		assert.Equal(t, 2, len(manager.instanceConfigMaps["default/0@test111@yrfunc111/latest"]))
+		assert.Equal(t, 1, int(manager.instanceConfigMaps["default/0@test111@yrfunc111/latest"][""].InstanceMetaData.MinInstance))
+		assert.Equal(t, 1, int(manager.instanceConfigMaps["default/0@test111@yrfunc111/latest"]["aaa"].InstanceMetaData.MinInstance))
 		assert.Equal(t, publishCalled, 2)
 	})
 
@@ -112,7 +112,7 @@ func TestProcessUpdate(t *testing.T) {
 
 func TestProcessDelete(t *testing.T) {
 	// Prepare test data
-	funcKey := "12345678901234561234567890123456/0@test111@yrfunc111/latest"
+	funcKey := "default/0@test111@yrfunc111/latest"
 	invokeLabel := "aaa"
 	mockConfig := &instanceconfig.Configuration{
 		FuncKey:       funcKey,

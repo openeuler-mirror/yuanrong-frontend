@@ -50,7 +50,7 @@ func TestGetInsSpecFromEtcdValue(t *testing.T) {
 		RuntimeAddress:  "10.244.162.129:33333",
 		FunctionAgentID: "function_agent_10.244.162.129-33333",
 		FunctionProxyID: "dggphis35893-8490",
-		Function:        "12345678901234561234567890123456/0-system-hello/$latest",
+		Function:        "default/0-system-hello/$latest",
 		RestartPolicy:   "",
 		Resources: commonTypes.Resources{
 			Resources: map[string]commonTypes.Resource{

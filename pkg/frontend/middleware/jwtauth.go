@@ -152,21 +152,21 @@ func respondAuthError(ctx *gin.Context, message string) {
 <body>
     <div class="container">
         <div class="icon">🔒</div>
-        <h1>需要身份验证</h1>
+        <h1>Authentication Required</h1>
         <div class="message">%s</div>
         
         <form id="authForm" onsubmit="submitToken(event)">
             <div class="form-group">
-                <label class="form-label">请输入 JWT Token</label>
+                <label class="form-label">Enter JWT Token</label>
                 <input type="text" class="form-input" id="tokenInput" placeholder="eyJhbGciOiJIUzI1NiIs..." required>
             </div>
-            <button type="submit" class="btn">验证并继续</button>
+            <button type="submit" class="btn">Verify &amp; Continue</button>
         </form>
         
         <div class="help-text">
-            Token 可以通过 CLI 工具的 token-require 命令获取
+            Token can be obtained via the CLI tool's token-require command
         </div>
-        <a href="%s/" class="back-link">← 返回首页</a>
+        <a href="%s/" class="back-link">← Back to Home</a>
     </div>
     
     <script>
@@ -222,7 +222,7 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 			authHeader = ctx.Query("token")
 		}
 		if authHeader == "" {
-			respondAuthError(ctx, "认证失败：未提供 Token，请输入有效的 JWT Token")
+			respondAuthError(ctx, "Authentication failed: no token provided. Please enter a valid JWT token.")
 			return
 		}
 
@@ -230,7 +230,7 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 		parsedJWT, err := jwtauth.ParseJWT(authHeader)
 		if err != nil {
 			log.GetLogger().Errorf("JWT parsing failed, traceID %s: %v", traceID, err)
-			respondAuthError(ctx, fmt.Sprintf("认证失败：Token 无效或格式错误 (%v)", err))
+			respondAuthError(ctx, fmt.Sprintf("Authentication failed: invalid or malformed token (%v)", err))
 			return
 		}
 
@@ -245,7 +245,7 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 		}
 		if !roleAllowed {
 			log.GetLogger().Errorf("JWT role validation failed, role %s is not in allowed roles %v, traceID %s", role, allowedRoles, traceID)
-			respondAuthError(ctx, fmt.Sprintf("认证失败：角色 %s 无权访问此资源", role))
+			respondAuthError(ctx, fmt.Sprintf("Authentication failed: role %s is not authorized to access this resource", role))
 			return
 		}
 
@@ -254,11 +254,11 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 		// Validate with IAM server
 		if err := jwtauth.ValidateWithIamServer(authHeader, traceID); err != nil {
 			log.GetLogger().Errorf("IAM server validation failed, traceID %s: %v", traceID, err)
-			respondAuthError(ctx, fmt.Sprintf("认证失败：IAM 服务器验证失败 (%v)", err))
+			respondAuthError(ctx, fmt.Sprintf("Authentication failed: IAM server validation failed (%v)", err))
 			return
 		}
 
-		log.GetLogger().Infof("IAM server validation passed, traceID %s", traceID)
+		log.GetLogger().Debugf("IAM server validation passed, traceID %s", traceID)
 
 		// Store user info in context for downstream handlers
 		ctx.Set("jwt_role", role)

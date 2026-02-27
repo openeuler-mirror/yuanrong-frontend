@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -31,6 +32,7 @@ import (
 	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
 	"frontend/pkg/common/faas_common/logger/log"
@@ -201,11 +203,22 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 }
 
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Authenticate JWT token from query parameter or header
+	// Authenticate JWT token from query parameter, header, or WebSocket subprotocol.
+	// Note: browsers cannot set custom HTTP headers on WebSocket connections.
+	// Passing the token as a Sec-WebSocket-Protocol subprotocol is the standard workaround.
 	if config.GetConfig().IamConfig.EnableFuncTokenAuth {
-		token := r.URL.Query().Get("token")
+		token := r.Header.Get("X-Auth")
 		if token == "" {
-			token = r.Header.Get("X-Auth")
+			token = r.URL.Query().Get("token")
+		}
+		// Fall back to Sec-WebSocket-Protocol (browser WebSocket subprotocol trick)
+		if token == "" {
+			for _, proto := range websocket.Subprotocols(r) {
+				if proto != "" {
+					token = proto
+					break
+				}
+			}
 		}
 		if token == "" {
 			log.GetLogger().Errorf("WebSocket authentication failed: no token provided")
@@ -239,7 +252,13 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			clientCert.Subject.String(), clientCert.Issuer.String())
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	// Echo back the subprotocol so the browser accepts the upgrade.
+	// If token was sent via Sec-WebSocket-Protocol we must mirror it in the response.
+	var upgradeHeader http.Header
+	if protos := websocket.Subprotocols(r); len(protos) > 0 {
+		upgradeHeader = http.Header{"Sec-WebSocket-Protocol": []string{protos[0]}}
+	}
+	conn, err := upgrader.Upgrade(w, r, upgradeHeader)
 	if err != nil {
 		log.GetLogger().Infof("WebSocket upgrade error: %v", err)
 		return
@@ -288,7 +307,15 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.GetLogger().Infof("Failed to get executor address: %v", err)
 		return
 	}
-	grpcConn, err := grpc.NewClient(info.ProxyGrpcAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Use separate connections for each session to prevent connection reuse issues
+	grpcConn, err := grpc.NewClient(
+		info.ProxyGrpcAddress,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+	)
 	if err != nil {
 		log.GetLogger().Infof("Failed to connect to executor: %v", err)
 		return
@@ -313,6 +340,54 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		cancel:     cancel,
 	}
 
+    // Wait for initial frontend terminal size before creating backend exec session.
+    // Browser side sends: RESIZE:cols:rows
+    type pendingInput struct {
+        messageType int
+        data        []byte
+    }
+    pendingInputs := make([]pendingInput, 0)
+    if tty {
+        readTimeout := 3 * time.Second
+        if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+            log.GetLogger().Infof("Session %s: failed to set read deadline: %v", sessionID, err)
+        }
+
+        for {
+            messageType, message, err := conn.ReadMessage()
+            if err != nil {
+                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+                    log.GetLogger().Infof("Session %s: initial RESIZE not received in %s, fallback to default size=%dx%d",
+                        sessionID, readTimeout, cols, rows)
+                    break
+                }
+                log.GetLogger().Infof("Session %s: failed waiting initial terminal size: %v", sessionID, err)
+                return
+            }
+
+            if messageType == websocket.TextMessage && len(message) > 7 && string(message[:7]) == "RESIZE:" {
+                var newCols, newRows int32
+                if n, _ := fmt.Sscanf(string(message), "RESIZE:%d:%d", &newCols, &newRows); n == 2 && newCols > 0 && newRows > 0 {
+                    cols = newCols
+                    rows = newRows
+                    log.GetLogger().Infof("Session %s: received initial terminal size=%dx%d", sessionID, cols, rows)
+                    break
+                }
+            }
+
+            // Buffer any early input and replay after session starts.
+            if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+                buf := make([]byte, len(message))
+                copy(buf, message)
+                pendingInputs = append(pendingInputs, pendingInput{messageType: messageType, data: buf})
+            }
+        }
+
+        if err := conn.SetReadDeadline(time.Time{}); err != nil {
+            log.GetLogger().Infof("Session %s: failed to clear read deadline: %v", sessionID, err)
+        }
+    }
+
 	// Send start request
 	log.GetLogger().Infof("Starting: instance=%s, command=%v, tty=%v, size=%dx%d",
 		instance, command, tty, cols, rows)
@@ -334,6 +409,21 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+    for _, msg := range pendingInputs {
+        err := stream.Send(&exec_service.ExecMessage{
+            SessionId: sessionID,
+            Payload: &exec_service.ExecMessage_InputData{
+                InputData: &exec_service.ExecInputData{
+                    Data: msg.data,
+                },
+            },
+        })
+        if err != nil {
+            log.GetLogger().Infof("Session %s: failed to replay early input: %v", sessionID, err)
+            return
+        }
+    }
+
 	done := make(chan struct{})
 
 	// Read output from gRPC and send to WebSocket
@@ -344,6 +434,8 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			default:
 				close(done)
 			}
+			// When gRPC stream closes, close WebSocket connection
+			conn.Close()
 		}()
 
 		for {
@@ -394,6 +486,8 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			default:
 				close(done)
 			}
+			// When WebSocket disconnects, cancel gRPC context to notify backend
+			cancel()
 		}()
 
 		for {
@@ -541,6 +635,21 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             font-size: 16px;
             font-weight: normal;
         }
+        #toggle-sidebar-btn {
+            background: transparent;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            padding: 4px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        #toggle-sidebar-btn:hover {
+            background: #3c3c3c;
+            border-color: #007acc;
+        }
         .back-link {
             color: #ccc;
             text-decoration: none;
@@ -573,6 +682,9 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             display: flex;
             flex: 1;
             overflow: hidden;
+        }
+        #main-container.sidebar-hidden #sidebar {
+            display: none;
         }
         #sidebar {
             width: 280px;
@@ -717,7 +829,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             font-size: 12px;
             text-align: center;
         }
-        /* 自定义对话框样式 */
+        /* Custom dialog styles */
         #custom-dialog-overlay {
             display: none;
             position: fixed;
@@ -840,23 +952,24 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 <body>
     <div id="header">
         <div class="left-section">
-            <a href="%s/" class="back-link">← 首页</a>
+            <a href="%s/" class="back-link">← Home</a>
             <h1>🖥️ Remote Exec Terminal</h1>
+            <button id="toggle-sidebar-btn" title="Show instance list" aria-label="Show instance list">☰</button>
         </div>
         <div id="status">
             <span id="status-text">Connecting...</span>
             <div class="status-indicator" id="status-indicator"></div>
         </div>
     </div>
-    <div id="main-container">
+    <div id="main-container" class="sidebar-hidden">
         <div id="sidebar">
             <div id="sidebar-header">
-                <h2>实例列表</h2>
-                <button id="refresh-btn" title="刷新实例列表">🔄</button>
+                <h2>Instance List</h2>
+                <button id="refresh-btn" title="Refresh instance list">🔄</button>
             </div>
             <div id="instance-list">
                 <div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">
-                    加载中...
+                    Loading...
                 </div>
             </div>
             <div id="pagination">
@@ -864,14 +977,14 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     <span id="page-info-text">-</span>
                 </div>
                 <div class="page-controls">
-                    <button id="first-page-btn" title="首页">«</button>
-                    <button id="prev-page-btn" title="上一页">‹</button>
-                    <button id="next-page-btn" title="下一页">›</button>
-                    <button id="last-page-btn" title="末页">»</button>
+                    <button id="first-page-btn" title="First page">«</button>
+                    <button id="prev-page-btn" title="Previous page">‹</button>
+                    <button id="next-page-btn" title="Next page">›</button>
+                    <button id="last-page-btn" title="Last page">»</button>
                 </div>
             </div>
             <div id="sidebar-footer">
-                <button id="add-instance-btn">✏️ 手动输入实例ID</button>
+                <button id="add-instance-btn">✏️ Enter Instance ID</button>
             </div>
         </div>
         <div id="terminal-container">
@@ -882,50 +995,50 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         Press Ctrl+C to interrupt | Connection: <span id="ws-url"></span>
     </div>
 
-    <!-- 自定义输入对话框 -->
+    <!-- Custom input dialog -->
     <div id="custom-dialog-overlay">
         <div id="custom-dialog">
-            <h2>🖥️ 连接配置</h2>
+            <h2>🖥️ Connection Config</h2>
 
-            <!-- 选项卡 -->
+            <!-- Tabs -->
             <div class="tab-container">
-                <button class="tab active" onclick="switchTab('connect')">连接实例</button>
-                <button class="tab" onclick="switchTab('create')">创建Sandbox</button>
+                <button class="tab active" onclick="switchTab('connect')">Connect Instance</button>
+                <button class="tab" onclick="switchTab('create')">Create Sandbox</button>
             </div>
 
-            <!-- 连接实例选项卡内容 -->
+            <!-- Connect instance tab content -->
             <div id="connect-tab" class="tab-content active">
                 <div class="form-group">
-                    <label for="dialog-instance">实例名称或ID *</label>
-                    <input type="text" id="dialog-instance" placeholder="请输入实例名称或实例ID">
+                    <label for="dialog-instance">Instance Name or ID *</label>
+                    <input type="text" id="dialog-instance" placeholder="Enter instance name or ID">
                 </div>
                 <div class="form-group">
-                    <label for="dialog-tenant">租户ID（Tenant ID）</label>
-                    <input type="text" id="dialog-tenant" value="default" placeholder="默认为 default">
+                    <label for="dialog-tenant">Tenant ID</label>
+                    <input type="text" id="dialog-tenant" value="default" placeholder="Defaults to default">
                 </div>
                 <div class="button-group">
-                    <button class="btn-secondary" onclick="cancelDialog()">取消</button>
-                    <button class="btn-primary" onclick="submitDialog()">连接</button>
+                    <button class="btn-secondary" onclick="cancelDialog()">Cancel</button>
+                    <button class="btn-primary" onclick="submitDialog()">Connect</button>
                 </div>
             </div>
 
-            <!-- 创建Sandbox选项卡内容 -->
+            <!-- Create Sandbox tab content -->
             <div id="create-tab" class="tab-content">
                 <div class="form-group">
                     <label for="sandbox-namespace">Namespace</label>
-                    <input type="text" id="sandbox-namespace" value="sandbox" placeholder="默认为 sandbox">
+                    <input type="text" id="sandbox-namespace" value="sandbox" placeholder="Defaults to sandbox">
                 </div>
                 <div class="form-group">
                     <label for="sandbox-name">Name</label>
-                    <input type="text" id="sandbox-name" placeholder="默认随机生成UUID">
+                    <input type="text" id="sandbox-name" placeholder="Defaults to random UUID">
                 </div>
                 <div class="form-group">
-                    <label for="sandbox-tenant">租户ID（Tenant ID）</label>
-                    <input type="text" id="sandbox-tenant" value="default" placeholder="默认为 default">
+                    <label for="sandbox-tenant">Tenant ID</label>
+                    <input type="text" id="sandbox-tenant" value="default" placeholder="Defaults to default">
                 </div>
                 <div class="button-group">
-                    <button class="btn-secondary" onclick="cancelDialog()">取消</button>
-                    <button class="btn-create" id="submit-sandbox-btn" onclick="submitSandboxCreation()">创建并连接</button>
+                    <button class="btn-secondary" onclick="cancelDialog()">Cancel</button>
+                    <button class="btn-create" id="submit-sandbox-btn" onclick="submitSandboxCreation()">Create &amp; Connect</button>
                 </div>
             </div>
         </div>
@@ -934,7 +1047,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <script src="%s/terminal/static/xterm.js"></script>
     <script src="%s/terminal/static/xterm-addon-fit.js"></script>
     <script>
-        // 生成UUID
+        // Generate UUID
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 const r = Math.random() * 16 | 0;
@@ -943,14 +1056,14 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             });
         }
 
-        // 切换选项卡
+        // Switch tab
         function switchTab(tabName) {
-            // 更新选项卡按钮状态
+            // Update tab button states
             const tabs = document.querySelectorAll('.tab');
             tabs.forEach(tab => tab.classList.remove('active'));
             event.target.classList.add('active');
 
-            // 更新内容区域
+            // Update content area
             const connectTab = document.getElementById('connect-tab');
             const createTab = document.getElementById('create-tab');
 
@@ -961,7 +1074,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 connectTab.classList.remove('active');
                 createTab.classList.add('active');
 
-                // 切换到创建选项卡时，自动生成UUID
+                // Auto-generate UUID when switching to create tab
                 const nameInput = document.getElementById('sandbox-name');
                 if (!nameInput.value) {
                     nameInput.value = generateUUID();
@@ -969,7 +1082,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             }
         }
 
-        // 提交创建Sandbox
+        // Submit sandbox creation
         async function submitSandboxCreation() {
             const namespace = document.getElementById('sandbox-namespace').value.trim() || 'sandbox';
             const name = document.getElementById('sandbox-name').value.trim() || generateUUID();
@@ -977,15 +1090,15 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const submitBtn = document.getElementById('submit-sandbox-btn');
 
             try {
-                // 禁用按钮并显示加载状态
+                // Disable button and show loading state
                 submitBtn.disabled = true;
-                submitBtn.textContent = '⏳ 创建中...';
+                submitBtn.textContent = '⏳ Creating...';
 
-                // 获取当前token
+                // Get current token
                 const currentParams = new URLSearchParams(window.location.search);
                 const token = currentParams.get('token');
 
-                // 构建请求payload
+                // Build request payload
                 const payload = {
                     entrypoint: 'python -m yr.sandbox.sandbox --name ' + name + ' --namespace ' + namespace,
                     runtime_env: {
@@ -993,7 +1106,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     }
                 };
 
-                // 构建请求选项
+                // Build request options
                 const fetchOptions = {
                     method: 'POST',
                     headers: {
@@ -1006,45 +1119,45 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     fetchOptions.headers['X-Auth'] = token;
                 }
 
-                // 调用创建作业API
+                // Call job creation API
                 const response = await fetch('%s/api/jobs', fetchOptions);
 
                 if (!response.ok) {
-                    throw new Error('创建作业失败: ' + response.status);
+                    throw new Error('Failed to create job: ' + response.status);
                 }
 
                 const result = await response.json();
 
-                // 检查返回的submission_id
+                // Check returned submission_id
                 if (!result.submission_id) {
-                    throw new Error('API返回的数据中没有找到submission_id');
+                    throw new Error('submission_id not found in API response');
                 }
 
                 const submissionId = result.submission_id;
-                submitBtn.textContent = '⏳ 等待就绪...';
+                submitBtn.textContent = '⏳ Waiting...';
 
-                // 轮询作业状态
+                // Poll job status
                 await pollJobStatus(submissionId, namespace, name, tenant, token);
 
             } catch (error) {
-                console.error('创建Sandbox失败:', error);
-                alert('创建Sandbox失败: ' + error.message);
+                console.error('Failed to create sandbox:', error);
+                alert('Failed to create sandbox: ' + error.message);
 
-                // 恢复按钮状态
+                // Restore button state
                 submitBtn.disabled = false;
-                submitBtn.textContent = '创建并连接';
+                submitBtn.textContent = 'Create & Connect';
             }
         }
 
-        // 轮询作业状态
+        // Poll job status
         async function pollJobStatus(submissionId, namespace, name, tenant, token) {
-            const maxAttempts = 60; // 最多轮询60次
-            const pollInterval = 2000; // 每2秒轮询一次
+            const maxAttempts = 60; // max poll attempts
+            const pollInterval = 2000; // poll every 2 seconds
             let attempts = 0;
 
             const poll = async () => {
                 try {
-                    // 构建请求选项
+                    // Build request options
                     const fetchOptions = {};
                     if (token) {
                         fetchOptions.headers = {
@@ -1052,18 +1165,18 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         };
                     }
 
-                    // 查询作业状态
+                    // Query job status
                     const response = await fetch('%s/api/jobs/' + encodeURIComponent(submissionId), fetchOptions);
 
                     if (!response.ok) {
-                        throw new Error('查询作业状态失败: ' + response.status);
+                        throw new Error('Failed to query job status: ' + response.status);
                     }
 
                     const jobInfo = await response.json();
                     const status = jobInfo.status;
 
                     if (status === 'SUCCEEDED') {
-                        // 执行成功，跳转到webterminal
+                        // Succeeded, redirect to web terminal
                         const instanceId = namespace + '-' + name;
                         const params = new URLSearchParams();
                         params.set('instance', instanceId);
@@ -1074,50 +1187,50 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         window.location.search = params.toString();
                         return;
                     } else if (status === 'FAILED') {
-                        // 执行失败
+                        // Failed
                         document.getElementById('custom-dialog-overlay').style.display = 'none';
-                        alert('Sandbox创建失败: 作业执行失败\n' + (jobInfo.message || ''));
+                        alert('Sandbox creation failed: job execution failed\n' + (jobInfo.message || ''));
                         document.getElementById('submit-sandbox-btn').disabled = false;
-                        document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
+                        document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
                         return;
                     } else if (status === 'STOPPED') {
-                        // 被停止
+                        // Stopped
                         document.getElementById('custom-dialog-overlay').style.display = 'none';
-                        alert('Sandbox创建失败: 作业被停止\n' + (jobInfo.message || ''));
+                        alert('Sandbox creation failed: job was stopped\n' + (jobInfo.message || ''));
                         document.getElementById('submit-sandbox-btn').disabled = false;
-                        document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
+                        document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
                         return;
                     } else if (status === 'PENDING' || status === 'RUNNING') {
-                        // 正在执行中，继续轮询
+                        // Still running, continue polling
                         attempts++;
                         if (attempts >= maxAttempts) {
-                            throw new Error('等待超时，请稍后在实例列表中查看');
+                            throw new Error('Timed out waiting. Check instance list later.');
                         }
                         setTimeout(poll, pollInterval);
                         return;
                     } else {
-                        // 未知状态
-                        throw new Error('未知的作业状态: ' + status);
+                        // Unknown status
+                        throw new Error('Unknown job status: ' + status);
                     }
                 } catch (error) {
                     document.getElementById('custom-dialog-overlay').style.display = 'none';
-                    alert('查询作业状态失败: ' + error.message);
+                    alert('Failed to query job status: ' + error.message);
                     document.getElementById('submit-sandbox-btn').disabled = false;
-                    document.getElementById('submit-sandbox-btn').textContent = '创建并连接';
+                    document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
                 }
             };
 
-            // 开始轮询
+            // Start polling
             poll();
         }
 
-        // 显示自定义对话框
+        // Show custom dialog
         function showCustomDialog() {
             const overlay = document.getElementById('custom-dialog-overlay');
             overlay.style.display = 'flex';
             document.getElementById('dialog-instance').focus();
 
-            // 支持回车键提交
+            // Support Enter key to submit
             const inputs = document.querySelectorAll('#custom-dialog input');
             inputs.forEach(input => {
                 input.addEventListener('keypress', (e) => {
@@ -1128,29 +1241,29 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             });
         }
 
-        // 取消对话框
+        // Cancel dialog
         function cancelDialog() {
             document.getElementById('terminal').innerHTML =
                 '<div style="color: #f44336; padding: 20px; text-align: center;">' +
-                '<h2>⚠️ 未指定实例</h2>' +
-                '<p>请刷新页面重新输入连接信息</p>' +
+                '<h2>⚠️ No Instance Specified</h2>' +
+                '<p>Please refresh the page and re-enter connection details</p>' +
                 '</div>';
             document.getElementById('status-text').textContent = 'No instance specified';
             document.getElementById('custom-dialog-overlay').style.display = 'none';
         }
 
-        // 提交对话框
+        // Submit dialog
         function submitDialog() {
             const instance = document.getElementById('dialog-instance').value.trim();
             const tenant = document.getElementById('dialog-tenant').value.trim() || 'default';
 
             if (!instance) {
-                alert('请输入实例名称或ID');
+                alert('Please enter an instance name or ID');
                 document.getElementById('dialog-instance').focus();
                 return;
             }
 
-            // 构建新的URL参数，保留现有的token
+            // Build new URL params, preserve existing token
             const currentParams = new URLSearchParams(window.location.search);
             const token = currentParams.get('token');
 
@@ -1161,26 +1274,41 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 params.set('token', token);
             }
 
-            // 重定向到带有参数的URL
+            // Redirect to URL with params
             window.location.search = params.toString();
+        }
+
+        // Toggle sidebar visibility
+        function toggleSidebar() {
+            const mainContainer = document.getElementById('main-container');
+            const toggleBtn = document.getElementById('toggle-sidebar-btn');
+            const isHidden = mainContainer.classList.toggle('sidebar-hidden');
+            const tip = isHidden ? 'Show instance list' : 'Hide instance list';
+            toggleBtn.title = tip;
+            toggleBtn.setAttribute('aria-label', tip);
+
+            // Trigger terminal resize after layout changes
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 0);
         }
     </script>
     <script>
-        // 分页配置
+        // Pagination config
         let currentPage = 1;
         let pageSize = 10;
         let totalInstances = 0;
         let allInstances = [];
 
-        // 加载实例列表
+        // Load instance list
         async function loadInstances(page = 1) {
             try {
-                // 获取 tenant_id 和 token 参数
+                // Get tenant_id and token params
                 const params = new URLSearchParams(window.location.search);
                 const tenantId = params.get('tenant_id') || 'default';
                 const token = params.get('token') || '';
 
-                // 构建请求选项
+                // Build request options
                 const fetchOptions = {};
                 if (token) {
                     fetchOptions.headers = {
@@ -1191,33 +1319,33 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId), fetchOptions);
                 const instances = await response.json();
 
-                // 保存所有实例数据
+                // Save all instance data
                 allInstances = instances;
                 totalInstances = instances.length;
                 currentPage = page;
 
                 const listContainer = document.getElementById('instance-list');
 
-                // 清空列表
+                // Clear list
                 listContainer.innerHTML = '';
 
-                // 获取当前实例（从URL参数）
+                // Get current instance from URL params
                 const currentInstance = params.get('instance') || '';
 
-                // 如果没有实例，显示提示
+                // Show message if no instances
                 if (instances.length === 0) {
-                    listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">暂无实例</div>';
+                    listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #888; font-size: 12px;">No instances</div>';
                     updatePaginationUI();
                     return;
                 }
 
-                // 计算分页
+                // Calculate pagination
                 const totalPages = Math.ceil(totalInstances / pageSize);
                 const startIndex = (currentPage - 1) * pageSize;
                 const endIndex = Math.min(startIndex + pageSize, totalInstances);
                 const pageInstances = instances.slice(startIndex, endIndex);
 
-                // 渲染实例列表
+                // Render instance list
                 pageInstances.forEach(instance => {
                     const item = document.createElement('div');
                     item.className = 'instance-item';
@@ -1233,7 +1361,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     statusDiv.className = 'instance-status';
                     const status = instance.status || 'unknown';
                     statusDiv.textContent = '● ' + status;
-                    // 简单的状态颜色判断
+                    // Simple status color check
                     if (status.toLowerCase().includes('running') || status.toLowerCase().includes('ready')) {
                         statusDiv.classList.add('running');
                     } else if (status.toLowerCase().includes('stop') || status.toLowerCase().includes('error')) {
@@ -1243,7 +1371,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     item.appendChild(idDiv);
                     item.appendChild(statusDiv);
 
-                    // 点击切换实例
+                    // Click to switch instance
                     item.addEventListener('click', () => {
                         switchInstance(instance.id);
                     });
@@ -1251,75 +1379,84 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     listContainer.appendChild(item);
                 });
 
-                // 更新分页UI
+                // Update pagination UI
                 updatePaginationUI();
 
             } catch (error) {
                 console.error('Failed to load instances:', error);
                 const listContainer = document.getElementById('instance-list');
-                listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #f44336; font-size: 12px;">加载失败</div>';
+                listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #f44336; font-size: 12px;">Load failed</div>';
                 updatePaginationUI();
             }
         }
 
-        // 更新分页UI
+        // Update pagination UI
         function updatePaginationUI() {
             const totalPages = Math.ceil(totalInstances / pageSize);
             const startIndex = (currentPage - 1) * pageSize + 1;
             const endIndex = Math.min(currentPage * pageSize, totalInstances);
 
-            // 更新页面信息
+            // Update page info
             const pageInfoText = document.getElementById('page-info-text');
             if (totalInstances === 0) {
-                pageInfoText.textContent = '无数据';
+                pageInfoText.textContent = 'No data';
             } else {
                 pageInfoText.textContent = startIndex + '-' + endIndex + ' / ' + totalInstances;
             }
 
-            // 更新按钮状态
+            // Update button states
             document.getElementById('first-page-btn').disabled = currentPage === 1;
             document.getElementById('prev-page-btn').disabled = currentPage === 1;
             document.getElementById('next-page-btn').disabled = currentPage >= totalPages;
             document.getElementById('last-page-btn').disabled = currentPage >= totalPages;
         }
 
-        // 切换实例
+        // Switch instance
         function switchInstance(instanceId) {
+            // Close existing WebSocket before switching instances
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
             const params = new URLSearchParams(window.location.search);
             if (instanceId) {
                 params.set('instance', instanceId);
             } else {
                 params.delete('instance');
             }
-            // 重新加载页面并带上新的实例参数
+            // Reload page with new instance param
             window.location.search = params.toString();
         }
 
-        // 初始化
+        // Initialize
         document.addEventListener('DOMContentLoaded', () => {
-            // 检查是否有实例参数
+            // Sidebar toggle button event
+            document.getElementById('toggle-sidebar-btn').addEventListener('click', () => {
+                toggleSidebar();
+            });
+
+            // Check if instance param exists
             const params = new URLSearchParams(window.location.search);
             const currentInstance = params.get('instance');
 
-            // 如果没有实例参数，显示自定义对话框要求用户输入
+            // No instance param, show dialog
             if (!currentInstance) {
                 showCustomDialog();
-                return; // 停止后续初始化，等待用户输入
+                return; // Stop further init, wait for user input
             }
 
             loadInstances();
 
-            // 手动输入实例按钮事件
+            // Manual instance input button event
             document.getElementById('add-instance-btn').addEventListener('click', () => {
                 showCustomDialog();
             });
 
-            // 刷新按钮事件
+            // Refresh button event
             document.getElementById('refresh-btn').addEventListener('click', () => {
                 loadInstances(currentPage);
             });
 
-            // 分页按钮事件
+            // Pagination button events
             document.getElementById('first-page-btn').addEventListener('click', () => {
                 loadInstances(1);
             });
@@ -1342,7 +1479,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 loadInstances(totalPages);
             });
 
-            // 初始化 Terminal（只有在有容器ID时才执行）
+            // Initialize Terminal (only when container ID is available)
             const term = new Terminal({
                 cursorBlink: true,
                 fontSize: 14,
@@ -1376,32 +1513,67 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             term.open(document.getElementById('terminal'));
             fitAddon.fit();
 
-            window.addEventListener('resize', () => {
-            fitAddon.fit();
-        });
-
-            // 初始化 WebSocket 连接
+            // Initialize WebSocket connection
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            // 保留所有 URL 参数（包括 token）
-            const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + window.location.search;
+            // Extract token from URL but omit it from the WebSocket URL (prevents log leakage).
+            // Browser WebSocket does not support custom headers; use Sec-WebSocket-Protocol instead.
+            const _wsParams = new URLSearchParams(window.location.search);
+            const _wsToken = _wsParams.get('token');
+            _wsParams.delete('token');
+            // Add unique ID (timestamp + random) to force separate HTTP/2 connections per tab
+            // This helps differentiate connections but HTTP/2 connection reuse is browser-controlled
+            const uniqueSuffix = Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9);
+            _wsParams.set('_t', uniqueSuffix);
+            const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + (_wsParams.toString() ? '?' + _wsParams.toString() : '');
             document.getElementById('ws-url').textContent = wsUrl;
 
-            const ws = new WebSocket(wsUrl);
+            // Pass token as subprotocol (backend echoes it back to complete the handshake)
+            // Use unique subprotocol to help differentiate connections at protocol level
+            const subprotocols = _wsToken ? [_wsToken + '-' + uniqueSuffix] : [];
+            const ws = new WebSocket(wsUrl, subprotocols);
             ws.binaryType = 'arraybuffer';
+
+            function sendTerminalSize() {
+                if (ws.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+                fitAddon.fit();
+                const cols = term.cols;
+                const rows = term.rows;
+                if (cols > 0 && rows > 0) {
+                    console.log('Sending terminal size:', cols, 'x', rows);
+                    ws.send('RESIZE:' + cols + ':' + rows);
+                }
+            }
+
+            window.addEventListener('resize', () => {
+                sendTerminalSize();
+            });
 
             ws.onopen = () => {
                 document.getElementById('status-text').textContent = 'Connected';
                 document.getElementById('status-indicator').classList.add('connected');
 
-                // 稍微延迟发送终端尺寸，确保后端已经初始化PTY
+                // Send size immediately, then retry once in next frame and once after short delay.
+                sendTerminalSize();
+                requestAnimationFrame(() => {
+                    sendTerminalSize();
+                });
                 setTimeout(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        const cols = term.cols;
-                        const rows = term.rows;
-                        console.log('Sending initial terminal size:', cols, 'x', rows);
-                        ws.send('RESIZE:' + cols + ':' + rows);
+                    sendTerminalSize();
+                }, 120);
+
+                // Periodic heartbeat to detect connection issues
+                // Check WebSocket state every 10 seconds
+                window.terminalHeartbeat = setInterval(() => {
+                    if (ws.readyState !== WebSocket.OPEN) {
+                        console.log('WebSocket heartbeat: connection lost, state=', ws.readyState);
+                        clearInterval(window.terminalHeartbeat);
+                        term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
+                        // Note: Don't refresh page as it would lose terminal context
+                        // Backend will clean up resources via gRPC keepalive timeout
                     }
-                }, 100);
+                }, 10000);
 
                 term.focus();
             };
@@ -1417,13 +1589,33 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             };
 
             ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
                 term.write('\r\n\x1b[1;31m[Connection Error]\x1b[0m\r\n');
             };
 
-            ws.onclose = () => {
+            // Note: Do NOT explicitly close WebSocket on page unload.
+            // Let the browser handle connection closure naturally to avoid
+            // potentially affecting other WebSocket connections sharing the same HTTP/2 connection.
+            // Browser will properly clean up when the page is destroyed.
+
+            ws.onclose = (event) => {
+                console.log('WebSocket closed:', event.code, event.reason);
+
+                // Clear heartbeat interval
+                if (window.terminalHeartbeat) {
+                    clearInterval(window.terminalHeartbeat);
+                }
+
                 document.getElementById('status-text').textContent = 'Disconnected';
                 document.getElementById('status-indicator').classList.remove('connected');
                 document.getElementById('status-indicator').classList.add('disconnected');
+
+                // If closed abnormally (1006), inform user but don't refresh
+                if (event.code === 1006) {
+                    term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
+                    return;
+                }
+
                 term.write('\r\n\x1b[1;33m[Connection Closed]\x1b[0m\r\n');
             };
 
@@ -1441,7 +1633,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             });
 
             term.focus();
-        }); // 结束 DOMContentLoaded
+        }); // End DOMContentLoaded
     </script>
 </body>
 </html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)

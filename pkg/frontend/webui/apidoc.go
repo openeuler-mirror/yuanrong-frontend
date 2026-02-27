@@ -244,28 +244,28 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div class="header">
-        <a href="%s/" class="back-link">← 返回首页</a>
+        <a href="%s/" class="back-link">← Back to Home</a>
         <h1>📚 API Documentation</h1>
-        <div class="subtitle">YuanRong Serverless Platform REST API 参考文档</div>
+        <div class="subtitle">YuanRong Serverless Platform REST API Reference</div>
     </div>
     
     <div class="container">
         <div class="intro-section">
-            <h2>概述</h2>
-            <p>YuanRong Frontend 提供了一套完整的 RESTful API，用于管理和调用 Serverless 函数、容器实例、数据存储等资源。</p>
-            <p>所有 API 端点都支持标准的 HTTP 方法（GET、POST、PUT、DELETE），请求和响应均为 JSON 格式。</p>
+            <h2>Overview</h2>
+            <p>YuanRong Frontend provides a complete RESTful API for managing and invoking Serverless functions, container instances, data storage, and more.</p>
+            <p>All API endpoints support standard HTTP methods (GET, POST, PUT, DELETE); requests and responses use JSON format.</p>
             
             <div class="auth-info">
-                <strong>⚠️ 认证要求：</strong> 大多数 API 端点需要 JWT Token 认证。请在请求头中包含 <code>X-Auth: YOUR_JWT_TOKEN</code> 或通过 URL 参数 <code>?token=YOUR_JWT_TOKEN</code> 传递。
+                <strong>⚠️ Authentication Required:</strong> Most API endpoints require JWT Token authentication. Include <code>X-Auth: YOUR_JWT_TOKEN</code> in the request header or pass via URL parameter <code>?token=YOUR_JWT_TOKEN</code>.
             </div>
         </div>
 
         <div class="api-section">
-            <h2>API 端点</h2>
+            <h2>API Endpoints</h2>
 
             <!-- Function APIs -->
             <div class="api-group">
-                <h3>函数管理</h3>
+                <h3>Function Management</h3>
                 
                 <div class="api-endpoint" onclick="toggleDetails(this)">
                     <div class="api-header">
@@ -275,40 +275,40 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            调用指定的 Serverless 函数。URN 格式为 <code>urn:tenant:namespace:function</code>。
+                            Invoke the specified Serverless function. URN format: <code>urn:tenant:namespace:function</code>.
                         </div>
                         <div class="param-section">
-                            <h4>路径参数</h4>
+                            <h4>Path Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>urn</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>函数的 URN 标识符</td>
+                                    <td>Yes</td>
+                                    <td>URN identifier of the function</td>
                                 </tr>
                             </table>
                         </div>
                         <div class="param-section">
-                            <h4>请求体</h4>
+                            <h4>Request Body</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>格式</th>
-                                    <th>描述</th>
+                                    <th>Format</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td>JSON</td>
-                                    <td>传递给函数的参数，格式由函数定义决定</td>
+                                    <td>Parameters passed to the function; format defined by the function</td>
                                 </tr>
                             </table>
                         </div>
                         <div class="example-section">
-                            <h4>请求示例</h4>
+                            <h4>Example Request</h4>
                             <pre class="code-block">curl -X POST "%s/serverless/v1/functions/urn:tenant_001:default:hello/invocations" \
   -H "Content-Type: application/json" \
   -H "X-Auth: YOUR_JWT_TOKEN" \
@@ -320,45 +320,45 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                 <div class="api-endpoint" onclick="toggleDetails(this)">
                     <div class="api-header">
                         <span class="method post">POST</span>
-                        <span class="endpoint-path">/:tenant-id/:namespace/:function/</span>
+                        <span class="endpoint-path">/invocations/:tenant-id/:namespace/:function/</span>
                         <span class="expand-icon">▶</span>
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            简短路径调用函数。这是一个更简洁的调用方式。
+                            Invoke a function using the short path. A more concise invocation style.
                         </div>
                         <div class="param-section">
-                            <h4>路径参数</h4>
+                            <h4>Path Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>tenant-id</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>租户 ID</td>
+                                    <td>Yes</td>
+                                    <td>Tenant ID</td>
                                 </tr>
                                 <tr>
                                     <td><code>namespace</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>命名空间</td>
+                                    <td>Yes</td>
+                                    <td>Namespace</td>
                                 </tr>
                                 <tr>
                                     <td><code>function</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>函数名称</td>
+                                    <td>Yes</td>
+                                    <td>Function name</td>
                                 </tr>
                             </table>
                         </div>
                         <div class="example-section">
-                            <h4>请求示例</h4>
-                            <pre class="code-block">curl -X POST "%s/tenant_001/default/hello/" \
+                            <h4>Example Request</h4>
+                            <pre class="code-block">curl -X POST "%s/invocations/tenant_001/default/hello/" \
   -H "Content-Type: application/json" \
   -H "X-Auth: YOUR_JWT_TOKEN" \
   -d '{"name": "World"}'</pre>
@@ -374,10 +374,10 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            订阅函数的流式输出。建立 SSE (Server-Sent Events) 连接以接收实时数据。
+                            Subscribe to streamed function output. Establishes an SSE (Server-Sent Events) connection to receive real-time data.
                         </div>
                         <div class="example-section">
-                            <h4>请求示例</h4>
+                            <h4>Example Request</h4>
                             <pre class="code-block">curl -X GET "%s/serverless/v1/stream/subscribe?function=hello" \
   -H "X-Auth: YOUR_JWT_TOKEN"</pre>
                         </div>
@@ -387,7 +387,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
 
             <!-- Instance APIs -->
             <div class="api-group">
-                <h3>实例管理</h3>
+                <h3>Instance Management</h3>
                 
                 <div class="api-endpoint" onclick="toggleDetails(this)">
                     <div class="api-header">
@@ -397,39 +397,39 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            创建一个新的容器实例。
+                            Create a new container instance.
                         </div>
                         <div class="param-section">
-                            <h4>请求体参数</h4>
+                            <h4>Request Body Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>image</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>容器镜像名称</td>
+                                    <td>Yes</td>
+                                    <td>Container image name</td>
                                 </tr>
                                 <tr>
                                     <td><code>tenant_id</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>租户 ID</td>
+                                    <td>Yes</td>
+                                    <td>Tenant ID</td>
                                 </tr>
                                 <tr>
                                     <td><code>namespace</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>命名空间</td>
+                                    <td>Yes</td>
+                                    <td>Namespace</td>
                                 </tr>
                             </table>
                         </div>
                         <div class="example-section">
-                            <h4>请求示例</h4>
+                            <h4>Example Request</h4>
                             <pre class="code-block">curl -X POST "%s/serverless/v1/posix/instance/create" \
   -H "Content-Type: application/json" \
   -H "X-Auth: YOUR_JWT_TOKEN" \
@@ -450,28 +450,28 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            在指定实例中执行命令。
+                            Execute a command in the specified instance.
                         </div>
                         <div class="param-section">
-                            <h4>请求体参数</h4>
+                            <h4>Request Body Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>instance_id</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>实例 ID</td>
+                                    <td>Yes</td>
+                                    <td>Instance ID</td>
                                 </tr>
                                 <tr>
                                     <td><code>command</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>要执行的命令</td>
+                                    <td>Yes</td>
+                                    <td>Command to execute</td>
                                 </tr>
                             </table>
                         </div>
@@ -486,22 +486,22 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            终止指定的实例。
+                            Terminate the specified instance.
                         </div>
                         <div class="param-section">
-                            <h4>请求体参数</h4>
+                            <h4>Request Body Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>instance_id</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>要终止的实例 ID</td>
+                                    <td>Yes</td>
+                                    <td>ID of the instance to terminate</td>
                                 </tr>
                             </table>
                         </div>
@@ -516,27 +516,27 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            列出当前租户下的所有实例。
+                            List all instances under the current tenant.
                         </div>
                         <div class="param-section">
-                            <h4>查询参数</h4>
+                            <h4>Query Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>tenant_id</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>租户 ID</td>
+                                    <td>Yes</td>
+                                    <td>Tenant ID</td>
                                 </tr>
                             </table>
                         </div>
                         <div class="example-section">
-                            <h4>请求示例</h4>
+                            <h4>Example Request</h4>
                             <pre class="code-block">curl -X GET "%s/api/instances?tenant_id=tenant_001" \
   -H "X-Auth: YOUR_JWT_TOKEN"</pre>
                         </div>
@@ -546,7 +546,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
 
             <!-- Data System APIs -->
             <div class="api-group">
-                <h3>数据系统</h3>
+                <h3>Data System</h3>
                 
                 <div class="api-endpoint" onclick="toggleDetails(this)">
                     <div class="api-header">
@@ -556,28 +556,28 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            设置键值对数据。
+                            Set key-value data.
                         </div>
                         <div class="param-section">
-                            <h4>请求体参数</h4>
+                            <h4>Request Body Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>key</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>键名</td>
+                                    <td>Yes</td>
+                                    <td>Key name</td>
                                 </tr>
                                 <tr>
                                     <td><code>value</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>值</td>
+                                    <td>Yes</td>
+                                    <td>Value</td>
                                 </tr>
                             </table>
                         </div>
@@ -592,22 +592,22 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            获取键值对数据。
+                            Get key-value data.
                         </div>
                         <div class="param-section">
-                            <h4>请求体参数</h4>
+                            <h4>Request Body Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>key</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>键名</td>
+                                    <td>Yes</td>
+                                    <td>Key name</td>
                                 </tr>
                             </table>
                         </div>
@@ -622,7 +622,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            删除键值对数据。
+                            Delete key-value data.
                         </div>
                     </div>
                 </div>
@@ -635,7 +635,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            批量设置多个键值对。
+                            Batch set multiple key-value pairs.
                         </div>
                     </div>
                 </div>
@@ -648,7 +648,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            批量获取多个键值对。
+                            Batch get multiple key-value pairs.
                         </div>
                     </div>
                 </div>
@@ -661,7 +661,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            批量删除多个键值对。
+                            Batch delete multiple key-value pairs.
                         </div>
                     </div>
                 </div>
@@ -669,7 +669,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
 
             <!-- Job APIs -->
             <div class="api-group">
-                <h3>作业管理</h3>
+                <h3>Job Management</h3>
                 
                 <div class="api-endpoint" onclick="toggleDetails(this)">
                     <div class="api-header">
@@ -679,28 +679,28 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            提交一个新的作业。
+                            Submit a new job.
                         </div>
                         <div class="param-section">
-                            <h4>请求体参数</h4>
+                            <h4>Request Body Parameters</h4>
                             <table class="param-table">
                                 <tr>
-                                    <th>参数名</th>
-                                    <th>类型</th>
-                                    <th>必需</th>
-                                    <th>描述</th>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
                                 </tr>
                                 <tr>
                                     <td><code>job_name</code></td>
                                     <td>string</td>
-                                    <td>是</td>
-                                    <td>作业名称</td>
+                                    <td>Yes</td>
+                                    <td>Job name</td>
                                 </tr>
                                 <tr>
                                     <td><code>job_spec</code></td>
                                     <td>object</td>
-                                    <td>是</td>
-                                    <td>作业规格定义</td>
+                                    <td>Yes</td>
+                                    <td>Job specification definition</td>
                                 </tr>
                             </table>
                         </div>
@@ -715,7 +715,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            列出所有作业。
+                            List all jobs.
                         </div>
                     </div>
                 </div>
@@ -728,7 +728,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            获取指定作业的详细信息。
+                            Get details of the specified job.
                         </div>
                     </div>
                 </div>
@@ -741,7 +741,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            删除指定的作业。
+                            Delete the specified job.
                         </div>
                     </div>
                 </div>
@@ -754,7 +754,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            停止正在运行的作业。
+                            Stop a running job.
                         </div>
                     </div>
                 </div>
@@ -762,7 +762,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
 
             <!-- Health Check -->
             <div class="api-group">
-                <h3>系统监控</h3>
+                <h3>System Monitoring</h3>
                 
                 <div class="api-endpoint" onclick="toggleDetails(this)">
                     <div class="api-header">
@@ -772,10 +772,10 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            健康检查端点。返回服务状态。
+                            Health check endpoint. Returns the service status.
                         </div>
                         <div class="example-section">
-                            <h4>响应示例</h4>
+                            <h4>Example Response</h4>
                             <pre class="code-block">{
   "status": "ok",
   "timestamp": "2026-02-13T10:30:00Z"
@@ -792,7 +792,7 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
                     </div>
                     <div class="api-details">
                         <div class="api-description">
-                            集群组件健康状态检查。返回所有组件的健康状态。
+                            Cluster component health check. Returns the health status of all components.
                         </div>
                     </div>
                 </div>
@@ -800,21 +800,21 @@ func HandleAPIDoc(w http.ResponseWriter, r *http.Request) {
         </div>
 
         <div class="intro-section">
-            <h2>错误处理</h2>
-            <p>所有 API 在发生错误时都会返回标准的 HTTP 状态码和 JSON 错误响应：</p>
+            <h2>Error Handling</h2>
+            <p>All API endpoints return standard HTTP status codes and JSON error responses on failure:</p>
             <pre class="code-block">{
-  "error": "错误描述信息",
+  "error": "error description",
   "code": "ERROR_CODE",
-  "details": "详细错误信息"
+  "details": "detailed error message"
 }</pre>
-            <p><strong>常见状态码：</strong></p>
+            <p><strong>Common Status Codes:</strong></p>
             <ul style="margin-left: 20px; margin-top: 12px; line-height: 1.8;">
-                <li><strong>200 OK</strong> - 请求成功</li>
-                <li><strong>400 Bad Request</strong> - 请求参数错误</li>
-                <li><strong>401 Unauthorized</strong> - 未授权，需要有效的 Token</li>
-                <li><strong>403 Forbidden</strong> - 禁止访问</li>
-                <li><strong>404 Not Found</strong> - 资源不存在</li>
-                <li><strong>500 Internal Server Error</strong> - 服务器内部错误</li>
+                <li><strong>200 OK</strong> - Request successful</li>
+                <li><strong>400 Bad Request</strong> - Invalid request parameters</li>
+                <li><strong>401 Unauthorized</strong> - Unauthorized, a valid token is required</li>
+                <li><strong>403 Forbidden</strong> - Forbidden</li>
+                <li><strong>404 Not Found</strong> - Resource not found</li>
+                <li><strong>500 Internal Server Error</strong> - Internal server error</li>
             </ul>
         </div>
     </div>

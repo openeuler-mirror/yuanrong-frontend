@@ -237,29 +237,29 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div class="header">
-        <a href="%s/" class="back-link">← 返回首页</a>
+        <a href="%s/" class="back-link">← Back to Home</a>
         <h1>🚀 Function Invoke Tool</h1>
-        <div class="subtitle">开发者调试工具 - 快速测试和调试 Serverless 函数</div>
+        <div class="subtitle">Developer Debug Tool - Quickly test and debug Serverless functions</div>
     </div>
     
     <div class="container">
         <!-- Request Panel -->
         <div class="panel">
-            <div class="panel-header">请求配置</div>
+            <div class="panel-header">Request Config</div>
             <div class="panel-body">
                 <div class="form-group">
                     <label class="form-label">Tenant ID *</label>
-                    <input type="text" class="form-input" id="tenantId" placeholder="例如: tenant_001" value="default">
+                    <input type="text" class="form-input" id="tenantId" placeholder="e.g. tenant_001" value="default">
                 </div>
                 
                 <div class="form-group">
                     <label class="form-label">Namespace *</label>
-                    <input type="text" class="form-input" id="namespace" placeholder="例如: default" value="default">
+                    <input type="text" class="form-input" id="namespace" placeholder="e.g. default" value="default">
                 </div>
                 
                 <div class="form-group">
                     <label class="form-label">Function Name *</label>
-                    <input type="text" class="form-input" id="functionName" placeholder="例如: hello-world">
+                    <input type="text" class="form-input" id="functionName" placeholder="e.g. hello-world">
                 </div>
                 
                 <div class="form-group">
@@ -269,14 +269,14 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
                 
                 <div class="btn-group">
                     <button class="btn btn-primary" id="invokeBtn" onclick="invokeFunction()">
-                        <span id="invokeBtnText">调用函数</span>
+                        <span id="invokeBtnText">Invoke</span>
                     </button>
-                    <button class="btn btn-secondary" onclick="clearForm()">清空</button>
-                    <button class="btn btn-secondary" onclick="formatJSON()">格式化 JSON</button>
+                    <button class="btn btn-secondary" onclick="clearForm()">Clear</button>
+                    <button class="btn btn-secondary" onclick="formatJSON()">Format JSON</button>
                 </div>
                 
                 <div class="history-section" id="historySection" style="display: none;">
-                    <div class="form-label">调用历史</div>
+                    <div class="form-label">Call History</div>
                     <div id="historyList"></div>
                 </div>
             </div>
@@ -284,20 +284,20 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
         
         <!-- Response Panel -->
         <div class="panel">
-            <div class="panel-header">响应结果</div>
+            <div class="panel-header">Response</div>
             <div class="panel-body">
                 <div id="responseMetaContainer" style="display: none;">
                     <div class="response-meta">
                         <div class="meta-item">
-                            <span class="meta-label">状态码:</span>
+                            <span class="meta-label">Status:</span>
                             <span class="meta-value" id="responseStatus">-</span>
                         </div>
                         <div class="meta-item">
-                            <span class="meta-label">耗时:</span>
+                            <span class="meta-label">Duration:</span>
                             <span class="meta-value" id="responseDuration">-</span>
                         </div>
                         <div class="meta-item">
-                            <span class="meta-label">大小:</span>
+                            <span class="meta-label">Size:</span>
                             <span class="meta-value" id="responseSize">-</span>
                         </div>
                     </div>
@@ -306,8 +306,8 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
                 <div id="responseContainer">
                     <div class="empty-state">
                         <div class="empty-state-icon">📬</div>
-                        <div>暂无响应数据</div>
-                        <div style="margin-top: 8px; font-size: 13px;">配置请求参数后点击"调用函数"按钮</div>
+                        <div>No response data</div>
+                        <div style="margin-top: 8px; font-size: 13px;">Configure request params and click "Invoke"</div>
                     </div>
                 </div>
             </div>
@@ -334,7 +334,7 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
             
             // Validation
             if (!tenantId || !namespace || !functionName) {
-                alert('请填写 Tenant ID、Namespace 和 Function Name');
+                alert('Please fill in Tenant ID, Namespace, and Function Name');
                 return;
             }
             
@@ -344,7 +344,7 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
                 try {
                     JSON.parse(body);
                 } catch (e) {
-                    alert('请求体不是有效的 JSON 格式: ' + e.message);
+                    alert('Request body is not valid JSON: ' + e.message);
                     return;
                 }
             }
@@ -353,10 +353,10 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
             const btn = document.getElementById('invokeBtn');
             const btnText = document.getElementById('invokeBtnText');
             btn.disabled = true;
-            btnText.textContent = '调用中...';
+            btnText.textContent = 'Invoking...';
             
             const startTime = Date.now();
-            const url = pathPrefix + '/' + tenantId + '/' + namespace + '/' + functionName + '/';
+            const url = pathPrefix + '/invocations/' + tenantId + '/' + namespace + '/' + functionName + '/';
             
             try {
                 const headers = {
@@ -402,7 +402,7 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
                 displayResponse(0, duration, { error: error.message }, true);
             } finally {
                 btn.disabled = false;
-                btnText.textContent = '调用函数';
+                btnText.textContent = 'Invoke';
             }
         }
         
@@ -443,7 +443,7 @@ func HandleInvokePage(w http.ResponseWriter, r *http.Request) {
                 const json = JSON.parse(textarea.value);
                 textarea.value = JSON.stringify(json, null, 2);
             } catch (e) {
-                alert('无法格式化: ' + e.message);
+                alert('Cannot format: ' + e.message);
             }
         }
         

@@ -486,7 +486,7 @@ func TestExtractFunctionKey(t *testing.T) {
 			args: args{
 				ctx: ctx,
 			},
-			want:    "12345678901234561234567890123456/0@yrservice@test-faas-python-runtime-001/",
+			want:    "default/0@yrservice@test-faas-python-runtime-001/",
 			wantErr: false,
 		},
 	}
