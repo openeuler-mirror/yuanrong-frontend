@@ -1,0 +1,125 @@
+# OpenTelemetry Collector 配置
+# 用途：通过 filelog receiver 采集 yuanrong-functionsystem 日志，导出到 Loki
+
+receivers:
+  # 文件日志采集器
+  filelog:
+    include:
+      - /home/yr/log/*.log
+    exclude:
+      - /home/yr/log/*.log.gz        # 排除压缩归档
+    start_at: end                     # 从文件末尾开始，避免重复采集历史
+    # start_at: beginning             # 首次部署如需采集历史日志，改为 beginning
+
+    # 多行日志合并：非 [DIWEC] 开头的行属于上一条日志
+    multiline:
+      line_start_pattern: '^[DIWEC]\d{4} '
+
+    operators:
+      # 1. 解析 spdlog 格式
+      # 示例: I0227 10:15:32.123456 12345 main.cpp:42] 9876,!]node1,function_proxy]Started proxy
+      - type: regex_parser
+        regex: '^(?P<severity>[DIWEC])(?P<date>\d{4}) (?P<time>\d{2}:\d{2}:\d{2}\.\d+) (?P<thread>\d+) (?P<source>[^\]]+)\] (?P<pid>\d+),[^\]]*\](?P<node>[^,]*),(?P<component>[^\]]*)\](?P<body>.*)'
+        severity:
+          parse_from: attributes.severity
+          mapping:
+            debug: D
+            info: I
+            warn: W
+            error: E
+            fatal: C
+
+      # 2. 添加服务名
+      - type: add
+        field: resource["service.name"]
+        value: "yuanrong-functionsystem"
+
+      # 3. 将解析出的字段移到 resource 属性
+      - type: move
+        from: attributes.node
+        to: resource["node.name"]
+      - type: move
+        from: attributes.component
+        to: resource["component.name"]
+      - type: move
+        from: attributes.source
+        to: attributes["code.filepath"]
+      - type: move
+        from: attributes.thread
+        to: attributes["thread.id"]
+      - type: move
+        from: attributes.pid
+        to: attributes["process.pid"]
+
+      # 4. 清理中间属性
+      - type: remove
+        field: attributes.date
+      - type: remove
+        field: attributes.time
+
+  # 保留 OTLP gRPC 接收器（给已有的 traces/metrics 用）
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  memory_limiter:
+    limit_mib: 1536
+    spike_limit_mib: 512
+    check_interval: 5s
+
+  # 为所有数据添加环境标签
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: docker
+        action: upsert
+
+exporters:
+  # Loki（通过 OTLP 协议）
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+  # Tempo（通过 OTLP gRPC）
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Prometheus（通过 remote write）
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+
+  # 调试用：输出到 stdout（上线后可移除）
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/loki, debug]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/tempo, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheusremotewrite, debug]

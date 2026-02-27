@@ -1,6 +1,38 @@
-# Docker 部署 Prometheus 和 Grafana 监控
+# Docker 部署可观测性全栈（Logs / Traces / Metrics）
 
-本文档介绍如何使用 Docker 和 Docker Compose 部署 Prometheus 和 Grafana 来监控 Yuanrong Frontend 服务。
+本文档介绍如何使用 Docker Compose 部署完整的可观测性栈，统一采集 Yuanrong 系统的日志、链路追踪和指标，并在 Grafana 中统一展示和关联查询。
+
+## 架构概览
+
+```
+yuanrong 应用
+  ├─ 日志文件 (/home/yr/log/*.log)
+  ├─ Traces (OTLP gRPC :4317)
+  └─ Metrics (OTLP gRPC :4317)
+        │
+        ▼
+  OTel Collector ──┬── logs ────→ Loki (:3100)
+                   ├── traces ──→ Tempo (:3200) ─→ RED metrics ─→ Prometheus
+                   └── metrics ─→ Prometheus (:9090, remote write)
+                                      │
+                                      ▼
+                              Grafana (:3000)
+                        ┌──────────┼──────────┐
+                        │          │          │
+                      Logs      Traces    Metrics
+                      (Loki)   (Tempo)  (Prometheus)
+                        └──── 互相关联跳转 ────┘
+```
+
+### 组件说明
+
+| 组件 | 版本 | 职责 | 端口 |
+|------|------|------|------|
+| **OTel Collector** | contrib:latest | 统一采集入口，接收日志/traces/metrics 并转发到各后端 | 4317 (gRPC) |
+| **Loki** | 3.4.2 | 日志存储与查询 | 3100 |
+| **Tempo** | 2.7.1 | 分布式链路追踪存储与查询 | 3200 |
+| **Prometheus** | latest | 指标存储与查询 | 9090 |
+| **Grafana** | latest | 统一可视化看板，三大信号关联跳转 | 3000 |
 
 ## 前置要求
 
@@ -74,12 +106,14 @@ chmod +x *.sh
 
 ### 4. 访问服务
 
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000
-  - 用户名: `admin`
-  - 密码: `admin`（首次登录会要求修改）
+| 服务 | 地址 | 说明 |
+|------|------|------|
+| **Grafana** | http://localhost:3000 | 统一看板（admin / admin） |
+| **Prometheus** | http://localhost:9090 | 指标查询 |
+| **Loki** | http://localhost:3100 | 日志 API |
+| **Tempo** | http://localhost:3200 | 链路追踪 API |
 
-### 4. 停止服务
+### 5. 停止服务
 
 ```bash
 ./stop.sh
@@ -89,19 +123,27 @@ chmod +x *.sh
 
 ```
 docker/
-├── docker-compose.yml          # Docker Compose 配置文件
-├── prometheus.yml              # Prometheus 配置
-├── start.sh                    # 启动脚本
-├── stop.sh                     # 停止脚本
-├── README.md                   # 本文档
-├── prometheus-data/            # Prometheus 数据目录（自动创建）
-├── grafana-data/               # Grafana 数据目录（自动创建）
-├── grafana-provisioning/       # Grafana 自动配置
-│   ├── datasources/           # 数据源配置
-│   │   └── prometheus.yml
-│   └── dashboards/            # 仪表板配置
+├── docker-compose.yml              # Docker Compose 编排（6 个服务）
+├── otel-collector-config.yaml      # OTel Collector 配置（filelog + OTLP 接收 → Loki/Tempo/Prometheus 导出）
+├── loki-config.yaml                # Loki 配置（TSDB 存储，7 天保留）
+├── tempo-config.yaml               # Tempo 配置（本地存储 + RED metrics 生成）
+├── prometheus.yml                  # Prometheus 抓取配置
+├── start.sh                        # 启动脚本
+├── stop.sh                         # 停止脚本
+├── fix-permissions.sh              # 权限修复脚本
+├── README.md                       # 本文档
+├── prometheus-data/                # Prometheus 数据（自动创建）
+├── loki-data/                      # Loki 数据（自动创建）
+├── tempo-data/                     # Tempo 数据（自动创建）
+├── grafana-data/                   # Grafana 数据（自动创建）
+├── grafana-provisioning/           # Grafana 自动配置
+│   ├── datasources/
+│   │   ├── prometheus.yml          # Prometheus 数据源（exemplar → Tempo）
+│   │   ├── loki.yml                # Loki 数据源（traceID → Tempo）
+│   │   └── tempo.yml               # Tempo 数据源（关联 Loki + Prometheus）
+│   └── dashboards/
 │       └── default.yml
-└── grafana-dashboards/        # Grafana 仪表板 JSON 文件
+└── grafana-dashboards/             # Grafana 仪表板 JSON 文件
     └── yuanrong-frontend.json
 ```
 
@@ -109,29 +151,70 @@ docker/
 
 ### Docker Compose 配置
 
-`docker-compose.yml` 包含两个服务：
+`docker-compose.yml` 包含以下服务：
 
-1. **Prometheus**
-   - 端口: 9090
-   - 数据卷: `./prometheus-data`
-   - 配置文件: `./prometheus.yml`
+| 服务 | 镜像 | 端口 | 数据卷 |
+|------|------|------|--------|
+| **Loki** | grafana/loki:3.4.2 | 3100 | `./loki-data` |
+| **Tempo** | grafana/tempo:2.7.1 | 3200 | `./tempo-data` |
+| **OTel Collector** | otel/opentelemetry-collector-contrib:latest | 4317 | 挂载 `/home/yr/log`（只读） |
+| **Prometheus** | prom/prometheus:latest | 9090 | `./prometheus-data` |
+| **Grafana** | grafana/grafana:latest | 3000 | `./grafana-data` |
 
-2. **Grafana**
-   - 端口: 3000
-   - 数据卷: `./grafana-data`
-   - 自动配置数据源和仪表板
+### OTel Collector 配置
+
+`otel-collector-config.yaml` 定义了三条数据管道：
+
+| 管道 | 接收器 | 导出器 | 说明 |
+|------|--------|--------|------|
+| **logs** | filelog（读取 `/home/yr/log/*.log`） | Loki (OTLP HTTP) | 正则解析 spdlog 格式，提取 severity/node/component |
+| **traces** | OTLP gRPC (:4317) | Tempo (OTLP gRPC) | 应用通过 `TraceManager` 发送 |
+| **metrics** | OTLP gRPC (:4317) | Prometheus (remote write) | 应用通过 `MetricsAdapter` 发送 |
+
+**日志格式解析**：Collector 会解析 spdlog 格式日志，自动提取以下字段：
+
+```
+I0227 10:15:32.123456 12345 main.cpp:42] 9876,!]node1,function_proxy]Started proxy
+│                      │     │            │        │     │              └─ body
+│                      │     │            │        │     └─ component.name
+│                      │     │            │        └─ node.name
+│                      │     │            └─ process.pid
+│                      │     └─ code.filepath
+│                      └─ thread.id
+└─ severity (D=debug, I=info, W=warn, E=error, C=fatal)
+```
+
+**自定义日志路径**：如果日志目录不是 `/home/yr/log`，需修改两处：
+1. `docker-compose.yml` 中 otel-collector 的 volumes 映射
+2. `otel-collector-config.yaml` 中 filelog receiver 的 `include` 路径
+
+### Grafana 数据源关联
+
+三个数据源已配置互相跳转：
+
+| 起点 | 跳转目标 | 触发方式 |
+|------|---------|---------|
+| **Logs → Traces** | 日志中的 `traceID=xxx` 自动生成链接 | 点击 traceID 跳转到 Tempo |
+| **Traces → Logs** | Trace 详情页可查看对应时间段日志 | 点击 "Logs for this span" |
+| **Traces → Metrics** | Trace 详情页可查看对应指标 | 点击 "Related metrics" |
+| **Metrics → Traces** | Prometheus exemplar 中嵌入 traceID | 点击 exemplar 跳转到 Tempo |
 
 ### 网络配置
 
 - 使用 Docker bridge 网络 `monitoring`
-- Prometheus 和 Grafana 在同一网络中，可以互相访问
-- Grafana 通过服务名 `prometheus:9090` 访问 Prometheus
+- 所有服务在同一网络中，通过容器名互相访问
+- 应用发送 traces/metrics 到 `otel-collector:4317`（容器内）或 `localhost:4317`（宿主机）
 
 ### 数据持久化
 
-- Prometheus 数据保存在 `./prometheus-data`
-- Grafana 数据保存在 `./grafana-data`
-- 删除容器不会删除数据（除非使用 `docker-compose down -v`）
+| 数据 | 目录 | 保留策略 |
+|------|------|---------|
+| Prometheus | `./prometheus-data` | 默认 15 天 |
+| Loki | `./loki-data` | 7 天（可在 `loki-config.yaml` 中调整） |
+| Tempo | `./tempo-data` | 默认保留 |
+| Grafana | `./grafana-data` | 永久 |
+
+删除容器不会删除数据（除非使用 `docker compose down -v`）
 
 ## 常用命令
 
@@ -147,12 +230,13 @@ docker compose ps
 
 ```bash
 # 查看所有服务日志
-docker-compose logs -f
+docker compose logs -f
 
-# 查看 Prometheus 日志
+# 查看单个服务日志
+docker logs -f otel-collector
+docker logs -f loki
+docker logs -f tempo
 docker logs -f prometheus
-
-# 查看 Grafana 日志
 docker logs -f grafana
 ```
 
@@ -256,6 +340,78 @@ docker-compose down -v
    chmod -R 755 .
    ```
 
+## Grafana 查询示例
+
+### 日志查询（Loki - LogQL）
+
+在 Grafana → Explore → 选择 Loki 数据源：
+
+```logql
+# 查看所有日志
+{service_name="yuanrong-functionsystem"}
+
+# 按组件过滤
+{component_name="function_proxy"}
+
+# 按节点和级别过滤
+{node_name="node1"} | severity >= "error"
+
+# 关键字搜索
+{service_name="yuanrong-functionsystem"} |= "timeout"
+
+# 统计每分钟错误数
+count_over_time({service_name="yuanrong-functionsystem"} | severity = "error" [1m])
+```
+
+### 链路追踪（Tempo）
+
+在 Grafana → Explore → 选择 Tempo 数据源：
+
+- **Search**: 按 service name、duration、status 搜索 traces
+- **TraceQL**: `{resource.service.name="yuanrong-functionsystem" && duration > 1s}`
+- **Service Graph**: 自动生成服务拓扑图（基于 Tempo metrics generator）
+
+### 指标查询（Prometheus - PromQL）
+
+在 Grafana → Explore → 选择 Prometheus 数据源：
+
+```promql
+# Tempo 自动生成的 RED metrics（需要应用发送 traces）
+# 请求速率
+rate(traces_spanmetrics_calls_total{service="yuanrong-functionsystem"}[5m])
+
+# 错误率
+rate(traces_spanmetrics_calls_total{service="yuanrong-functionsystem", status_code="STATUS_CODE_ERROR"}[5m])
+
+# P99 延迟
+histogram_quantile(0.99, rate(traces_spanmetrics_duration_milliseconds_bucket{service="yuanrong-functionsystem"}[5m]))
+```
+
+## 应用接入配置
+
+yuanrong-functionsystem 各组件已通过 `ModuleSwitcher` 集成 OTel。确保以下配置指向 OTel Collector：
+
+**Trace 配置**（JSON，传给 `--trace_config` 参数）：
+```json
+{
+  "otlpGrpcExporter": {
+    "enable": true,
+    "endpoint": "localhost:4317"
+  }
+}
+```
+
+**日志配置**（JSON，传给 `--log_config` 参数）：
+```json
+{
+  "filepath": "/home/yr/log",
+  "level": "DEBUG",
+  "alsologtostderr": true
+}
+```
+
+> 日志采集不需要修改应用代码，OTel Collector 直接读取日志文件。
+
 ## 生产环境建议
 
 1. **使用环境变量文件**
@@ -314,7 +470,9 @@ docker-compose down -v
 
 ## 参考资源
 
-- [Docker 官方文档](https://docs.docker.com/)
-- [Docker Compose 文档](https://docs.docker.com/compose/)
-- [Prometheus Docker 镜像](https://hub.docker.com/r/prom/prometheus)
-- [Grafana Docker 镜像](https://hub.docker.com/r/grafana/grafana)
+- [OpenTelemetry Collector Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)
+- [Grafana Loki 文档](https://grafana.com/docs/loki/latest/)
+- [Grafana Tempo 文档](https://grafana.com/docs/tempo/latest/)
+- [Prometheus 文档](https://prometheus.io/docs/)
+- [Grafana 文档](https://grafana.com/docs/grafana/latest/)
+- [Filelog Receiver 配置](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filelogreceiver)
