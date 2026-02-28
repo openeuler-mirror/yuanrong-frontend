@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
+    "frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/jwtauth"
@@ -203,6 +204,10 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 }
 
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+    tenantID := r.URL.Query().Get("tenant_id")
+    if tenantID == "" {
+		tenantID = "default"
+	}
 	// Authenticate JWT token from query parameter, header, or WebSocket subprotocol.
 	// Note: browsers cannot set custom HTTP headers on WebSocket connections.
 	// Passing the token as a Sec-WebSocket-Protocol subprotocol is the standard workaround.
@@ -225,6 +230,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "authentication failed: no token provided", http.StatusUnauthorized)
 			return
 		}
+        log.GetLogger().Errorf("[DEBUG] WebSocket auth token: %s", token)
 
 		// Parse JWT to validate
 		parsedJWT, err := jwtauth.ParseJWT(token)
@@ -241,8 +247,12 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+        if parsedJWT.Payload.Sub != "" {
+            tenantID = parsedJWT.Payload.Sub
+        }
+
 		log.GetLogger().Infof("WebSocket JWT authentication passed, role: %s, tenant: %s",
-			parsedJWT.Payload.Role, parsedJWT.Payload.Sub)
+			parsedJWT.Payload.Role, tenantID)
 	}
 
 	// Log client certificate info if TLS is enabled (verification already done at TLS handshake)
@@ -271,10 +281,6 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Read configuration from URL parameters
 	query := r.URL.Query()
 	instance := query.Get("instance")
-	tenantID := query.Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
 
 	cmdStr := query.Get("command")
 	command := defaultCommand
@@ -570,10 +576,17 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	// Convert to frontend expected format (simplified instance info)
 	instances := make([]map[string]interface{}, 0, len(response.Instances))
 	for _, inst := range response.Instances {
+        errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
+            inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
+        statusText := instanceStatusText(inst.InstanceStatus.Code)
+        if statusText == "unknown" {
+            statusText = inst.InstanceStatus.Msg
+        }
 		instance := map[string]interface{}{
 			"id":       inst.InstanceID,
 			"function": inst.Function,
-			"status":   inst.InstanceStatus.Msg,
+            "status":   statusText,
+            "error":    errorDetail,
 		}
 		instances = append(instances, instance)
 	}
@@ -583,6 +596,37 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 		log.GetLogger().Infof("Error encoding instances: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+func instanceStatusText(code int) string {
+    switch constant.InstanceStatus(code) {
+    case constant.KernelInstanceStatusExited:
+        return "exited"
+    case constant.KernelInstanceStatusNew:
+        return "new"
+    case constant.KernelInstanceStatusScheduling:
+        return "scheduling"
+    case constant.KernelInstanceStatusCreating:
+        return "creating"
+    case constant.KernelInstanceStatusRunning:
+        return "running"
+    case constant.KernelInstanceStatusFailed:
+        return "failed"
+    case constant.KernelInstanceStatusExiting:
+        return "exiting"
+    case constant.KernelInstanceStatusFatal:
+        return "fatal"
+    case constant.KernelInstanceStatusScheduleFailed:
+        return "schedule_failed"
+    case constant.KernelInstanceStatusEvicting:
+        return "evicting"
+    case constant.KernelInstanceStatusEvicted:
+        return "evicted"
+    case constant.KernelInstanceStatusSubHealth:
+        return "sub_health"
+    default:
+        return "unknown"
+    }
 }
 
 func HandleIndex(w http.ResponseWriter, r *http.Request) {
@@ -622,18 +666,9 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             padding: 10px 20px;
             border-bottom: 1px solid #3e3e42;
             display: flex;
-            justify-content: space-between;
+            justify-content: flex-start;
             align-items: center;
-        }
-        #header .left-section {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }
-        #header h1 {
-            margin: 0;
-            font-size: 16px;
-            font-weight: normal;
+            gap: 12px;
         }
         #toggle-sidebar-btn {
             background: transparent;
@@ -648,22 +683,34 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }
         #toggle-sidebar-btn:hover {
             background: #3c3c3c;
-            border-color: #007acc;
+            border-color: #777;
         }
-        .back-link {
+        .home-link {
             color: #ccc;
             text-decoration: none;
-            opacity: 0.8;
-            transition: opacity 0.2s;
-            font-size: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 28px;
+            height: 28px;
+            border: 1px solid #555;
+            border-radius: 3px;
+            padding: 0 8px;
+            font-size: 13px;
+            transition: all 0.2s;
+            opacity: 0.9;
+            box-sizing: border-box;
         }
-        .back-link:hover {
+        .home-link:hover {
+            background: #3c3c3c;
+            border-color: #777;
             opacity: 1;
         }
         #status {
             display: flex;
             align-items: center;
             gap: 10px;
+            margin-left: auto;
         }
         .status-indicator {
             width: 8px;
@@ -747,9 +794,40 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         .instance-item .instance-id {
             font-weight: 500;
             color: #d4d4d4;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .instance-item .instance-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .instance-item .instance-delete-btn {
+            background: transparent;
+            color: #bbb;
+            border: 1px solid #555;
+            border-radius: 3px;
+            width: 22px;
+            height: 22px;
+            line-height: 18px;
+            padding: 0;
+            cursor: pointer;
+            opacity: 0.8;
+            flex: 0 0 auto;
+        }
+        .instance-item .instance-delete-btn:hover {
+            background: #3c3c3c;
+            border-color: #777;
+            opacity: 1;
         }
         .instance-item .instance-status {
             font-size: 11px;
+        }
+        .instance-item .instance-status.with-error {
+            text-decoration: underline dotted #777;
+            cursor: help;
         }
         .instance-item .instance-status.running {
             color: #4caf50;
@@ -951,11 +1029,8 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div id="header">
-        <div class="left-section">
-            <a href="%s/" class="back-link">← Home</a>
-            <h1>🖥️ Remote Exec Terminal</h1>
-            <button id="toggle-sidebar-btn" title="Show instance list" aria-label="Show instance list">☰</button>
-        </div>
+        <button id="toggle-sidebar-btn" title="Show instance list" aria-label="Show instance list">☰</button>
+        <a href="%s/" class="home-link" title="Home" aria-label="Home">⌂</a>
         <div id="status">
             <span id="status-text">Connecting...</span>
             <div class="status-indicator" id="status-indicator"></div>
@@ -1048,6 +1123,30 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
     <script src="%s/terminal/static/xterm-addon-fit.js"></script>
     <script>
         // Generate UUID
+        const jobsApiUrl = '%s/api/jobs';
+
+        function decodeBase64URL(input) {
+            const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+            const padded = base64 + '='.repeat((4 - base64.length %% 4) %% 4);
+            return atob(padded);
+        }
+
+        function parseTenantFromJWT(token) {
+            if (!token) {
+                return '';
+            }
+            try {
+                const parts = token.split('.');
+                if (parts.length !== 3) {
+                    return '';
+                }
+                const payload = JSON.parse(decodeBase64URL(parts[1]));
+                return (payload && typeof payload.sub === 'string') ? payload.sub : '';
+            } catch (e) {
+                return '';
+            }
+        }
+
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 const r = Math.random() * 16 | 0;
@@ -1100,9 +1199,12 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
                 // Build request payload
                 const payload = {
-                    entrypoint: 'python -m yr.sandbox.sandbox --name ' + name + ' --namespace ' + namespace,
+                    entrypoint: 'python -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
                     runtime_env: {
-                        working_dir: '/tmp'
+                        working_dir: '/tmp',
+                        env_vars: {
+                            'YR_JWT_TOKEN': token || ''
+                        }
                     }
                 };
 
@@ -1120,7 +1222,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 }
 
                 // Call job creation API
-                const response = await fetch('%s/api/jobs', fetchOptions);
+                const response = await fetch(jobsApiUrl, fetchOptions);
 
                 if (!response.ok) {
                     throw new Error('Failed to create job: ' + response.status);
@@ -1300,6 +1402,49 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         let totalInstances = 0;
         let allInstances = [];
 
+        async function deleteInstance(instanceId, token) {
+            if (!instanceId) {
+                return;
+            }
+            if (!confirm('Delete instance: ' + instanceId + ' ?')) {
+                return;
+            }
+
+            try {
+                const payload = {
+                    entrypoint: 'python -m yr.cli.scripts sandbox ' + instanceId,
+                    runtime_env: {
+                        working_dir: '/tmp'
+                    }
+                };
+
+                const fetchOptions = {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                };
+                if (token) {
+                    fetchOptions.headers['X-Auth'] = token;
+                }
+
+                const response = await fetch(jobsApiUrl, fetchOptions);
+                if (!response.ok) {
+                    throw new Error('Failed to submit delete job: ' + response.status);
+                }
+
+                const result = await response.json();
+                alert('Delete job submitted' + (result && result.submission_id ? (': ' + result.submission_id) : ''));
+
+                // Refresh list after delete request is submitted
+                loadInstances(currentPage);
+            } catch (error) {
+                console.error('Failed to delete instance:', error);
+                alert('Failed to delete instance: ' + error.message);
+            }
+        }
+
         // Load instance list
         async function loadInstances(page = 1) {
             try {
@@ -1353,22 +1498,45 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         item.classList.add('active');
                     }
 
+                    const headDiv = document.createElement('div');
+                    headDiv.className = 'instance-head';
+
                     const idDiv = document.createElement('div');
                     idDiv.className = 'instance-id';
                     idDiv.textContent = instance.id;
 
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'instance-delete-btn';
+                    deleteBtn.textContent = '🗑';
+                    deleteBtn.title = 'Delete instance';
+                    deleteBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        deleteInstance(instance.id, token);
+                    });
+
+                    headDiv.appendChild(idDiv);
+                    headDiv.appendChild(deleteBtn);
+
                     const statusDiv = document.createElement('div');
                     statusDiv.className = 'instance-status';
                     const status = instance.status || 'unknown';
+                    const errorMessage = instance.error || '';
                     statusDiv.textContent = '● ' + status;
                     // Simple status color check
-                    if (status.toLowerCase().includes('running') || status.toLowerCase().includes('ready')) {
+                    const isRunning = status.toLowerCase().includes('running') || status.toLowerCase().includes('ready');
+                    if (isRunning) {
                         statusDiv.classList.add('running');
                     } else if (status.toLowerCase().includes('stop') || status.toLowerCase().includes('error')) {
                         statusDiv.classList.add('stopped');
                     }
 
-                    item.appendChild(idDiv);
+                    // For non-running instances, show error detail in hover tooltip
+                    if (!isRunning && errorMessage) {
+                        statusDiv.classList.add('with-error');
+                        statusDiv.title = errorMessage;
+                    }
+
+                    item.appendChild(headDiv);
                     item.appendChild(statusDiv);
 
                     // Click to switch instance
@@ -1436,6 +1604,18 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
             // Check if instance param exists
             const params = new URLSearchParams(window.location.search);
+            const tokenFromUrl = params.get('token');
+            const tenantFromToken = parseTenantFromJWT(tokenFromUrl);
+            if (tenantFromToken) {
+                const dialogTenantInput = document.getElementById('dialog-tenant');
+                if (dialogTenantInput) {
+                    dialogTenantInput.value = tenantFromToken;
+                }
+                const sandboxTenantInput = document.getElementById('sandbox-tenant');
+                if (sandboxTenantInput) {
+                    sandboxTenantInput.value = tenantFromToken;
+                }
+            }
             const currentInstance = params.get('instance');
 
             // No instance param, show dialog
@@ -1520,16 +1700,15 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const _wsParams = new URLSearchParams(window.location.search);
             const _wsToken = _wsParams.get('token');
             _wsParams.delete('token');
-            // Add unique ID (timestamp + random) to force separate HTTP/2 connections per tab
-            // This helps differentiate connections but HTTP/2 connection reuse is browser-controlled
-            const uniqueSuffix = Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9);
-            _wsParams.set('_t', uniqueSuffix);
+            // Add unique query suffix to avoid client/proxy caching surprises across tabs
+            const uniqueQuerySuffix = Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9);
+            _wsParams.set('_t', uniqueQuerySuffix);
             const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + (_wsParams.toString() ? '?' + _wsParams.toString() : '');
             document.getElementById('ws-url').textContent = wsUrl;
 
             // Pass token as subprotocol (backend echoes it back to complete the handshake)
-            // Use unique subprotocol to help differentiate connections at protocol level
-            const subprotocols = _wsToken ? [_wsToken + '-' + uniqueSuffix] : [];
+            // IMPORTANT: pass raw token only, do not append suffixes
+            const subprotocols = _wsToken ? [_wsToken] : [];
             const ws = new WebSocket(wsUrl, subprotocols);
             ws.binaryType = 'arraybuffer';
 

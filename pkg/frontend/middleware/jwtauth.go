@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"frontend/pkg/common/constants"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/config"
@@ -260,9 +261,24 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 
 		log.GetLogger().Debugf("IAM server validation passed, traceID %s", traceID)
 
+		// If JWT token contains tenant information, replace the tenant in header
+		if parsedJWT.Payload.Sub != "" {
+            tenantFromJWT := parsedJWT.Payload.Sub
+
+			// Replace both X-Tenant-ID and X-Tenant-Id headers with the tenant from JWT
+            ctx.Request.Header.Set(constants.HeaderTenantID, tenantFromJWT)
+            ctx.Request.Header.Set(constants.HeaderTenantId, tenantFromJWT)
+
+            // Replace tenant_id query parameter in URL with tenant from JWT
+            queryValues := ctx.Request.URL.Query()
+            queryValues.Set("tenant_id", tenantFromJWT)
+            ctx.Request.URL.RawQuery = queryValues.Encode()
+
+            log.GetLogger().Debugf("Replaced tenant in header/query with JWT tenant: %s, traceID %s", tenantFromJWT, traceID)
+		}
+
 		// Store user info in context for downstream handlers
 		ctx.Set("jwt_role", role)
-		ctx.Set("jwt_tenant_id", parsedJWT.Payload.Sub)
 
 		ctx.Next()
 	}
