@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      # 如果日志只存在于特定节点，取消以下注释并填写节点名
+      # nodeSelector:
+      #   kubernetes.io/hostname: <node-name>
+      #
+      # 若需要在每个节点采集日志，建议将此 Deployment 改为 DaemonSet
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
+        - containerPort: 8889
+          name: metrics
+        volumeMounts:
+        - name: otel-collector-config
+          mountPath: /etc/otelcol-contrib
+        # 挂载宿主机日志目录（对应 docker-compose: /home/yr/log:/home/yr/log:ro）
+        - name: host-logs
+          mountPath: /home/yr/log
+          readOnly: true
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      volumes:
+      - name: otel-collector-config
+        configMap:
+          name: otel-collector-config
+      - name: host-logs
+        hostPath:
+          path: /home/yr/log
+          type: DirectoryOrCreate

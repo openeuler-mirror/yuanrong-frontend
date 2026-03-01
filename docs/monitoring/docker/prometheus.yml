@@ -34,7 +34,7 @@ scrape_configs:
       #   labels:
       #     service: 'yuanrong-frontend'
       #     instance: 'frontend-host'
-      
+
       # 方案 2: Frontend 在 Docker 容器中，且已连接到 monitoring 网络
       # 执行: docker network connect docker_monitoring <frontend-container>
       # 然后取消下面的注释
@@ -42,10 +42,20 @@ scrape_configs:
         labels:
           service: 'yuanrong-frontend'
           instance: 'frontend-docker'
-      
+
       # 方案 3: Frontend 在 bridge 网络 (172.17.0.x)，使用容器 IP
       # 注意: 需要先连接网络才能访问，或使用 host 网络模式
       # - targets: ['172.17.0.2:8888']  # 使用容器 IP（不推荐，IP 可能变化）
       #   labels:
       #     service: 'yuanrong-frontend'
       #     instance: 'frontend-bridge'
+
+  # 抓取 OTel Collector 自身指标
+  - job_name: 'otel-collector'
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['otel-collector:8889']
+        labels:
+          service: 'otel-collector'
+          instance: 'otel-collector-docker'

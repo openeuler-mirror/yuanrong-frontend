@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# 使用 Docker Compose 启动 Prometheus 和 Grafana 监控服务
+# 使用 Docker Compose 启动完整监控服务栈
+# 包含: Loki, Tempo, OTel Collector, Prometheus, Grafana
 # 使用方法: ./start.sh
 
 set -e
@@ -28,30 +29,24 @@ mkdir -p grafana-data
 mkdir -p grafana-provisioning/datasources
 mkdir -p grafana-provisioning/dashboards
 mkdir -p grafana-dashboards
+mkdir -p loki-data
+mkdir -p tempo-data
 
-# 修复 Prometheus 数据目录权限
-echo "检查并修复 Prometheus 数据目录权限..."
-if [ -d "prometheus-data" ]; then
-    # Prometheus 容器使用 nobody 用户 (UID 65534)
-    if [ "$(id -u)" = "0" ]; then
-        chown -R 65534:65534 prometheus-data 2>/dev/null || true
-        chmod -R 755 prometheus-data 2>/dev/null || true
-    elif command -v sudo &> /dev/null; then
-        sudo chown -R 65534:65534 prometheus-data 2>/dev/null || true
-        sudo chmod -R 755 prometheus-data 2>/dev/null || true
+# 修复数据目录权限（各容器均以 root 运行，确保宿主机目录可写）
+echo "检查并修复数据目录权限..."
+for dir in prometheus-data grafana-data loki-data tempo-data; do
+    if [ -d "$dir" ]; then
+        chmod -R 755 "$dir" 2>/dev/null || true
     fi
-fi
+done
 
 # 检查配置文件是否存在
-if [ ! -f "prometheus.yml" ]; then
-    echo "错误: prometheus.yml 文件不存在"
-    exit 1
-fi
-
-if [ ! -f "docker-compose.yml" ]; then
-    echo "错误: docker-compose.yml 文件不存在"
-    exit 1
-fi
+for cfg in docker-compose.yml prometheus.yml loki-config.yaml tempo-config.yaml otel-collector-config.yaml; do
+    if [ ! -f "$cfg" ]; then
+        echo "错误: $cfg 文件不存在"
+        exit 1
+    fi
+done
 
 # 检查仪表板文件是否存在
 if [ ! -f "grafana-dashboards/yuanrong-frontend.json" ]; then
@@ -59,7 +54,7 @@ if [ ! -f "grafana-dashboards/yuanrong-frontend.json" ]; then
     touch grafana-dashboards/.gitkeep
 fi
 
-echo "启动 Prometheus 和 Grafana 容器..."
+echo "启动监控服务栈 (Loki / Tempo / OTel Collector / Prometheus / Grafana)..."
 
 # 使用 docker-compose 或 docker compose
 if command -v docker-compose &> /dev/null; then
@@ -83,13 +78,20 @@ echo ""
 echo "=========================================="
 echo "监控服务已启动"
 echo "=========================================="
-echo "Prometheus: http://localhost:9090"
-echo "Grafana:    http://localhost:3000"
-echo "默认用户名/密码: admin/admin"
+echo "Prometheus:    http://localhost:9090"
+echo "Grafana:       http://localhost:3001  (admin/admin)"
+echo "Loki:          http://localhost:3100"
+echo "Tempo:         http://localhost:3200"
+echo "OTel gRPC:     localhost:4317"
+echo "OTel HTTP:     localhost:4318"
+echo "OTel Metrics:  http://localhost:8889"
 echo ""
 echo "查看日志:"
-echo "  Prometheus: docker logs -f prometheus"
-echo "  Grafana:    docker logs -f grafana"
+echo "  docker logs -f prometheus"
+echo "  docker logs -f grafana"
+echo "  docker logs -f loki"
+echo "  docker logs -f tempo"
+echo "  docker logs -f otel-collector"
 echo ""
 echo "停止服务: ./stop.sh"
 echo "=========================================="

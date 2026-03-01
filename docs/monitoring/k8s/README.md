@@ -1,167 +1,212 @@
-# Kubernetes 部署 Prometheus 和 Grafana 监控
+# Kubernetes 部署监控服务栈
 
-本文档介绍如何在 Kubernetes 集群中部署 Prometheus 和 Grafana 来监控 Yuanrong Frontend 服务。
+在 Kubernetes 集群中部署完整可观测性三支柱：**Metrics（Prometheus）+ Logs（Loki）+ Traces（Tempo）**，通过 OpenTelemetry Collector 统一采集，Grafana 统一展示。
+
+## 服务清单
+
+| 服务 | 镜像 | 端口 | 说明 |
+|------|------|------|------|
+| Prometheus | prom/prometheus:latest | 9090 | 指标存储，支持 Kubernetes 服务发现 |
+| Loki | grafana/loki:3.4.2 | 3100 | 日志聚合，7 天保留 |
+| Tempo | grafana/tempo:2.7.1 | 3200 / 4317 / 4318 | 链路追踪，RED metrics 生成 |
+| OTel Collector | otel/opentelemetry-collector-contrib | 4317 / 4318 / 8889 | 统一采集器，filelog + OTLP |
+| Grafana | grafana/grafana:latest | 3000 | 可视化，自动配置三个数据源 |
 
 ## 前置要求
 
 - Kubernetes 集群 (1.20+)
 - kubectl 已配置并可以访问集群
-- 集群有足够的资源（建议至少 2 CPU, 4GB 内存）
-- 存储类（StorageClass）已配置（用于 PVC）
+- 集群有足够资源（建议至少 4 CPU, 8GB 内存）
+- StorageClass 已配置（用于 PVC）
 
 ## 快速开始
 
-### 1. 配置 Prometheus
-
-编辑 `prometheus-configmap.yaml`，根据你的 Frontend 服务配置修改：
-
-**方式一：使用 Kubernetes 服务发现（推荐）**
-
-如果 Frontend 服务在 Kubernetes 中运行，Prometheus 会自动发现：
-
-```yaml
-kubernetes_sd_configs:
-  - role: endpoints
-    namespaces:
-      names:
-        - default  # 修改为实际的 namespace
-```
-
-确保 Frontend Service 的端口有名称 `metrics`，或使用注解：
-```yaml
-metadata:
-  annotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8888"
-    prometheus.io/path: "/metrics"
-```
-
-**方式二：使用静态配置**
-
-如果 Frontend 服务在集群外或使用固定地址：
-
-```yaml
-static_configs:
-  - targets: ['yuanrong-frontend-service:8888']  # Service名称:端口
-```
-
-### 2. 部署服务
-
 ```bash
 cd docs/monitoring/k8s
-chmod +x *.sh
+chmod +x deploy.sh undeploy.sh
+
+# 方式一：脚本部署（推荐）
 ./deploy.sh
+
+# 方式二：Kustomize 一键部署
+kubectl apply -k .
 ```
 
-### 3. 访问服务
+## 访问服务
 
-**方式一：端口转发（推荐用于测试）**
+### 端口转发（测试用）
 
 ```bash
-# Prometheus
-kubectl port-forward -n monitoring svc/prometheus 9090:9090
-
-# Grafana
-kubectl port-forward -n monitoring svc/grafana 3000:3000
+kubectl port-forward -n monitoring svc/grafana     3000:3000 &
+kubectl port-forward -n monitoring svc/prometheus  9090:9090 &
+kubectl port-forward -n monitoring svc/loki        3100:3100 &
+kubectl port-forward -n monitoring svc/tempo       3200:3200 &
 ```
 
-然后访问：
+访问地址：
+- Grafana: http://localhost:3000  （admin / admin）
 - Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000
+- Loki: http://localhost:3100
+- Tempo: http://localhost:3200
 
-**方式二：NodePort（如果已创建）**
+### NodePort
 
 ```bash
-# 获取节点 IP
-kubectl get nodes -o wide
-
-# 访问服务
+kubectl get nodes -o wide   # 获取节点 IP
 # Prometheus: http://<node-ip>:30090
-# Grafana: http://<node-ip>:30300
-```
-
-**方式三：Ingress（需要配置 Ingress Controller）**
-
-创建 Ingress 资源来暴露服务。
-
-### 4. 删除部署
-
-```bash
-./undeploy.sh
+# Grafana:    http://<node-ip>:30300
 ```
 
 ## 文件说明
 
-### 核心配置文件
+### Prometheus
 
-- `namespace.yaml` - 创建 monitoring namespace
-- `prometheus-configmap.yaml` - Prometheus 配置
-- `prometheus-deployment.yaml` - Prometheus 部署
-- `prometheus-service.yaml` - Prometheus 服务（ClusterIP 和 NodePort）
-- `prometheus-pvc.yaml` - Prometheus 数据持久化
-- `grafana-configmap.yaml` - Grafana 数据源配置
-- `grafana-dashboard-configmap.yaml` - Grafana 仪表板
-- `grafana-deployment.yaml` - Grafana 部署
-- `grafana-service.yaml` - Grafana 服务（ClusterIP 和 NodePort）
-- `grafana-pvc.yaml` - Grafana 数据持久化
-- `grafana-secret.yaml` - Grafana 管理员密码（示例）
+| 文件 | 说明 |
+|------|------|
+| `prometheus-rbac.yaml` | ServiceAccount + ClusterRole（k8s 服务发现所需） |
+| `prometheus-configmap.yaml` | 抓取配置（支持 k8s SD 和静态配置） |
+| `prometheus-deployment.yaml` | Deployment（含权限修复 initContainer 可选） |
+| `prometheus-service.yaml` | ClusterIP + NodePort(:30090) |
+| `prometheus-pvc.yaml` | 20Gi 数据持久化 |
+| `prometheus-initcontainer.yaml` | 权限修复替代方案（可选） |
 
-### 脚本文件
+### Loki
 
-- `deploy.sh` - 一键部署所有资源
-- `undeploy.sh` - 删除所有资源
-- `kustomization.yaml` - Kustomize 配置文件（可选）
+| 文件 | 说明 |
+|------|------|
+| `loki-configmap.yaml` | 单节点配置，TSDB schema，7 天保留 |
+| `loki-deployment.yaml` | Deployment |
+| `loki-service.yaml` | ClusterIP |
+| `loki-pvc.yaml` | 20Gi 数据持久化 |
 
-## 配置说明
+### Tempo
 
-### Prometheus 配置
+| 文件 | 说明 |
+|------|------|
+| `tempo-configmap.yaml` | 本地存储，RED metrics → Prometheus |
+| `tempo-deployment.yaml` | Deployment（initContainer 等待 Prometheus 就绪） |
+| `tempo-service.yaml` | ClusterIP（http/otlp-grpc/otlp-http） |
+| `tempo-pvc.yaml` | 20Gi 数据持久化 |
 
-Prometheus 使用 ConfigMap 存储配置，支持：
+### OTel Collector
 
-1. **Kubernetes 服务发现**: 自动发现集群中的服务
-2. **静态配置**: 手动指定目标地址
-3. **Relabel 配置**: 自定义标签
+| 文件 | 说明 |
+|------|------|
+| `otel-collector-configmap.yaml` | filelog + OTLP 接收，三路 pipeline 输出 |
+| `otel-collector-deployment.yaml` | Deployment + hostPath 挂载 `/home/yr/log` |
+| `otel-collector-service.yaml` | ClusterIP |
 
-### Grafana 配置
+### Grafana
 
-- **数据源**: 自动配置 Prometheus 数据源
-- **仪表板**: 自动加载预配置的仪表板
-- **密码**: 通过 Secret 管理（默认 admin/admin）
+| 文件 | 说明 |
+|------|------|
+| `grafana-configmap.yaml` | 三个数据源（Prometheus/Loki/Tempo），含联动配置 |
+| `grafana-dashboards-provider.yaml` | 仪表板加载器配置 |
+| `grafana-dashboard-configmap.yaml` | yuanrong-frontend 仪表板 |
+| `grafana-deployment.yaml` | Deployment |
+| `grafana-service.yaml` | ClusterIP + NodePort(:30300) |
+| `grafana-pvc.yaml` | 10Gi 数据持久化 |
+| `grafana-secret.yaml` | admin 密码（生产环境替换） |
 
-### 资源限制
+## 关键配置说明
 
-默认资源配置：
+### OTel Collector — 日志采集路径
 
-- **Prometheus**:
-  - 请求: 512Mi 内存, 250m CPU
-  - 限制: 2Gi 内存, 1000m CPU
+OTel Collector 通过 `hostPath` 挂载宿主机 `/home/yr/log` 目录。如果日志只在特定节点，需在 `otel-collector-deployment.yaml` 中配置：
 
-- **Grafana**:
-  - 请求: 256Mi 内存, 100m CPU
-  - 限制: 512Mi 内存, 500m CPU
-
-可根据实际需求调整。
-
-### 存储配置
-
-- **Prometheus**: 20Gi 持久化存储，保留 30 天数据
-- **Grafana**: 10Gi 持久化存储
-
-确保集群有可用的 StorageClass。
-
-## 高级配置
-
-### 使用 Kustomize
-
-如果使用 Kustomize 管理配置：
-
-```bash
-kubectl apply -k .
+```yaml
+# 指定节点
+nodeSelector:
+  kubernetes.io/hostname: <node-name>
 ```
 
-### 配置 Ingress
+如需在每个节点采集，将 Deployment 改为 **DaemonSet**。
 
-创建 Ingress 资源暴露服务：
+### Prometheus — 服务发现
+
+默认配置使用 Kubernetes 服务发现（`kubernetes_sd_configs`），自动发现有 `metrics` 端口名称的 Service。
+
+Frontend Service 需包含：
+```yaml
+ports:
+- name: metrics    # 端口名称必须为 metrics
+  port: 8888
+```
+
+或添加注解：
+```yaml
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8888"
+```
+
+### Grafana — 数据源联动
+
+三个数据源已配置联动：
+- **Prometheus → Tempo**: exemplar traceID 跳转
+- **Loki → Tempo**: 日志中提取 traceID 跳转
+- **Tempo → Loki/Prometheus**: trace 详情中查关联日志/指标
+
+### 资源配置
+
+| 服务 | 内存请求 | 内存上限 | CPU 请求 | CPU 上限 |
+|------|---------|---------|---------|---------|
+| Prometheus | 512Mi | 2Gi | 250m | 1000m |
+| Loki | 256Mi | 1Gi | 100m | 500m |
+| Tempo | 512Mi | 2Gi | 200m | 1000m |
+| OTel Collector | 512Mi | 2Gi | 200m | 1000m |
+| Grafana | 256Mi | 512Mi | 100m | 500m |
+
+## 故障排查
+
+### 常用命令
+
+```bash
+# 查看所有 Pod 状态
+kubectl get pods -n monitoring
+
+# 查看某个 Pod 日志
+kubectl logs -n monitoring deployment/loki
+kubectl logs -n monitoring deployment/tempo
+kubectl logs -n monitoring deployment/otel-collector
+kubectl logs -n monitoring deployment/prometheus
+kubectl logs -n monitoring deployment/grafana
+
+# 查看 PVC
+kubectl get pvc -n monitoring
+
+# 验证 Prometheus 配置
+kubectl exec -n monitoring deployment/prometheus -- \
+  promtool check config /etc/prometheus/prometheus.yml
+```
+
+### Prometheus 权限错误
+
+若看到 `permission denied` 相关错误，切换到 initContainer 方案：
+
+```bash
+kubectl apply -f prometheus-initcontainer.yaml
+```
+
+### OTel Collector 无法读取日志
+
+检查节点上 `/home/yr/log` 目录是否存在，并确认 Pod 调度到了正确节点：
+
+```bash
+kubectl get pod -n monitoring -l app=otel-collector -o wide
+```
+
+### 清理部署
+
+```bash
+./undeploy.sh
+
+# 完全清除包括数据
+kubectl -n monitoring delete pvc --all
+kubectl delete namespace monitoring
+```
+
+## Ingress 示例
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -171,16 +216,6 @@ metadata:
   namespace: monitoring
 spec:
   rules:
-  - host: prometheus.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: prometheus
-            port:
-              number: 9090
   - host: grafana.example.com
     http:
       paths:
@@ -191,183 +226,22 @@ spec:
             name: grafana
             port:
               number: 3000
-```
-
-### 配置 RBAC（如果需要）
-
-如果 Prometheus 需要访问 Kubernetes API 进行服务发现，可能需要 RBAC：
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: prometheus
-  namespace: monitoring
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: prometheus
-rules:
-- apiGroups: [""]
-  resources:
-  - nodes
-  - nodes/proxy
-  - services
-  - endpoints
-  - pods
-  verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: prometheus
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: prometheus
-subjects:
-- kind: ServiceAccount
-  name: prometheus
-  namespace: monitoring
-```
-
-然后在 Deployment 中指定 ServiceAccount。
-
-### 配置持久化存储类
-
-如果使用特定的 StorageClass：
-
-```yaml
-# prometheus-pvc.yaml
-spec:
-  storageClassName: fast-ssd  # 取消注释并修改
-  ...
-```
-
-## 监控 Frontend 服务
-
-### 如果 Frontend 在 Kubernetes 中
-
-1. **确保 Service 端口有名称**:
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: yuanrong-frontend
-spec:
-  ports:
-  - name: metrics  # 重要：端口名称
-    port: 8888
-    targetPort: 8888
-```
-
-2. **或使用注解**:
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: yuanrong-frontend
-  annotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8888"
-    prometheus.io/path: "/metrics"
-```
-
-### 如果 Frontend 在集群外
-
-在 `prometheus-configmap.yaml` 中使用静态配置：
-
-```yaml
-- job_name: 'yuanrong-frontend'
-  static_configs:
-    - targets: ['external-host:8888']
-```
-
-## 故障排查
-
-### 检查 Pod 状态
-
-```bash
-kubectl get pods -n monitoring
-kubectl describe pod <pod-name> -n monitoring
-kubectl logs <pod-name> -n monitoring
-```
-
-### 检查服务
-
-```bash
-kubectl get svc -n monitoring
-kubectl describe svc prometheus -n monitoring
-```
-
-### 检查配置
-
-```bash
-# 查看 Prometheus 配置
-kubectl get configmap prometheus-config -n monitoring -o yaml
-
-# 验证 Prometheus 配置
-kubectl exec -n monitoring deployment/prometheus -- promtool check config /etc/prometheus/prometheus.yml
-```
-
-### 检查存储
-
-```bash
-kubectl get pvc -n monitoring
-kubectl describe pvc prometheus-pvc -n monitoring
-```
-
-### Prometheus 权限错误
-
-如果看到类似 `permission denied` 的错误（特别是 `/prometheus/queries.active`）：
-
-**方案一：使用 securityContext（已配置）**
-
-当前的 `prometheus-deployment.yaml` 已经配置了 `securityContext`，应该可以正常工作。如果仍有问题，检查 PVC 的权限：
-
-```bash
-# 检查 Pod 状态
-kubectl describe pod -l app=prometheus -n monitoring
-
-# 如果使用 initContainer 方案，使用以下文件
-kubectl apply -f prometheus-initcontainer.yaml
-```
-
-**方案二：使用 initContainer**
-
-如果 `securityContext` 方案不工作，可以使用 `prometheus-initcontainer.yaml`，它会在启动前修复权限：
-
-```bash
-kubectl apply -f prometheus-initcontainer.yaml
-```
-
-**方案三：禁用 active query tracker**
-
-如果不需要查询追踪，可以在 Deployment 中添加参数（已添加）：
-- `--query.max-concurrency=0`
-- `--query.max-samples=0`
-
-### 测试连接
-
-```bash
-# 在 Prometheus Pod 中测试连接
-kubectl exec -n monitoring deployment/prometheus -- wget -O- http://yuanrong-frontend-service:8888/metrics
+  - host: prometheus.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus
+            port:
+              number: 9090
 ```
 
 ## 生产环境建议
 
-1. **使用 Helm Chart**: 考虑使用 Prometheus Operator 或社区 Helm Chart
-2. **配置高可用**: 部署多个 Prometheus 实例
-3. **使用 Alertmanager**: 配置告警规则和通知
-4. **配置资源配额**: 设置 Namespace 资源限制
-5. **定期备份**: 备份 Prometheus 和 Grafana 数据
-6. **使用 TLS**: 配置 Ingress 使用 HTTPS
-7. **监控资源使用**: 监控 Prometheus 和 Grafana 的资源消耗
-
-## 参考资源
-
-- [Kubernetes 官方文档](https://kubernetes.io/docs/)
-- [Prometheus Kubernetes 配置](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#kubernetes_sd_config)
-- [Grafana Kubernetes 部署](https://grafana.com/docs/grafana/latest/setup-grafana/installation/kubernetes/)
-- [Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator)
+1. 替换 `grafana-secret.yaml` 中的默认密码，或使用外部 Secret 管理（Vault / ESO）
+2. 为各 PVC 指定合适的 `storageClassName`
+3. 配置 `HorizontalPodAutoscaler` 或资源配额
+4. 在 Grafana 前配置 Ingress + TLS
+5. 考虑使用 [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts) Helm Chart 替代手动部署

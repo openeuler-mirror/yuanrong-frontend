@@ -1,0 +1,338 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+  labels:
+    app: otel-collector
+data:
+  config.yaml: |
+    # OpenTelemetry Collector 配置（Kubernetes）
+    # filelog receiver 通过 hostPath 挂载宿主机日志目录到 /home/yr/log
+
+    receivers:
+
+      # ───────────────────────────────────────────────────────────────────
+      # Receiver 1: spdlog 格式（C++ glog-style）
+      # 文件: *function_*.log / *libruntime*.log / *iam_server.log
+      #        job-*.log / runtime-*_runtime.log
+      # 示例: I0301 13:44:30.227458 46929 main.cpp:190] 46852,Init]node,component]...
+      # ───────────────────────────────────────────────────────────────────
+      filelog/spdlog:
+        include:
+          - /home/yr/log/*function_*.log
+          - /home/yr/log/*libruntime*.log
+          - /home/yr/log/*iam_server.log
+          - /home/yr/log/job-*.log
+          - /home/yr/log/runtime-*_runtime.log
+        exclude:
+          - /home/yr/log/*_std.log
+          - /home/yr/log/*.log.gz
+        start_at: end
+
+        multiline:
+          line_start_pattern: '^[DIWEC]\d{4} '
+
+        operators:
+          - type: regex_parser
+            regex: '^(?P<severity>[DIWEC])(?P<log_time>\d{4} \d{2}:\d{2}:\d{2}\.\d+) (?P<thread>\d+) (?P<source>[^\]]+)\] (?P<pid>\d+),[^\]]*\](?P<node>[^,]*),(?P<component>[^\]]*)\](?P<body>[\s\S]*)'
+            timestamp:
+              parse_from: attributes.log_time
+              layout_type: strptime
+              layout: '%m%d %H:%M:%S.%f'
+            severity:
+              parse_from: attributes.severity
+              mapping:
+                debug: D
+                info: I
+                warn: W
+                error: E
+                fatal: C
+
+          - type: add
+            field: resource["service.name"]
+            value: "yuanrong-functionsystem"
+          - type: move
+            from: attributes.node
+            to: resource["node.name"]
+          - type: move
+            from: attributes.component
+            to: resource["component.name"]
+          - type: move
+            from: attributes.source
+            to: attributes["code.filepath"]
+          - type: move
+            from: attributes.thread
+            to: attributes["thread.id"]
+          - type: move
+            from: attributes.pid
+            to: attributes["process.pid"]
+          - type: remove
+            field: attributes.log_time
+
+      # ───────────────────────────────────────────────────────────────────
+      # Receiver 2: datasystem 格式（C++，pipe 分隔，ISO 时间戳）
+      # 文件: datasystem_worker.*.log  +  master/datasystem_worker.*.log
+      # 示例: 2026-02-28T10:37:23.112866 | I | log_manager.cpp:60 | robbluo | 249968:249968 |  |  |  msg
+      # ───────────────────────────────────────────────────────────────────
+      filelog/datasystem:
+        include:
+          - /home/yr/log/datasystem_worker.*.log
+          - /home/yr/log/master/datasystem_worker.*.log
+        exclude:
+          - /home/yr/log/**/*.log.gz
+        start_at: end
+
+        multiline:
+          line_start_pattern: '^\d{4}-\d{2}-\d{2}T'
+
+        operators:
+          - type: regex_parser
+            regex: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+) \| (?P<severity>[DIWEC]) \| (?P<source>[^|]+?)\s*\| (?P<node>[^|]+?)\s*\| (?P<pid>\d+):(?P<thread>\d+)\s*\|[^|]*\|[^|]*\|\s*(?P<body>[\s\S]*)'
+            timestamp:
+              parse_from: attributes.timestamp
+              layout_type: strptime
+              layout: '%Y-%m-%dT%H:%M:%S.%f'
+            severity:
+              parse_from: attributes.severity
+              mapping:
+                debug: D
+                info: I
+                warn: W
+                error: E
+
+          - type: add
+            field: resource["service.name"]
+            value: "yuanrong-datasystem"
+          - type: move
+            from: attributes.node
+            to: resource["node.name"]
+          - type: move
+            from: attributes.source
+            to: attributes["code.filepath"]
+          - type: move
+            from: attributes.thread
+            to: attributes["thread.id"]
+          - type: move
+            from: attributes.pid
+            to: attributes["process.pid"]
+          - type: remove
+            field: attributes.timestamp
+
+      # ───────────────────────────────────────────────────────────────────
+      # Receiver 3: faasfrontend Go 格式（pipe 分隔，空格时间戳）
+      # 文件: faasfrontend.*.log
+      # 示例: 2026-03-01 13:44:30.244 | INFO | config/config.go:248 | frontend-process |  |  | msg
+      # ───────────────────────────────────────────────────────────────────
+      filelog/faasfrontend:
+        include:
+          - /home/yr/log/faasfrontend.*.log
+        exclude:
+          - /home/yr/log/*.log.gz
+        start_at: end
+
+        multiline:
+          line_start_pattern: '^\d{4}-\d{2}-\d{2} \d{2}:'
+
+        operators:
+          - type: regex_parser
+            regex: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \| (?P<severity>\w+) \| (?P<source>[^|]+?)\s*\| (?P<process>[^|]+?)\s*\|[^|]*\|[^|]*\|\s*(?P<body>[\s\S]*)'
+            timestamp:
+              parse_from: attributes.timestamp
+              layout_type: strptime
+              layout: '%Y-%m-%d %H:%M:%S.%f'
+            severity:
+              parse_from: attributes.severity
+              mapping:
+                debug: DEBUG
+                info: INFO
+                warn: WARN
+                error: ERROR
+
+          - type: add
+            field: resource["service.name"]
+            value: "yuanrong-faasfrontend"
+          - type: move
+            from: attributes.process
+            to: resource["process.name"]
+          - type: move
+            from: attributes.source
+            to: attributes["code.filepath"]
+          - type: remove
+            field: attributes.timestamp
+
+      # ───────────────────────────────────────────────────────────────────
+      # Receiver 4: faasscheduler Go 格式（pipe 分隔，与 faasfrontend 相同）
+      # 文件: faasscheduler.*.log
+      # 示例: 2026-03-01 14:19:35.558 | WARN | localauth/env.go:33 | scheduler-process |  |  | msg
+      # ───────────────────────────────────────────────────────────────────
+      filelog/faasscheduler:
+        include:
+          - /home/yr/log/faasscheduler.*.log
+        exclude:
+          - /home/yr/log/*.log.gz
+        start_at: end
+
+        multiline:
+          line_start_pattern: '^\d{4}-\d{2}-\d{2} \d{2}:'
+
+        operators:
+          - type: regex_parser
+            regex: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \| (?P<severity>\w+) \| (?P<source>[^|]+?)\s*\| (?P<process>[^|]+?)\s*\|[^|]*\|[^|]*\|\s*(?P<body>[\s\S]*)'
+            timestamp:
+              parse_from: attributes.timestamp
+              layout_type: strptime
+              layout: '%Y-%m-%d %H:%M:%S.%f'
+            severity:
+              parse_from: attributes.severity
+              mapping:
+                debug: DEBUG
+                info: INFO
+                warn: WARN
+                error: ERROR
+
+          - type: add
+            field: resource["service.name"]
+            value: "yuanrong-faasscheduler"
+          - type: move
+            from: attributes.process
+            to: resource["process.name"]
+          - type: move
+            from: attributes.source
+            to: attributes["code.filepath"]
+          - type: remove
+            field: attributes.timestamp
+
+      # ───────────────────────────────────────────────────────────────────
+      # Receiver 5: metaservice Go 格式（方括号包围）
+      # 文件: meta-service-run.*.log
+      # 示例: [2026-03-01 14:19:35.372 INFO etcd3/watcher.go:229] [robbluo] msg
+      # ───────────────────────────────────────────────────────────────────
+      filelog/metaservice:
+        include:
+          - /home/yr/log/meta-service-run.*.log
+        exclude:
+          - /home/yr/log/*.log.gz
+        start_at: end
+
+        multiline:
+          line_start_pattern: '^\[\d{4}-\d{2}-\d{2}'
+
+        operators:
+          - type: regex_parser
+            regex: '^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) (?P<severity>\w+) (?P<source>[^\]]+)\] \[(?P<node>[^\]]*)\] (?P<body>[\s\S]*)'
+            timestamp:
+              parse_from: attributes.timestamp
+              layout_type: strptime
+              layout: '%Y-%m-%d %H:%M:%S.%f'
+            severity:
+              parse_from: attributes.severity
+              mapping:
+                debug: DEBUG
+                info: INFO
+                warn: WARN
+                error: ERROR
+
+          - type: add
+            field: resource["service.name"]
+            value: "yuanrong-metaservice"
+          - type: move
+            from: attributes.node
+            to: resource["node.name"]
+          - type: move
+            from: attributes.source
+            to: attributes["code.filepath"]
+          - type: remove
+            field: attributes.timestamp
+
+      # ───────────────────────────────────────────────────────────────────
+      # Receiver 6: std / stdout 日志（无结构，逐行采集）
+      # 文件: *_std.log  /  runtime-*.out
+      # ───────────────────────────────────────────────────────────────────
+      filelog/stdlogs:
+        include:
+          - /home/yr/log/*_std.log
+          - /home/yr/log/*.out
+        exclude:
+          - /home/yr/log/*.log.gz
+        start_at: end
+
+        operators:
+          - type: add
+            field: resource["service.name"]
+            value: "yuanrong-stdlogs"
+          - type: move
+            from: attributes["log.file.name"]
+            to: resource["log.file.name"]
+
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+      memory_limiter:
+        limit_mib: 1536
+        spike_limit_mib: 512
+        check_interval: 5s
+
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: kubernetes
+            action: upsert
+
+    exporters:
+      otlp_http/loki:
+        endpoint: http://loki:3100/otlp
+        tls:
+          insecure: true
+
+      otlp_grpc/tempo:
+        endpoint: tempo:4317
+        tls:
+          insecure: true
+
+      prometheusremotewrite:
+        endpoint: http://prometheus:9090/api/v1/write
+        tls:
+          insecure: true
+
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+
+      debug:
+        verbosity: basic
+
+    service:
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          level: detailed
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: "0.0.0.0"
+                    port: 8888
+
+      pipelines:
+        logs:
+          receivers: [filelog/spdlog, filelog/datasystem, filelog/faasfrontend, filelog/faasscheduler, filelog/metaservice, filelog/stdlogs]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp_http/loki, debug]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp_grpc/tempo, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheusremotewrite, debug, prometheus]

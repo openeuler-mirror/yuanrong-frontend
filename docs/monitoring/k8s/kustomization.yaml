@@ -5,18 +5,35 @@ namespace: monitoring
 
 resources:
   - namespace.yaml
+  # Prometheus (先于 Tempo/OTel 部署，因为二者依赖 remote_write)
+  - prometheus-rbac.yaml
   - prometheus-configmap.yaml
   - prometheus-pvc.yaml
   - prometheus-deployment.yaml
   - prometheus-service.yaml
+  # Loki
+  - loki-configmap.yaml
+  - loki-pvc.yaml
+  - loki-deployment.yaml
+  - loki-service.yaml
+  # Tempo (initContainer 等待 Prometheus 就绪)
+  - tempo-configmap.yaml
+  - tempo-pvc.yaml
+  - tempo-deployment.yaml
+  - tempo-service.yaml
+  # OTel Collector (依赖 Loki / Tempo / Prometheus)
+  - otel-collector-configmap.yaml
+  - otel-collector-deployment.yaml
+  - otel-collector-service.yaml
+  # Grafana
   - grafana-secret.yaml
   - grafana-configmap.yaml
+  - grafana-dashboards-provider.yaml
   - grafana-dashboard-configmap.yaml
   - grafana-pvc.yaml
   - grafana-deployment.yaml
   - grafana-service.yaml
 
-# 可选: 添加通用标签
 commonLabels:
   app.kubernetes.io/name: monitoring
-  app.kubernetes.io/component: prometheus-grafana
+  app.kubernetes.io/part-of: yuanrong-monitoring

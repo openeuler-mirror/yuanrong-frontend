@@ -23,6 +23,19 @@ limits_config:
   volume_enabled: true
   retention_period: 168h            # 日志保留 7 天
 
+  # 将常用的 OTel resource attributes 升为 Loki stream label（可用于 stream selector 高效过滤）
+  # node.name      → node_name      按节点名检索日志
+  # component.name → component_name 按 C++ 组件检索（function_master / function_agent 等）
+  # process.name   → process_name   按 Go 进程角色检索（frontend-process / scheduler-process 等）
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - node.name
+            - component.name
+            - process.name
+
 schema_config:
   configs:
     - from: "2024-01-01"

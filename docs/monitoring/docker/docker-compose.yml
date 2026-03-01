@@ -45,10 +45,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
-      - /home/yr/log:/home/yr/log:ro
+      - /home/robbluo/tmp/yrlog:/home/robbluo/tmp/yrlog:ro
     ports:
       - "4317:4317"      # OTLP gRPC
       - "4318:4318"      # OTLP HTTP
+      - "8889:8889"      # OTel Collector metrics
     networks:
       - monitoring
     depends_on:

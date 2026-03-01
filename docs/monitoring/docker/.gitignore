@@ -4,6 +4,12 @@ prometheus-data/
 # Grafana 数据目录
 grafana-data/
 
+# Loki 数据目录
+loki-data/
+
+# Tempo 数据目录
+tempo-data/
+
 # 日志文件
 *.log
 
