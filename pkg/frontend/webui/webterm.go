@@ -318,7 +318,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		info.ProxyGrpcAddress,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    30 * time.Second,
+			Time:    1 * time.Hour,
 			Timeout: 10 * time.Second,
 		}),
 	)
