@@ -1,0 +1,58 @@
+# Loki 配置（裸进程部署）
+# 启动命令示例:
+#   loki -config.file=loki-config.yaml -config.expand-env=true
+# 需要预先 export MONITORING_DIR=/path/to/process 目录
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096   # 避免与 Tempo 默认 9095 冲突
+
+common:
+  path_prefix: ${MONITORING_DIR}/loki/data
+  storage:
+    filesystem:
+      chunks_directory: ${MONITORING_DIR}/loki/data/chunks
+      rules_directory: ${MONITORING_DIR}/loki/data/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+limits_config:
+  allow_structured_metadata: true
+  volume_enabled: true
+  retention_period: 168h
+
+  # 将常用的 OTel resource attributes 升为 Loki stream label
+  # node.name      → node_name      按节点名检索日志
+  # component.name → component_name 按 C++ 组件检索
+  # process.name   → process_name   按 Go 进程角色检索
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - node.name
+            - component.name
+            - process.name
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  filesystem:
+    directory: ${MONITORING_DIR}/loki/data/storage
+
+compactor:
+  working_directory: ${MONITORING_DIR}/loki/data/compactor
+  retention_enabled: true
+  delete_request_store: filesystem

@@ -1,10 +1,23 @@
-# Prometheus 数据目录
+# 下载的二进制和 Grafana 包
+bin/
+
+# Prometheus 数据/日志
 prometheus/data/
 prometheus/logs/
 
-# Grafana 数据目录
-grafana/data/
-grafana/logs/
+# Grafana 运行时目录（provisioning 由 start-monitoring.sh 运行时生成）
+grafana/
+
+# Loki 数据/日志
+loki/data/
+loki/logs/
+
+# Tempo 数据/日志
+tempo/data/
+tempo/logs/
+
+# OTel Collector 日志
+otelcol/logs/
 
 # 日志文件
 *.log
