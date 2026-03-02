@@ -164,7 +164,7 @@ func (s *ServeDeploymentSchema) ToFaaSFuncMeta(
 }
 
 const (
-	defaultTenantID    = "12345678901234561234567890123456"
+	defaultTenantID    = "default"
 	defaultFuncVersion = "latest"
 
 	faasMetaKey              = constant.MetaFuncKey

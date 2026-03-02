@@ -45,7 +45,8 @@ const (
 	// naming convention: url + method + description
 	urlPostInvoke = "/serverless/v1/functions/" + common.GinUrnParamMark +
 		common.FunctionUrnParam + "/invocations"
-	urlShortInvoke     = "/:tenant-id/:namespace/:function/"
+	urlShortInvoke     = "/invocations/:tenant-id/:namespace/:function/"
+	urlShortInvokeOld  = "/:tenant-id/:namespace/:function/"
 	urlStreamSubscribe = "/serverless/v1/stream/subscribe"
 	urlGetHealthCheck  = "/healthz"
 	urlClusterHealthy  = "/serverless/v1/componentshealth"
@@ -100,6 +101,7 @@ func InitRoute(r *gin.Engine) {
 	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)                    // Health check
 	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))       // Invocation
 	r.POST(urlShortInvoke, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Invocation
+	r.POST(urlShortInvokeOld, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Deprecated short invocation (backward compatibility)
 	r.GET(urlStreamSubscribe, v1.SubscribeHandler)                       // Subscribe Stream
 	r.PUT(urlLease, lease.NewLeaseHandler)
 	r.DELETE(urlLease, lease.DelLeaseHandler)

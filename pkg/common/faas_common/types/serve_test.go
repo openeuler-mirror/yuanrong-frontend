@@ -18,8 +18,9 @@
 package types
 
 import (
-	"github.com/smartystreets/goconvey/convey"
 	"testing"
+
+	"github.com/smartystreets/goconvey/convey"
 )
 
 func TestServeFunctionKeyTrans(t *testing.T) {
@@ -86,17 +87,17 @@ func TestServeDeploySchema_ToFaaSFuncMetas(t *testing.T) {
 func TestServeFunctionKey(t *testing.T) {
 	convey.Convey("Test FromFaasFunctionKey", t, func() {
 		convey.Convey("It should return correct faas function metas", func() {
-			key := "12345678901234561234567890123456/0@svc@func/latest"
+			key := "default/0@svc@func/latest"
 			sfk := ServeFunctionKey{}
 			err := sfk.FromFaasFunctionKey(key)
 			convey.So(err, convey.ShouldBeNil)
 			convey.So(sfk.Version, convey.ShouldEqual, "latest")
 			convey.So(sfk.AppName, convey.ShouldEqual, "svc")
 			convey.So(sfk.DeploymentName, convey.ShouldEqual, "func")
-			convey.So(sfk.TenantID, convey.ShouldEqual, "12345678901234561234567890123456")
+			convey.So(sfk.TenantID, convey.ShouldEqual, "default")
 		})
 		convey.Convey("It should return incorrect faas function metas", func() {
-			key := "12345678901234561234567890123456/0@svc@func"
+			key := "default/0@svc@func"
 			sfk := ServeFunctionKey{}
 			err := sfk.FromFaasFunctionKey(key)
 			convey.So(err, convey.ShouldNotBeNil)

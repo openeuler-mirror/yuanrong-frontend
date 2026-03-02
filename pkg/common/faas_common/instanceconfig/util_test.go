@@ -41,7 +41,7 @@ func TestParseInstanceConfigFromEtcdEvent(t *testing.T) {
 			etcdKey := "/instances/business/yrk/cluster/cluster001/tenant/12345678901234561234567890123456/function/0@test111@yrfunc111/version/latest/label/aaa"
 			config, err := ParseInstanceConfigFromEtcdEvent(etcdKey, testConfigData)
 			convey.So(err, convey.ShouldBeNil)
-			convey.So(config.FuncKey, convey.ShouldEqual, "12345678901234561234567890123456/0@test111@yrfunc111/latest")
+			convey.So(config.FuncKey, convey.ShouldEqual, "default/0@test111@yrfunc111/latest")
 			convey.So(config.InstanceLabel, convey.ShouldEqual, "aaa")
 		})
 

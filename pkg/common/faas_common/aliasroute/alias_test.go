@@ -230,7 +230,7 @@ func TestMarshalTenantAliasList(t *testing.T) {
 		args    args
 		wantErr bool
 	}{
-		{"case1", args{tenantID: "12345678901234561234567890123456"}, false},
+		{"case1", args{tenantID: "default"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

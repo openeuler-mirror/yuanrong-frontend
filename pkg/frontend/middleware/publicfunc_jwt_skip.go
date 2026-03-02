@@ -97,14 +97,31 @@ func isInvokeURL(path string) bool {
 		return true
 	}
 
-	// Check for short invoke URL pattern: /{tenant-id}/{namespace}/{function}/
-	// This is a simplified check - the actual routing will validate if it matches
-	// Only consider paths that don't start with /serverless/ to avoid false positives
-	if !strings.HasPrefix(path, "/serverless/") &&
-		!strings.HasPrefix(path, "/datasystem/") &&
-		!strings.HasPrefix(path, "/client/") &&
-		!strings.HasPrefix(path, "/frontend/") &&
-		strings.Count(path, "/") == 3 {
+	// Check for short invoke URL pattern: /invocations/{tenant-id}/{namespace}/{function}/
+	if strings.HasPrefix(path, "/invocations/") {
+		rest := strings.Trim(strings.TrimPrefix(path, "/invocations/"), "/")
+		parts := strings.Split(rest, "/")
+		if len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
+			return true
+		}
+	}
+
+	// Check for deprecated short invoke URL pattern: /{tenant-id}/{namespace}/{function}/
+	// Keep compatibility for legacy clients while avoiding known API prefixes.
+	legacy := strings.Trim(path, "/")
+	parts := strings.Split(legacy, "/")
+	if len(parts) == 3 &&
+		parts[0] != "" && parts[1] != "" && parts[2] != "" &&
+		parts[0] != "serverless" &&
+		parts[0] != "datasystem" &&
+		parts[0] != "client" &&
+		parts[0] != "frontend" &&
+		parts[0] != "admin" &&
+		parts[0] != "api" &&
+		parts[0] != "terminal" &&
+		parts[0] != "functions" &&
+		parts[0] != "healthz" &&
+		parts[0] != "invocations" {
 		return true
 	}
 
@@ -138,7 +155,7 @@ func extractFunctionKey(c *gin.Context) (string, error) {
 		return urnutils.CombineFunctionKey(functionInfo.TenantID, functionInfo.FuncName, functionInfo.FuncVersion), nil
 	}
 
-	// Handle short invoke URL: /{tenant-id}/{namespace}/{function}/
+	// Handle short invoke URL: /invocations/{tenant-id}/{namespace}/{function}/
 	tenantID := c.Param("tenant-id")
 	namespace := c.Param("namespace")
 	functionName := c.Param("function")
