@@ -26,7 +26,7 @@ scrape_configs:
         labels:
           instance: 'prometheus'
 
-  # 抓取 Frontend 服务指标
+  # 抓取 Frontend 服务指标（function_* 指标）
   - job_name: 'yuanrong-frontend'
     scrape_interval: 10s
     metrics_path: '/metrics'
@@ -35,8 +35,14 @@ scrape_configs:
         labels:
           service: 'yuanrong-frontend'
           instance: 'frontend-1'
-    # 如果需要抓取多个实例，可以添加更多 targets
-    # - targets: ['localhost:8889']
-    #   labels:
-    #     service: 'yuanrong-frontend'
-    #     instance: 'frontend-2'
+
+  # 抓取 FunctionSystem 指标（yr_cluster_* / yr_nodes_* / yr_instance_count）
+  # functionsystem 通过 OTLP 或 Prometheus exporter 暴露指标，端口视部署配置而定
+  - job_name: 'yuanrong-functionsystem'
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:8889']  # 根据 function_master 实际 metrics 端口修改
+        labels:
+          service: 'yuanrong-functionsystem'
+          instance: 'functionsystem-1'
