@@ -58,6 +58,62 @@ var (
 	defaultCols    int32    = 80
 )
 
+// grpcConnPool maintains shared gRPC connections keyed by proxy address.
+// All sessions to the same proxy reuse a single HTTP/2 TCP connection so that
+// closing one ExecStream RPC only tears down its HTTP/2 stream, NOT the
+// underlying TCP connection.  A per-session NewClient() + Close() sends a
+// FIN/GOAWAY to the server the moment that session ends, which gRPC-core C++
+// propagates to the adjacent connection – causing cascade disconnects across
+// all open sessions on the same proxy.
+var (
+	grpcPool   = map[string]*pooledConn{}
+	grpcPoolMu sync.Mutex
+)
+
+type pooledConn struct {
+	conn   *grpc.ClientConn
+	refCnt int
+}
+
+func acquireGrpcConn(addr string) (*grpc.ClientConn, error) {
+	grpcPoolMu.Lock()
+	defer grpcPoolMu.Unlock()
+	if pc, ok := grpcPool[addr]; ok {
+		pc.refCnt++
+		return pc.conn, nil
+	}
+	conn, err := grpc.NewClient(
+		addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:    1 * time.Hour,
+			Timeout: 10 * time.Second,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	grpcPool[addr] = &pooledConn{conn: conn, refCnt: 1}
+	log.GetLogger().Infof("[pool] new gRPC connection addr=%s", addr)
+	return conn, nil
+}
+
+func releaseGrpcConn(addr string) {
+	grpcPoolMu.Lock()
+	defer grpcPoolMu.Unlock()
+	pc, ok := grpcPool[addr]
+	if !ok {
+		log.GetLogger().Infof("[pool] releaseGrpcConn MISS addr=%s (already deleted)", addr)
+		return
+	}
+	pc.refCnt--
+	if pc.refCnt <= 0 {
+		log.GetLogger().Infof("[pool] releaseGrpcConn CLOSE conn addr=%s", addr)
+		pc.conn.Close()
+		delete(grpcPool, addr)
+	}
+}
+
 type wsSession struct {
 	ws         *websocket.Conn
 	grpcStream exec_service.ExecService_ExecStreamClient
@@ -230,8 +286,6 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "authentication failed: no token provided", http.StatusUnauthorized)
 			return
 		}
-        log.GetLogger().Errorf("[DEBUG] WebSocket auth token: %s", token)
-
 		// Parse JWT to validate
 		parsedJWT, err := jwtauth.ParseJWT(token)
 		if err != nil {
@@ -313,20 +367,12 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.GetLogger().Infof("Failed to get executor address: %v", err)
 		return
 	}
-	// Use separate connections for each session to prevent connection reuse issues
-	grpcConn, err := grpc.NewClient(
-		info.ProxyGrpcAddress,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    1 * time.Hour,
-			Timeout: 10 * time.Second,
-		}),
-	)
+	grpcConn, err := acquireGrpcConn(info.ProxyGrpcAddress)
 	if err != nil {
 		log.GetLogger().Infof("Failed to connect to executor: %v", err)
 		return
 	}
-	defer grpcConn.Close()
+	defer releaseGrpcConn(info.ProxyGrpcAddress)
 
 	client := exec_service.NewExecServiceClient(grpcConn)
 	ctx, cancel := context.WithCancel(context.Background())
