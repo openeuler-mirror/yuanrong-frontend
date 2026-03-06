@@ -34,7 +34,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 
-    "frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/jwtauth"
@@ -260,8 +260,8 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 }
 
 func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-    tenantID := r.URL.Query().Get("tenant_id")
-    if tenantID == "" {
+	tenantID := r.URL.Query().Get("tenant_id")
+	if tenantID == "" {
 		tenantID = "default"
 	}
 	// Authenticate JWT token from query parameter, header, or WebSocket subprotocol.
@@ -301,9 +301,9 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-        if parsedJWT.Payload.Sub != "" {
-            tenantID = parsedJWT.Payload.Sub
-        }
+		if parsedJWT.Payload.Sub != "" {
+			tenantID = parsedJWT.Payload.Sub
+		}
 
 		log.GetLogger().Infof("WebSocket JWT authentication passed, role: %s, tenant: %s",
 			parsedJWT.Payload.Role, tenantID)
@@ -392,53 +392,63 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		cancel:     cancel,
 	}
 
-    // Wait for initial frontend terminal size before creating backend exec session.
-    // Browser side sends: RESIZE:cols:rows
-    type pendingInput struct {
-        messageType int
-        data        []byte
-    }
-    pendingInputs := make([]pendingInput, 0)
-    if tty {
-        readTimeout := 3 * time.Second
-        if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
-            log.GetLogger().Infof("Session %s: failed to set read deadline: %v", sessionID, err)
-        }
+	// Wait for initial frontend terminal size before creating backend exec session.
+	// Browser side sends: RESIZE:cols:rows
+	type pendingInput struct {
+		messageType int
+		data        []byte
+	}
+	pendingInputs := make([]pendingInput, 0)
+	if tty {
+		readTimeout := 1 * time.Second
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			log.GetLogger().Infof("Session %s: failed to set read deadline: %v", sessionID, err)
+		}
 
-        for {
-            messageType, message, err := conn.ReadMessage()
-            if err != nil {
-                if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-                    log.GetLogger().Infof("Session %s: initial RESIZE not received in %s, fallback to default size=%dx%d",
-                        sessionID, readTimeout, cols, rows)
-                    break
-                }
-                log.GetLogger().Infof("Session %s: failed waiting initial terminal size: %v", sessionID, err)
-                return
-            }
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					log.GetLogger().Infof("Session %s: initial RESIZE not received in %s, fallback to default size=%dx%d",
+						sessionID, readTimeout, cols, rows)
+					if clearErr := conn.SetReadDeadline(time.Time{}); clearErr != nil {
+						log.GetLogger().Infof("Session %s: failed to clear read deadline after initial timeout: %v", sessionID, clearErr)
+						return
+					}
+					break
+				}
+				log.GetLogger().Infof("Session %s: failed waiting initial terminal size: %v", sessionID, err)
+				return
+			}
 
-            if messageType == websocket.TextMessage && len(message) > 7 && string(message[:7]) == "RESIZE:" {
-                var newCols, newRows int32
-                if n, _ := fmt.Sscanf(string(message), "RESIZE:%d:%d", &newCols, &newRows); n == 2 && newCols > 0 && newRows > 0 {
-                    cols = newCols
-                    rows = newRows
-                    log.GetLogger().Infof("Session %s: received initial terminal size=%dx%d", sessionID, cols, rows)
-                    break
-                }
-            }
+			if messageType == websocket.TextMessage && len(message) > 7 && string(message[:7]) == "RESIZE:" {
+				var newCols, newRows int32
+				if n, _ := fmt.Sscanf(string(message), "RESIZE:%d:%d", &newCols, &newRows); n == 2 && newCols > 0 && newRows > 0 {
+					cols = newCols
+					rows = newRows
+					log.GetLogger().Infof("Session %s: received initial terminal size=%dx%d", sessionID, cols, rows)
+					break
+				}
+			}
 
-            // Buffer any early input and replay after session starts.
-            if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
-                buf := make([]byte, len(message))
-                copy(buf, message)
-                pendingInputs = append(pendingInputs, pendingInput{messageType: messageType, data: buf})
-            }
-        }
+			// Buffer any early input and replay after session starts.
+			if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+				buf := make([]byte, len(message))
+				copy(buf, message)
+				pendingInputs = append(pendingInputs, pendingInput{messageType: messageType, data: buf})
+			}
+		}
 
-        if err := conn.SetReadDeadline(time.Time{}); err != nil {
-            log.GetLogger().Infof("Session %s: failed to clear read deadline: %v", sessionID, err)
-        }
-    }
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			log.GetLogger().Infof("Session %s: failed to clear read deadline: %v", sessionID, err)
+			return
+		}
+	}
+
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		log.GetLogger().Infof("Session %s: failed to ensure read deadline is cleared: %v", sessionID, err)
+		return
+	}
 
 	// Send start request
 	log.GetLogger().Infof("Starting: instance=%s, command=%v, tty=%v, size=%dx%d",
@@ -452,7 +462,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Tty:         tty,
 				Rows:        rows,
 				Cols:        cols,
-                InstanceId:  info.InstanceID,
+				InstanceId:  info.InstanceID,
 			},
 		},
 	})
@@ -461,20 +471,20 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    for _, msg := range pendingInputs {
-        err := stream.Send(&exec_service.ExecMessage{
-            SessionId: sessionID,
-            Payload: &exec_service.ExecMessage_InputData{
-                InputData: &exec_service.ExecInputData{
-                    Data: msg.data,
-                },
-            },
-        })
-        if err != nil {
-            log.GetLogger().Infof("Session %s: failed to replay early input: %v", sessionID, err)
-            return
-        }
-    }
+	for _, msg := range pendingInputs {
+		err := stream.Send(&exec_service.ExecMessage{
+			SessionId: sessionID,
+			Payload: &exec_service.ExecMessage_InputData{
+				InputData: &exec_service.ExecInputData{
+					Data: msg.data,
+				},
+			},
+		})
+		if err != nil {
+			log.GetLogger().Infof("Session %s: failed to replay early input: %v", sessionID, err)
+			return
+		}
+	}
 
 	done := make(chan struct{})
 
@@ -622,17 +632,17 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	// Convert to frontend expected format (simplified instance info)
 	instances := make([]map[string]interface{}, 0, len(response.Instances))
 	for _, inst := range response.Instances {
-        errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
-            inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
-        statusText := instanceStatusText(inst.InstanceStatus.Code)
-        if statusText == "unknown" {
-            statusText = inst.InstanceStatus.Msg
-        }
+		errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
+			inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
+		statusText := instanceStatusText(inst.InstanceStatus.Code)
+		if statusText == "unknown" {
+			statusText = inst.InstanceStatus.Msg
+		}
 		instance := map[string]interface{}{
 			"id":       inst.InstanceID,
 			"function": inst.Function,
-            "status":   statusText,
-            "error":    errorDetail,
+			"status":   statusText,
+			"error":    errorDetail,
 		}
 		instances = append(instances, instance)
 	}
@@ -645,34 +655,34 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 func instanceStatusText(code int) string {
-    switch constant.InstanceStatus(code) {
-    case constant.KernelInstanceStatusExited:
-        return "exited"
-    case constant.KernelInstanceStatusNew:
-        return "new"
-    case constant.KernelInstanceStatusScheduling:
-        return "scheduling"
-    case constant.KernelInstanceStatusCreating:
-        return "creating"
-    case constant.KernelInstanceStatusRunning:
-        return "running"
-    case constant.KernelInstanceStatusFailed:
-        return "failed"
-    case constant.KernelInstanceStatusExiting:
-        return "exiting"
-    case constant.KernelInstanceStatusFatal:
-        return "fatal"
-    case constant.KernelInstanceStatusScheduleFailed:
-        return "schedule_failed"
-    case constant.KernelInstanceStatusEvicting:
-        return "evicting"
-    case constant.KernelInstanceStatusEvicted:
-        return "evicted"
-    case constant.KernelInstanceStatusSubHealth:
-        return "sub_health"
-    default:
-        return "unknown"
-    }
+	switch constant.InstanceStatus(code) {
+	case constant.KernelInstanceStatusExited:
+		return "exited"
+	case constant.KernelInstanceStatusNew:
+		return "new"
+	case constant.KernelInstanceStatusScheduling:
+		return "scheduling"
+	case constant.KernelInstanceStatusCreating:
+		return "creating"
+	case constant.KernelInstanceStatusRunning:
+		return "running"
+	case constant.KernelInstanceStatusFailed:
+		return "failed"
+	case constant.KernelInstanceStatusExiting:
+		return "exiting"
+	case constant.KernelInstanceStatusFatal:
+		return "fatal"
+	case constant.KernelInstanceStatusScheduleFailed:
+		return "schedule_failed"
+	case constant.KernelInstanceStatusEvicting:
+		return "evicting"
+	case constant.KernelInstanceStatusEvicted:
+		return "evicted"
+	case constant.KernelInstanceStatusSubHealth:
+		return "sub_health"
+	default:
+		return "unknown"
+	}
 }
 
 func HandleIndex(w http.ResponseWriter, r *http.Request) {
