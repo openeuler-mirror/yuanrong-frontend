@@ -927,3 +927,25 @@ func Test_LeaseCanReuse(t *testing.T) {
 		convey.ShouldBeTrue(leaseCanReuse(lease))
 	})
 }
+
+func TestLeasePool_EmptyWithInFlightCount(t *testing.T) {
+	convey.Convey("test lease pool empty considering inFlightCount", t, func() {
+		op := &commType.AcquireOption{}
+		convey.Convey("empty lease map and no inflight", func() {
+			pool := newInstanceLeasePool("func_test", op)
+			convey.So(pool.empty(), convey.ShouldBeTrue)
+		})
+
+		convey.Convey("empty lease map but with inflight", func() {
+			pool := newInstanceLeasePool("func_test", op)
+			pool.inFlightCount.Add(1)
+			convey.So(pool.empty(), convey.ShouldBeFalse)
+		})
+
+		convey.Convey("has lease but no inflight", func() {
+			pool := newInstanceLeasePool("func_test", op)
+			pool.leaseMap["fake_lease"] = &InstanceLease{}
+			convey.So(pool.empty(), convey.ShouldBeFalse)
+		})
+	})
+}

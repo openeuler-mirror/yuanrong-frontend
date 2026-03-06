@@ -545,8 +545,9 @@ type LeasePool struct {
 	resSpecStr    string
 	stopCh        chan struct{}
 	sync.RWMutex
-	logger       api.FormatLogger
-	leasePoolKey string
+	logger        api.FormatLogger
+	leasePoolKey  string
+	inFlightCount atomic.Int32
 }
 
 func identityFunc(obj interface{}) string {
@@ -568,13 +569,14 @@ func newInstanceLeasePool(funcKey string, option *commontypes.AcquireOption) *Le
 		leaseMap:      make(map[string]*InstanceLease, defaultMapSize),
 		stopCh:        make(chan struct{}),
 		logger:        log.GetLogger().With(zap.Any("poolKey", getPoolKey(funcKey, option))),
+		inFlightCount: atomic.Int32{},
 	}
 }
 
 func (lp *LeasePool) empty() bool {
 	lp.RLock()
 	defer lp.RUnlock()
-	return len(lp.leaseMap) == 0
+	return len(lp.leaseMap) == 0 && lp.inFlightCount.Load() == 0
 }
 
 func (ip *LeasePool) acquireHandler(funcKey string, option *commontypes.AcquireOption) (*InstanceLease,
@@ -768,9 +770,11 @@ func (ip *LeasePool) acquireInstanceLease(option *commontypes.AcquireOption) (*I
 		return lease, nil
 	}
 
+	ip.inFlightCount.Add(1)
 	lease, snError := ip.acquireHandler(ip.funcKey, option)
 
 	if snError != nil {
+		ip.inFlightCount.Add(-1)
 		return nil, snError
 	}
 	lease.claim()
@@ -778,6 +782,7 @@ func (ip *LeasePool) acquireInstanceLease(option *commontypes.AcquireOption) (*I
 	_, exist := ip.leaseMap[lease.ThreadID]
 	ip.RUnlock()
 	if exist {
+		ip.inFlightCount.Add(-1)
 		log.GetLogger().Errorf("acquired lease %s already exist for function %s traceID %s", lease.ThreadID,
 			ip.funcKey, option.TraceID)
 		// acquired a repeated lease, should acquire a new lease
@@ -785,6 +790,7 @@ func (ip *LeasePool) acquireInstanceLease(option *commontypes.AcquireOption) (*I
 	}
 	ip.Lock()
 	ip.leaseMap[lease.ThreadID] = lease
+	ip.inFlightCount.Add(-1)
 	ip.Unlock()
 	if leaseCanReuse(lease) {
 		go ip.handleLeaseExpiredLoop(lease)
