@@ -70,12 +70,21 @@ import (
 // @Header       200  {string}  X-Invoke-Summary "本次调用摘要信息"
 // @Header       200  {string}  X-Log-Result "调用过程中产生日志"
 func InvokeHandler(ctx *gin.Context) {
+	if ctx.GetHeader("X-Invoke-Type") == "async" {
+		AsyncInvokeHandler(ctx)
+		return
+	}
 	invokeWrap(ctx, false)
 }
 
 // ShortInvokeHandler -
 // ShortInvokeHandler handles short invocation requests
 func ShortInvokeHandler(ctx *gin.Context) {
+	log.GetLogger().Infof("ShortInvokeHandler called, path: %s, X-Invoke-Type: %s", ctx.Request.URL.Path, ctx.GetHeader("X-Invoke-Type"))
+	if ctx.GetHeader("X-Invoke-Type") == "async" {
+		AsyncInvokeHandler(ctx)
+		return
+	}
 	invokeWrap(ctx, true)
 }
 

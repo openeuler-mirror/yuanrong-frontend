@@ -50,6 +50,7 @@ const (
 	urlStreamSubscribe = "/serverless/v1/stream/subscribe"
 	urlGetHealthCheck  = "/healthz"
 	urlClusterHealthy  = "/serverless/v1/componentshealth"
+	urlGetAsyncResult  = "/serverless/v1/functions/async-results/:request-id"
 	// url to faasmanager
 	urlLease          = "/client/v1/lease"
 	urlLeaseKeepAlive = "/client/v1/lease/keepalive"
@@ -102,6 +103,7 @@ func InitRoute(r *gin.Engine) {
 	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))       // Invocation
 	r.POST(urlShortInvoke, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Invocation
 	r.POST(urlShortInvokeOld, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Deprecated short invocation (backward compatibility)
+	r.GET(urlGetAsyncResult, v1.GetAsyncResultHandler)                     // Async invocation result
 	r.GET(urlStreamSubscribe, v1.SubscribeHandler)                       // Subscribe Stream
 	r.PUT(urlLease, lease.NewLeaseHandler)
 	r.DELETE(urlLease, lease.DelLeaseHandler)
