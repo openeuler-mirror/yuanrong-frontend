@@ -26,11 +26,8 @@ log_warning() {
 
 function generate_pb() {
     # generate pb files
-    if [ -z "${GOPATH}" ] || [ ! -d "${GOPATH}" ]; then
-        log_error "GOPATH ${GOPATH} not exist!"
-        return 1
-    fi
     cd "${PROJECT_DIR}"/pkg
+    local GOPATH=$(go env GOPATH)
     [ -d "${GOPATH}/src/frontend" ] && rm -rf "${GOPATH}/src/frontend"
     mkdir -p "${GOPATH}"/src/
     ln -s "${PROJECT_DIR}" "${GOPATH}"/src/frontend

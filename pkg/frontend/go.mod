@@ -11,6 +11,7 @@ require (
 	github.com/gorilla/websocket v1.5.0
 	github.com/magiconair/properties v1.8.7
 	github.com/prometheus/client_golang v1.16.0
+	github.com/redis/go-redis/v9 v9.0.5
 	github.com/smartystreets/goconvey v1.8.1
 	github.com/stretchr/testify v1.10.0
 	github.com/valyala/fasthttp v1.58.0
@@ -74,7 +75,6 @@ require (
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.10.1 // indirect
-	github.com/redis/go-redis/v9 v9.0.5 // indirect
 	github.com/smartystreets/assertions v0.0.0-20180927180507-b2de0cb4f26d // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect

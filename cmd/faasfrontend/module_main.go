@@ -29,6 +29,7 @@ import (
 	"frontend/pkg/common/faas_common/signals"
 	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/common/faas_common/urnutils"
+	"frontend/pkg/frontend/asyncinvocation"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functiontask"
 	"frontend/pkg/frontend/invocation"
@@ -67,6 +68,8 @@ func main() {
 		logAndPrintError(fmt.Sprintf("init module config error: %s", err.Error()))
 		return
 	}
+	// Fix Critical #4: Load async invocation config
+	asyncinvocation.LoadConfigFromMain(config.GetConfig())
 	urnutils.SetSeparator(config.GetConfig().FunctionNameSeparator)
 	stopCh := signals.WaitForSignal()
 	if err = config.InitEtcd(stopCh); err != nil {

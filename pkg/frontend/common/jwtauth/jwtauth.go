@@ -46,7 +46,7 @@ type JWTHeader struct {
 // JWTPayload represents the JWT payload structure
 type JWTPayload struct {
 	Sub  string `json:"sub"`            // Subject: tenant ID (required)
-	Exp  int64  `json:"exp"`            // Expiration: timestamp (required)
+	Exp  uint64 `json:"exp"`            // Expiration: timestamp (required)
 	Role string `json:"role,omitempty"` // Role: user role (optional)
 }
 
