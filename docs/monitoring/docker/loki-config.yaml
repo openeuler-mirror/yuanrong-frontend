@@ -35,6 +35,7 @@ limits_config:
             - node.name
             - component.name
             - process.name
+            - akernel_env
 
 schema_config:
   configs:

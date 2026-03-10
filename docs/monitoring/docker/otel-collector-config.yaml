@@ -35,6 +35,7 @@ receivers:
           parse_from: attributes.log_time
           layout_type: strptime
           layout: '%m%d %H:%M:%S.%f'
+          location: Asia/Shanghai
         severity:
           parse_from: attributes.severity
           mapping:
@@ -295,8 +296,8 @@ processors:
 
   resource:
     attributes:
-      - key: deployment.environment
-        value: docker
+      - key: akernel_env
+        value: test
         action: upsert
 
 exporters:
@@ -314,9 +315,13 @@ exporters:
     endpoint: http://prometheus:9090/api/v1/write
     tls:
       insecure: true
+    resource_to_telemetry_conversion:
+      enabled: true
 
   prometheus:
     endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
 
   debug:
     verbosity: basic
