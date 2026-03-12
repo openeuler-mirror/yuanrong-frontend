@@ -36,6 +36,7 @@ mkdir -p ${OUTPUT_DIR}
 go env -w "GOFLAGS"="-mod=mod"
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+export PATH=$(go env GOPATH)/bin:$PATH
 # remove hard coded cert file in net/http
 [ -f "${TEST_CERT_PATH}" ] && rm -f "${TEST_CERT_PATH}"
 

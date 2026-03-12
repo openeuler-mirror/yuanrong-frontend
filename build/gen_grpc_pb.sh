@@ -29,7 +29,9 @@ function gen_code() {
     rm "${DST_DIR}/grpc" -rf
   fi
 
-  protoc --proto_path="${RPC_SERVICE_PROTO_PATH}" --go_out="${GOPATH}/src" --go-grpc_out="${GOPATH}/src" \
+  protoc --proto_path="${RPC_SERVICE_PROTO_PATH}" \
+    --go_out="${PROJECT_DIR}" --go_opt=module=frontend \
+    --go-grpc_out="${PROJECT_DIR}" --go-grpc_opt=module=frontend \
     "${RPC_SERVICE_PROTO_PATH}"*.proto
 
   echo "generate gRPC: Done!"
@@ -44,7 +46,9 @@ function gen_posix_code() {
   fi
 
   sed -i 's#"grpc/pb#"frontend/pkg/common/faas_common/grpc/pb#g' "${RPC_PROTO_PATH}"*.proto
-  protoc --proto_path="${RPC_PROTO_PATH}" --go_out="${GOPATH}/src" --go-grpc_out="${GOPATH}/src" \
+  protoc --proto_path="${RPC_PROTO_PATH}" \
+    --go_out="${PROJECT_DIR}" --go_opt=module=frontend \
+    --go-grpc_out="${PROJECT_DIR}" --go-grpc_opt=module=frontend \
     "${RPC_PROTO_PATH}"*.proto
 
   echo "generate posix gRPC: Done!"

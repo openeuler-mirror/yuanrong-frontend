@@ -27,10 +27,6 @@ log_warning() {
 function generate_pb() {
     # generate pb files
     cd "${PROJECT_DIR}"/pkg
-    local GOPATH=$(go env GOPATH)
-    [ -d "${GOPATH}/src/frontend" ] && rm -rf "${GOPATH}/src/frontend"
-    mkdir -p "${GOPATH}"/src/
-    ln -s "${PROJECT_DIR}" "${GOPATH}"/src/frontend
     if ! bash "${PROJECT_DIR}"/build/gen_grpc_pb.sh; then
         log_error "Failed to generate pb files!"
         return 1
