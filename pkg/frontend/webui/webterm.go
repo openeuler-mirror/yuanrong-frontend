@@ -272,6 +272,11 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if token == "" {
 			token = r.URL.Query().Get("token")
 		}
+		if token == "" {
+			if cookie, err := r.Cookie("iam_token"); err == nil {
+				token = cookie.Value
+			}
+		}
 		// Fall back to Sec-WebSocket-Protocol (browser WebSocket subprotocol trick)
 		if token == "" {
 			for _, proto := range websocket.Subprotocols(r) {

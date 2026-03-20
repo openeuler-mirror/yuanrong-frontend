@@ -50,6 +50,12 @@ var defaultAuthWhitelist = []AuthWhitelistRule{
 		SkipAuth:  true,
 	},
 	{
+		Path:      "/auth/",
+		Methods:   []string{},
+		MatchType: "prefix",
+		SkipAuth:  true,
+	},
+	{
 		Path:      "/healthz",
 		Methods:   []string{"GET"},
 		MatchType: "exact",

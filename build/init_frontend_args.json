@@ -14,6 +14,14 @@
       "addr": "{iam_server_address}",
       "enableFuncTokenAuth": {enable_func_token_auth}
     },
+    "externalAuthConfig": {
+      "url": "{auth_public_url}",
+      "internalUrl": "{auth_internal_url}",
+      "realm": "{auth_realm}",
+      "clientId": "{auth_client_id}",
+      "clientSecret": "{auth_client_secret}",
+      "enabled": {auth_enabled}
+    },
     "metaServiceAddress": "{meta_service_address}",
     "alarmConfig": {
       "enableAlarm": false,

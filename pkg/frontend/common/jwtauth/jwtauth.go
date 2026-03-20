@@ -26,6 +26,7 @@ import (
 	httputilclient "frontend/pkg/common/httputil/http/client"
 	"frontend/pkg/frontend/config"
 	"strings"
+	"time"
 )
 
 const (
@@ -46,7 +47,7 @@ type JWTHeader struct {
 // JWTPayload represents the JWT payload structure
 type JWTPayload struct {
 	Sub  string `json:"sub"`            // Subject: tenant ID (required)
-	Exp  uint64 `json:"exp"`            // Expiration: timestamp (required)
+	Exp  int64  `json:"exp"`            // Expiration: timestamp, <=0 means never expire
 	Role string `json:"role,omitempty"` // Role: user role (optional)
 }
 
@@ -55,6 +56,15 @@ type ParsedJWT struct {
 	Header    *JWTHeader
 	Payload   *JWTPayload
 	Signature string
+}
+
+// IsExpired reports whether the payload has expired at the provided time.
+// Non-positive exp values are treated as non-expiring tokens.
+func (payload *JWTPayload) IsExpired(now time.Time) bool {
+	if payload == nil || payload.Exp <= 0 {
+		return false
+	}
+	return now.Unix() > payload.Exp
 }
 
 // ParseJWT parses the X-Auth header value which is in the format Header.Payload.Signature

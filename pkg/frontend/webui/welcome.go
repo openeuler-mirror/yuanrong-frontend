@@ -19,12 +19,33 @@ package webui
 import (
 	"fmt"
 	"net/http"
+	"net/url"
+
+	"frontend/pkg/frontend/config"
 )
 
 // HandleWelcome displays the welcome/introduction page
 func HandleWelcome(w http.ResponseWriter, r *http.Request) {
-	// Get path prefix from X-Forwarded-Prefix header
 	pathPrefix := r.Header.Get("X-Forwarded-Prefix")
+	iamConfig := config.GetConfig().IamConfig
+	authNotice := ""
+	if iamConfig.Addr == "" {
+		authNotice = `<p class="auth-notice">IAM server is not configured. Set iamConfig.addr to enable login.</p>`
+	}
+	authButtons := fmt.Sprintf(`
+	        <div class="auth-section">
+	            <h3>🔐 Authentication</h3>
+	            <div class="auth-group">
+	                <a href="%s/auth/login?next=%s" class="cta-button">Sign In →</a>
+	                <a href="%s/auth/register?next=%s" class="cta-button secondary">Register →</a>
+	                <a href="%s/auth/login?next=%s" class="cta-button secondary">Get API Token →</a>
+	            </div>
+	            %s
+	        </div>`,
+		pathPrefix, url.QueryEscape(pathPrefix+"/terminal"),
+		pathPrefix, url.QueryEscape(pathPrefix+"/terminal"),
+		pathPrefix, url.QueryEscape(pathPrefix+"/auth/token-page"),
+		authNotice)
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
@@ -105,6 +126,28 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
         .cta-group {
             margin-top: 20px;
         }
+        .auth-section {
+            margin-top: 28px;
+            padding-top: 24px;
+            border-top: 1px solid #e2e8f0;
+            text-align: center;
+        }
+        .auth-section h3 {
+            font-size: 16px;
+            color: #4a5568;
+            margin-bottom: 12px;
+        }
+        .auth-group {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .auth-notice {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #718096;
+        }
         .docs-section {
             margin-top: 40px;
             padding-top: 24px;
@@ -159,6 +202,8 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
             <a href="%s/functions" class="cta-button secondary">Function Invoke →</a>
         </div>
 
+        %s
+
         <div class="docs-section">
             <h3>📚 Developer Resources</h3>
             <div class="docs-links">
@@ -173,7 +218,7 @@ func HandleWelcome(w http.ResponseWriter, r *http.Request) {
         </div>
     </div>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, authButtons, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }
