@@ -136,7 +136,7 @@ func (k *kernelRequestHandler) legacyMakeReq(logger api.FormatLogger) (*util.Inv
 			return nil, err
 		}
 	}
-	req, err := convert(k.ctx, k.funcSpec, instanceId, false, k.legacyCurrentSchedulerInfo)
+	req, err := convert(k.ctx, k.funcSpec, instanceId, false, nil, k.legacyCurrentSchedulerInfo)
 	if err != nil {
 		logger.Errorf("failed to convert request, err: %s", err.Error())
 		return nil, err
@@ -180,7 +180,7 @@ func (k *kernelRequestHandler) makeReq(logger api.FormatLogger) (*util.InvokeReq
 		}
 	}
 
-	req, err := convert(k.ctx, k.funcSpec, instanceId, forceInvoke, nil)
+	req, err := convert(k.ctx, k.funcSpec, instanceId, forceInvoke, k.instanceAllocationInfo, nil)
 	if err != nil {
 		logger.Errorf("failed to convert request, err: %s", err.Error())
 		return nil, err
@@ -405,7 +405,8 @@ func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.
 
 // Convert an http request to a POSIX invoke request
 func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
-	instanceId string, forceInvoke bool, legacySchedulerInfo *commontype.InstanceInfo,
+	instanceId string, forceInvoke bool, leaseInfo *commontype.InstanceAllocationInfo,
+	legacySchedulerInfo *commontype.InstanceInfo,
 ) (*util.InvokeRequest, error) {
 	resourceSpecs, err := util.ConvertResourceSpecs(ctx, funcSpec)
 	if err != nil {
@@ -428,6 +429,9 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 		TenantID:        funcSpec.FuncMetaData.TenantID,
 		InstanceID:      instanceId,
 		ForceInvoke:     forceInvoke,
+	}
+	if leaseInfo != nil && leaseInfo.FunctionProxyID != "" {
+		req.RouteAddress = leaseInfo.FunctionProxyID
 	}
 
 	// legacy

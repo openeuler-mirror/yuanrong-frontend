@@ -63,9 +63,10 @@ type InstanceAllocationInfo struct {
 	ThreadID      string `json:"threadID"`
 	InstanceIP    string `json:"instanceIP"`
 	InstancePort  string `json:"instancePort"`
-	NodeIP        string `json:"nodeIP"`
-	NodePort      string `json:"nodePort"`
-	LeaseInterval int64  `json:"leaseInterval"`
+	NodeIP          string `json:"nodeIP"`
+	NodePort        string `json:"nodePort"`
+	FunctionProxyID string `json:"functionProxyID"`
+	LeaseInterval   int64  `json:"leaseInterval"`
 	CPU           int64  `json:"cpu"`
 	Memory        int64  `json:"memory"`
 	ForceInvoke   bool   `json:"forceInvoke"`
