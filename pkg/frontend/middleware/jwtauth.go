@@ -223,6 +223,11 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 			authHeader = ctx.Query("token")
 		}
 		if authHeader == "" {
+			if cookie, err := ctx.Cookie("iam_token"); err == nil {
+				authHeader = cookie
+			}
+		}
+		if authHeader == "" {
 			respondAuthError(ctx, "Authentication failed: no token provided. Please enter a valid JWT token.")
 			return
 		}
@@ -263,18 +268,18 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 
 		// If JWT token contains tenant information, replace the tenant in header
 		if parsedJWT.Payload.Sub != "" {
-            tenantFromJWT := parsedJWT.Payload.Sub
+			tenantFromJWT := parsedJWT.Payload.Sub
 
 			// Replace both X-Tenant-ID and X-Tenant-Id headers with the tenant from JWT
-            ctx.Request.Header.Set(constants.HeaderTenantID, tenantFromJWT)
-            ctx.Request.Header.Set(constants.HeaderTenantId, tenantFromJWT)
+			ctx.Request.Header.Set(constants.HeaderTenantID, tenantFromJWT)
+			ctx.Request.Header.Set(constants.HeaderTenantId, tenantFromJWT)
 
-            // Replace tenant_id query parameter in URL with tenant from JWT
-            queryValues := ctx.Request.URL.Query()
-            queryValues.Set("tenant_id", tenantFromJWT)
-            ctx.Request.URL.RawQuery = queryValues.Encode()
+			// Replace tenant_id query parameter in URL with tenant from JWT
+			queryValues := ctx.Request.URL.Query()
+			queryValues.Set("tenant_id", tenantFromJWT)
+			ctx.Request.URL.RawQuery = queryValues.Encode()
 
-            log.GetLogger().Debugf("Replaced tenant in header/query with JWT tenant: %s, traceID %s", tenantFromJWT, traceID)
+			log.GetLogger().Debugf("Replaced tenant in header/query with JWT tenant: %s, traceID %s", tenantFromJWT, traceID)
 		}
 
 		// Store user info in context for downstream handlers

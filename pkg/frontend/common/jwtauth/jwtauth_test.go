@@ -183,6 +183,23 @@ func TestParseJWT(t *testing.T) {
 				assert.Equal(t, "", jwt.Payload.Role)
 			},
 		},
+		{
+			name: "有效的JWT token-exp为-1表示永不过期",
+			authHeader: createValidJWT(
+				encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}),
+				encodeBase64URL(JWTPayload{Sub: "tenant-permanent", Exp: -1, Role: "developer"}),
+				"signature-permanent",
+			),
+			wantErr: false,
+			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
+				assert.NoError(t, err)
+				assert.NotNil(t, jwt)
+				assert.NotNil(t, jwt.Payload)
+				assert.Equal(t, "tenant-permanent", jwt.Payload.Sub)
+				assert.Equal(t, int64(-1), jwt.Payload.Exp)
+				assert.Equal(t, "developer", jwt.Payload.Role)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -244,6 +261,47 @@ func TestValidateTenantID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.jwt.ValidateTenantID(tt.expectedTenantID)
 			tt.checkResult(t, err)
+		})
+	}
+}
+
+func TestJWTPayloadIsExpired(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	tests := []struct {
+		name    string
+		payload *JWTPayload
+		want    bool
+	}{
+		{
+			name:    "nil payload is treated as non-expiring",
+			payload: nil,
+			want:    false,
+		},
+		{
+			name:    "exp minus one never expires",
+			payload: &JWTPayload{Exp: -1},
+			want:    false,
+		},
+		{
+			name:    "exp zero never expires",
+			payload: &JWTPayload{Exp: 0},
+			want:    false,
+		},
+		{
+			name:    "future exp is valid",
+			payload: &JWTPayload{Exp: now.Unix() + 60},
+			want:    false,
+		},
+		{
+			name:    "past exp is expired",
+			payload: &JWTPayload{Exp: now.Unix() - 60},
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.payload.IsExpired(now))
 		})
 	}
 }
