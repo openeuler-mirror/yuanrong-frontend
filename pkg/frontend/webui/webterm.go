@@ -1260,7 +1260,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
                 // Build request payload
                 const payload = {
-                    entrypoint: 'python -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
+                    entrypoint: 'python3 -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
                     runtime_env: {
                         working_dir: '/tmp',
                         env_vars: {
@@ -1473,7 +1473,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
             try {
                 const payload = {
-                    entrypoint: 'python -m yr.cli.scripts sandbox ' + instanceId,
+                    entrypoint: 'python3 -m yr.cli.scripts sandbox ' + instanceId,
                     runtime_env: {
                         working_dir: '/tmp'
                     }
