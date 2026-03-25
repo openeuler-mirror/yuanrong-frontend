@@ -176,6 +176,9 @@ type GinWriter struct {
 
 // SSEWrite SSE协议响应回传
 func (gw *GinWriter) SSEWrite(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
 	// 设置SSE响应头
 	if gw == nil || gw.Context == nil {
 		return 0, fmt.Errorf("context has nil")
