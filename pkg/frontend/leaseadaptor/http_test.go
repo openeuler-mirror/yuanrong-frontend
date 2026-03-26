@@ -70,6 +70,21 @@ func TestCreateAcquireArgs(t *testing.T) {
 	})
 }
 
+func TestCreateQuerySessionArgs(t *testing.T) {
+	Convey("Test createQuerySessionArgs", t, func() {
+		args, err := createQuerySessionArgs("session-1", "trace-123", "test-func")
+		So(err, ShouldBeNil)
+		So(len(args), ShouldEqual, 3)
+		So(string(args[0].Data), ShouldEqual, "querySession#test-func")
+		So(string(args[2].Data), ShouldEqual, "trace-123")
+
+		payload := make(map[string]string)
+		err = json.Unmarshal(args[1].Data, &payload)
+		So(err, ShouldBeNil)
+		So(payload[commonconstant.InstanceSessionConfig], ShouldNotBeBlank)
+	})
+}
+
 func TestCreateBatchRetainArgs(t *testing.T) {
 	Convey("Test createBatchRetainArgs", t, func() {
 		batch := &BatchRetainLeaseInfos{
@@ -172,6 +187,65 @@ func TestDoAcquireInvoke(t *testing.T) {
 
 			_, err := doAcquireInvoke(option, testIP, funcKey, 5)
 			So(err, ShouldNotBeNil)
+		})
+	})
+}
+
+func TestQuerySession(t *testing.T) {
+	Convey("Test QuerySession", t, func() {
+		Convey("Should return resolved instance when scheduler request succeeds", func() {
+			patches := gomonkey.NewPatches()
+			defer patches.Reset()
+
+			patches.ApplyMethodFunc(schedulerproxy.Proxy, "Get", func(_ string, _ api.FormatLogger) (*schedulerproxy.SchedulerNodeInfo, error) {
+				return &schedulerproxy.SchedulerNodeInfo{
+					InstanceInfo: &commontypes.InstanceInfo{
+						Address: "127.0.0.1",
+					},
+				}, nil
+			})
+			patches.ApplyFunc(doQuerySessionInvoke, func(sessionID, ip, funcKey string, timeout int64, traceID string) (*commontypes.InstanceResponse, error) {
+				So(sessionID, ShouldEqual, "session-1")
+				So(ip, ShouldEqual, "127.0.0.1")
+				So(funcKey, ShouldEqual, "test-func")
+				So(traceID, ShouldEqual, "trace-1")
+				return &commontypes.InstanceResponse{
+					InstanceAllocationInfo: commontypes.InstanceAllocationInfo{
+						InstanceID: "instance-1",
+					},
+					ErrorCode: commonconstant.InsReqSuccessCode,
+				}, nil
+			})
+
+			info, err := QuerySession("test-func", "session-1", "trace-1")
+			So(err, ShouldBeNil)
+			So(info, ShouldNotBeNil)
+			So(info.InstanceID, ShouldEqual, "instance-1")
+		})
+
+		Convey("Should return scheduler error when scheduler request reports failure", func() {
+			patches := gomonkey.NewPatches()
+			defer patches.Reset()
+
+			patches.ApplyMethodFunc(schedulerproxy.Proxy, "Get", func(_ string, _ api.FormatLogger) (*schedulerproxy.SchedulerNodeInfo, error) {
+				return &schedulerproxy.SchedulerNodeInfo{
+					InstanceInfo: &commontypes.InstanceInfo{
+						Address: "127.0.0.1",
+					},
+				}, nil
+			})
+			patches.ApplyFunc(doQuerySessionInvoke, func(sessionID, ip, funcKey string, timeout int64, traceID string) (*commontypes.InstanceResponse, error) {
+				return &commontypes.InstanceResponse{
+					ErrorCode:    12345,
+					ErrorMessage: "query failed",
+				}, nil
+			})
+
+			info, err := QuerySession("test-func", "session-1", "trace-1")
+			So(info, ShouldBeNil)
+			So(err, ShouldNotBeNil)
+			So(err.Code(), ShouldEqual, 12345)
+			So(err.Error(), ShouldEqual, "query failed")
 		})
 	})
 }

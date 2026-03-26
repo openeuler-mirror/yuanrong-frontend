@@ -185,21 +185,6 @@ func (c *fakeFailedClient) InvokeByName(request util.InvokeRequest) ([]byte, err
 	return res, errors.New("runtime initialization timed out after 3s")
 }
 
-func (c *fakeFailedClient) CreateInstance(req *functionsystem.CreateRequest) (*functionsystem.CreateResponse, error) {
-	// TODO implement me
-	panic("implement me")
-}
-
-func (c *fakeFailedClient) InvokeInstance(req *functionsystem.InvokeRequest) (*functionsystem.NotifyRequest, error) {
-	// TODO implement me
-	panic("implement me")
-}
-
-func (c *fakeFailedClient) Kill(req *functionsystem.KillRequest) (*functionsystem.KillResponse, error) {
-	// TODO implement me
-	panic("implement me")
-}
-
 func (c *fakeFailedClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
 	InstanceID := ""
 	return InstanceID, nil

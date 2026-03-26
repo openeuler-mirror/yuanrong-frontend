@@ -74,6 +74,44 @@ func TestInstanceLeasePool_releaseInstanceLease(t *testing.T) {
 	})
 }
 
+func TestLeasePool_empty(t *testing.T) {
+	convey.Convey("empty lease pool should respect pending acquire", t, func() {
+		op := &commType.AcquireOption{
+			TraceID: "123456",
+		}
+		pool := newInstanceLeasePool("func1", op)
+		convey.So(pool.empty(), convey.ShouldBeTrue)
+
+		pool.pendingAcquire.Add(1)
+		convey.So(pool.empty(), convey.ShouldBeFalse)
+
+		pool.pendingAcquire.Add(-1)
+		convey.So(pool.empty(), convey.ShouldBeTrue)
+	})
+}
+
+func TestFuncKeyLeasePools_clearEmptyLeasePool_pendingAcquire(t *testing.T) {
+	convey.Convey("clearEmptyLeasePool should keep pool with pending acquire", t, func() {
+		op := &commType.AcquireOption{
+			TraceID: "123456",
+		}
+		pool := newInstanceLeasePool("func1", op)
+		pool.pendingAcquire.Add(1)
+		poolKey := getPoolKey("func1", op)
+
+		flps := &FuncKeyLeasePools{
+			leasePools: map[string]*LeasePool{
+				poolKey: pool,
+			},
+		}
+
+		flps.clearEmptyLeasePool()
+
+		_, exists := flps.leasePools[poolKey]
+		convey.So(exists, convey.ShouldBeTrue)
+	})
+}
+
 func TestInstanceManager_ReleaseInstanceAllocation(t *testing.T) {
 	convey.Convey("release instance allocation test", t, func() {
 		convey.Convey("release error", func() {

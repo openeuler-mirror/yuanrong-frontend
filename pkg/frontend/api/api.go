@@ -39,6 +39,10 @@ const (
 	// naming convention: url + method + description
 	urlPostInvoke = "/serverless/v1/functions/" + common.GinUrnParamMark +
 		common.FunctionUrnParam + "/invocations"
+	urlInterruptSession = "/serverless/v1/functions/" + common.GinUrnParamMark +
+		common.FunctionUrnParam + "/sessions" + constants.DynamicRouterParamPrefix + "sessionId/interrupt"
+	urlDeleteSession = "/serverless/v1/functions/" + common.GinUrnParamMark +
+		common.FunctionUrnParam + "/sessions" + constants.DynamicRouterParamPrefix + "sessionId"
 	urlStreamSubscribe = "/serverless/v1/stream/subscribe"
 	urlGetHealthCheck  = "/healthz"
 	urlClusterHealthy  = "/serverless/v1/componentshealth"
@@ -82,7 +86,9 @@ func InitRoute(r *gin.Engine) {
 	r.GET(urlGetHealthCheck, v1.HealthzHandler)
 	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)              // Health check
 	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler)) // Invocation
-	r.GET(urlStreamSubscribe, v1.SubscribeHandler)                 // Subscribe Stream
+	r.POST(urlInterruptSession, tracer.WrapGinHandler(v1.InterruptSessionHandler))
+	r.DELETE(urlDeleteSession, tracer.WrapGinHandler(v1.DeleteSessionHandler))
+	r.GET(urlStreamSubscribe, v1.SubscribeHandler) // Subscribe Stream
 	r.PUT(urlLease, lease.NewLeaseHandler)
 	r.DELETE(urlLease, lease.DelLeaseHandler)
 	r.POST(urlLeaseKeepAlive, lease.KeepAliveHandler)

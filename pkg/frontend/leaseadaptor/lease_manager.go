@@ -236,7 +236,9 @@ func (flps *FuncKeyLeasePools) acquireInstance(option *commontypes.AcquireOption
 		flps.RLock()
 	}
 	flps.RUnlock()
+	leasePool.pendingAcquire.Add(1)
 	lease, err := leasePool.acquireInstanceLease(option)
+	leasePool.pendingAcquire.Add(-1)
 	if err != nil {
 		return nil, err
 	}
@@ -535,15 +537,16 @@ func (flps *FuncKeyLeasePools) processErrBatchResponse(batch *BatchRetainLeaseIn
 
 // LeasePool stores instance leases
 type LeasePool struct {
-	funcKey       string
-	invokeLabel   string
-	poolLabel     string
-	invokeTag     map[string]string
-	session       *commontypes.InstanceSessionConfig
-	idleLeaseList *queue.FifoQueue
-	leaseMap      map[string]*InstanceLease
-	resSpecStr    string
-	stopCh        chan struct{}
+	funcKey        string
+	invokeLabel    string
+	poolLabel      string
+	invokeTag      map[string]string
+	session        *commontypes.InstanceSessionConfig
+	idleLeaseList  *queue.FifoQueue
+	leaseMap       map[string]*InstanceLease
+	pendingAcquire atomic.Int32
+	resSpecStr     string
+	stopCh         chan struct{}
 	sync.RWMutex
 	logger       api.FormatLogger
 	leasePoolKey string
@@ -574,7 +577,7 @@ func newInstanceLeasePool(funcKey string, option *commontypes.AcquireOption) *Le
 func (lp *LeasePool) empty() bool {
 	lp.RLock()
 	defer lp.RUnlock()
-	return len(lp.leaseMap) == 0
+	return len(lp.leaseMap) == 0 && lp.pendingAcquire.Load() == 0
 }
 
 func (ip *LeasePool) acquireHandler(funcKey string, option *commontypes.AcquireOption) (*InstanceLease,
