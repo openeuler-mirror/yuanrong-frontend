@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/magiconair/properties"
 	"github.com/valyala/fasthttp"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
@@ -32,6 +31,8 @@ import (
 	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/common/faas_common/instanceconfig"
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/common/faas_common/sts"
+	"frontend/pkg/common/faas_common/sts/raw"
 	commontypes "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/common/faas_common/wisecloudtool/serviceaccount"
@@ -158,12 +159,10 @@ func parseRuntimeCfgAndSetEnv(configFilePath string) (*common.Configuration, err
 		MaxConcurrencyCreateNum: 5000,
 		EnableSigaction:         cfg.Runtime.EnableSigaction,
 	}
-	err = initSts(cfg)
-	if err != nil {
+	if err = sts.InitStsSDK(cfg.RawStsConfig.ServerConfig); err != nil {
 		return nil, err
 	}
-	err = parseSystemAuth(cfg, runtimeCfg)
-	if err != nil {
+	if err = parseSystemAuth(cfg, runtimeCfg); err != nil {
 		return nil, err
 	}
 	err = setEnv(configFilePath, cfg)
@@ -178,26 +177,16 @@ func parseRuntimeCfgAndSetEnv(configFilePath string) (*common.Configuration, err
 }
 
 func parseSystemAuth(cfg *types.Config, runtimeCfg *common.Configuration) error {
-	if !cfg.Runtime.SystemAuthConfig.Enable {
-		return nil
+	encryptedKeyConfig := raw.Auth{
+		EnableIam: strconv.FormatBool(cfg.Runtime.SystemAuthConfig.Enable)
+		AccessKey: cfg.Runtime.SystemAuthConfig.AccessKey
+		SecretKey: cfg.Runtime.SystemAuthConfig.SecretKey
+		DataKey: cfg.Runtime.SystemAuthConfig.DataKey
 	}
-	accessKey, err := stsgoapi.DecryptSensitiveConfig(cfg.Runtime.SystemAuthConfig.AccessKey)
-	if err != nil {
-		return fmt.Errorf("decrypt accessKey failed, err %s", err.Error())
-	}
-	secretKey, err := stsgoapi.DecryptSensitiveConfig(cfg.Runtime.SystemAuthConfig.SecretKey)
-	if err != nil {
-		utils.ClearByteMemory(secretKey)
-		return fmt.Errorf("decrypt secretKey failed, err %s", err.Error())
-	}
-	dataKey, err := stsgoapi.DecryptSensitiveConfig(cfg.Runtime.SystemAuthConfig.DataKey)
-	if err != nil {
-		utils.ClearByteMemory(secretKey)
-		return fmt.Errorf("decrypt dataKey failed, err %s", err.Error())
-	}
-	runtimeCfg.SystemAuthAccessKey = string(accessKey)
-	runtimeCfg.SystemAuthSecretKey = string(secretKey)
-	runtimeCfg.SystemAuthDataKey = string(dataKey)
+	decryptedKeyConfig := sts.DecryptSystemAuthConfig(encryptedKeyConfig)
+	runtimeCfg.SystemAuthAccessKey = decryptedKeyConfig.AccessKey
+	runtimeCfg.SystemAuthSecretKey = decryptedKeyConfig.SecretKey
+	runtimeCfg.SystemAuthDataKey = decryptedKeyConfig.DataKey
 	return nil
 }
 
@@ -232,23 +221,6 @@ func parseServiceAccountJwt(cfg *types.Config) error {
 			cfg.WiseCloudConfig.ServiceAccountJwt.TlsConfig
 	} else {
 		return nil
-	}
-	return nil
-}
-
-func initSts(cfg *types.Config) error {
-	if !cfg.RawStsConfig.StsEnable {
-		return nil
-	}
-	stsProperties := properties.LoadMap(
-		map[string]string{
-			"sts.server.domain": cfg.RawStsConfig.ServerConfig.Domain,
-			"sts.config.path":   cfg.RawStsConfig.ServerConfig.Path,
-		},
-	)
-	err := stsgoapi.InitWith(*stsProperties)
-	if err != nil {
-		return fmt.Errorf("failed to init sts sdk, error %s", err.Error())
 	}
 	return nil
 }

@@ -79,24 +79,10 @@ func TestInit(t *testing.T) {
 			err := frontend.Init("/home/sn/config.json")
 			convey.So(err.Error(), convey.ShouldContainSubstring, "unmarshal config failed")
 		})
-		convey.Convey("sts init failed", func() {
-			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
-				return data, nil
-			}).Reset()
-			err := frontend.Init("/home/sn/config.json")
-			convey.So(err.Error(), convey.ShouldContainSubstring, "failed to init sts sdk")
-		})
 		convey.Convey("init logger error", func() {
 			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
 				return data, nil
 			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
-				return nil
-			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					return plainBytes, nil
-				}).Reset()
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return errors.New("init log error")
 			}).Reset()
@@ -110,13 +96,6 @@ func TestInit(t *testing.T) {
 			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
 				return data, nil
 			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
-				return nil
-			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					return plainBytes, nil
-				}).Reset()
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return nil
 			}).Reset()
@@ -134,13 +113,6 @@ func TestInit(t *testing.T) {
 			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
 				return data, nil
 			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
-				return nil
-			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					return plainBytes, nil
-				}).Reset()
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return nil
 			}).Reset()
@@ -225,36 +197,13 @@ func TestParseSystemAuthError(t *testing.T) {
 					Enable:    false,
 					AccessKey: "ak",
 					SecretKey: "sk",
+					DataKey:   "dk",
 				},
 			},
 		}
 		convey.Convey("systemAuth not enable ", func() {
 			err := parseSystemAuth(cfg, &common.Configuration{})
 			convey.So(err, convey.ShouldBeNil)
-		})
-		convey.Convey("DecryptSensitiveConfig ak error ", func() {
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					if rawConfigValue == "ak" {
-						return []byte{}, errors.New("decrypt accessKey failed")
-					}
-					return plainBytes, nil
-				}).Reset()
-			cfg.Runtime.SystemAuthConfig.Enable = true
-			err := parseSystemAuth(cfg, &common.Configuration{})
-			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt accessKey failed")
-		})
-		convey.Convey("DecryptSensitiveConfig sk error ", func() {
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					if rawConfigValue == "sk" {
-						return []byte{}, errors.New("decrypt secretKey failed")
-					}
-					return plainBytes, nil
-				}).Reset()
-			cfg.Runtime.SystemAuthConfig.Enable = true
-			err := parseSystemAuth(cfg, &common.Configuration{})
-			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt secretKey failed")
 		})
 	})
 }
