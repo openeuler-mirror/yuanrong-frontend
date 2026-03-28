@@ -430,6 +430,7 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 		ForceInvoke:      forceInvoke,
 		IsInterrupted:    ctx.IsInterrupted,
 		BypassDataSystem: strings.EqualFold(util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderBypassDataSystem), "true"),
+		IsInterrupted:    ctx.IsInterrupted,
 	}
 	if leaseInfo != nil && leaseInfo.FunctionProxyID != "" {
 		req.RouteAddress = leaseInfo.FunctionProxyID

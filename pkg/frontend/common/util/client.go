@@ -362,6 +362,14 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 		}
 	}
 	invokeOpt.BypassDataSystem = req.BypassDataSystem
+	if req.InstanceSession != nil {
+		invokeOpt.InstanceSession = &api.InstanceSessionConfig{
+			SessionID:   req.InstanceSession.SessionID,
+			SessionTTL:  req.InstanceSession.SessionTTL,
+			Concurrency: req.InstanceSession.Concurrency,
+		}
+	}
+	invokeOpt.IsInterrupted = req.IsInterrupted
 	return invokeOpt
 }
 

@@ -275,14 +275,19 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 					"tagKey": "tagValue",
 				},
 				TraceID:       "id2",
+				TraceParent:   "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01",
 				InvokeTimeout: 60,
 				AcceptHeader:  httpconstant.AcceptEventStream,
+				IsInterrupted: true,
 			}
 			res := convertCommonInvokeOption(req)
 			So(res.TraceID, ShouldNotBeEmpty)
 			So(res.Timeout, ShouldNotEqual, 0)
 			So(res.InvokeLabels, ShouldNotBeNil)
 			So(res.InvokeLabels["accept"], ShouldNotBeNil)
+			So(res.CustomExtensions["tagKey"], ShouldEqual, "tagValue")
+			So(res.CustomExtensions[traceParentExtensionKey], ShouldEqual, req.TraceParent)
+			So(res.IsInterrupted, ShouldBeTrue)
 		})
 
 		Convey("check route address and bypass datasystem options", func() {

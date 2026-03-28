@@ -136,7 +136,7 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
 		convey.So(capturedTenantID, convey.ShouldEqual, "12345678901234561234567890123456")
 		convey.So(capturedKey, convey.ShouldEqual,
-			"yr:agent_session:v1:SICl-9zkITdgerEUm_FOtwGPa568P19_wo6bOtKekpE")
+			"yr:agent_session:v1:OmH5nh0gvdq9c7oXxMaE9sKEmZG0_lLjGR2jZ9kY_GQ")
 	})
 
 	convey.Convey("delete session not found", t, func() {
