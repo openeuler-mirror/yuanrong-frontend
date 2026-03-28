@@ -138,7 +138,7 @@ func TestDoAcquireInvoke(t *testing.T) {
 		})
 
 		Convey("Should return instance when request success", func() {
-			defer gomonkey.ApplyFunc(prepareSchedulerRequest, func(_ *fasthttp.Request, _ string, _ []*api.Arg, _ string) error {
+			defer gomonkey.ApplyFunc(prepareSchedulerRequest, func(_ *fasthttp.Request, _ string, _ []*api.Arg, _, _ string) error {
 				return nil
 			}).Reset()
 
@@ -153,7 +153,7 @@ func TestDoAcquireInvoke(t *testing.T) {
 		})
 
 		Convey("Should return error when prepare request failed", func() {
-			defer gomonkey.ApplyFunc(prepareSchedulerRequest, func(_ *fasthttp.Request, _ string, _ []*api.Arg, _ string) error {
+			defer gomonkey.ApplyFunc(prepareSchedulerRequest, func(_ *fasthttp.Request, _ string, _ []*api.Arg, _, _ string) error {
 				return errors.New("prepare failed")
 			}).Reset()
 
@@ -162,7 +162,7 @@ func TestDoAcquireInvoke(t *testing.T) {
 		})
 
 		Convey("Should return error when request failed", func() {
-			defer gomonkey.ApplyFunc(prepareSchedulerRequest, func(_ *fasthttp.Request, _ string, _ []*api.Arg, _ string) error {
+			defer gomonkey.ApplyFunc(prepareSchedulerRequest, func(_ *fasthttp.Request, _ string, _ []*api.Arg, _, _ string) error {
 				return nil
 			}).Reset()
 
@@ -299,6 +299,7 @@ func TestPrepareSchedulerRequest(t *testing.T) {
 	req := &fasthttp.Request{}
 	dstHost := "scheduler.example.com"
 	traceID := "abc123-def456"
+	traceParent := "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01"
 	args := []*api.Arg{
 		{TenantID: "tenantID"},
 	}
@@ -313,10 +314,7 @@ func TestPrepareSchedulerRequest(t *testing.T) {
 	}
 	config.SetConfig(testConfig)
 
-	err := prepareSchedulerRequest(req, dstHost, args, traceID)
-	assert.NotNil(t, err)
-
-	err = prepareSchedulerRequest(req, dstHost, args, traceID)
+	err := prepareSchedulerRequest(req, dstHost, args, traceID, traceParent)
 
 	assert.NoError(t, err)
 	assert.Equal(t, callSchedulerPath, string(req.URI().Path()))
@@ -324,6 +322,7 @@ func TestPrepareSchedulerRequest(t *testing.T) {
 	assert.Equal(t, http.MethodPost, string(req.Header.Method()))
 	assert.Equal(t, dstHost, string(req.Host()))
 	assert.Equal(t, traceID, string(req.Header.Peek(commonconstant.HeaderTraceID)))
+	assert.Equal(t, traceParent, string(req.Header.Peek(commonconstant.HeaderTraceParent)))
 	expectedBody, _ := json.Marshal(args)
 	assert.Equal(t, expectedBody, req.Body())
 }

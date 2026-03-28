@@ -25,11 +25,11 @@ import (
 
 func TestCreateErrorResponseBody(t *testing.T) {
 	Convey("Test CreateErrorResponseBody", t, func() {
-		body, err := createErrorResponseBody(404, json.RawMessage(`"Not Found"`))
+		body, err := createErrorResponseBody(404, json.RawMessage(`"Not Found"`), "")
 		want := []byte(`{"code":404,"message":"Not Found"}`)
 		So(string(body), ShouldEqual, string(want))
 		So(err, ShouldBeNil)
-		body, err = createErrorResponseBody(0, json.RawMessage(`invalid json`))
+		body, err = createErrorResponseBody(0, json.RawMessage(`invalid json`), "")
 		So(err, ShouldBeNil)
 	})
 }

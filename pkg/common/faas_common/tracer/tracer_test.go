@@ -29,6 +29,97 @@ import (
 	mockUtils "frontend/pkg/common/faas_common/utils"
 )
 
+func preserveTracerConfig() func() {
+	oldEndpoint := otelGRPCEndpoint
+	oldToken := otelGRPCToken
+	oldServiceName := otelServiceName
+	oldEnabled := enableOTELTracer
+	return func() {
+		otelGRPCEndpoint = oldEndpoint
+		otelGRPCToken = oldToken
+		otelServiceName = oldServiceName
+		enableOTELTracer = oldEnabled
+	}
+}
+
+func TestLoadCommonTracerConfigFromTraceConfig(t *testing.T) {
+	restore := preserveTracerConfig()
+	defer restore()
+
+	t.Setenv(EnableTraceEnvKey, "true")
+	t.Setenv(TraceConfigEnvKey, `{"otlpGrpcExporter":{"enable":true,"endpoint":"tempo:4317","token":"secret"}}`)
+	t.Setenv(OtelGRPCEndpointEnvKey, "legacy:4317")
+	t.Setenv(OtelEnableSampleEnvKey, "false")
+
+	err := loadCommonTracerConfig("faas-frontend")
+	if err != nil {
+		t.Fatalf("loadCommonTracerConfig() error = %v", err)
+	}
+
+	if !enableOTELTracer {
+		t.Fatalf("expected tracer enabled")
+	}
+	if otelGRPCEndpoint != "tempo:4317" {
+		t.Fatalf("expected endpoint tempo:4317, got %s", otelGRPCEndpoint)
+	}
+	if otelGRPCToken != "secret" {
+		t.Fatalf("expected token secret, got %s", otelGRPCToken)
+	}
+	if otelServiceName != "faas-frontend" {
+		t.Fatalf("expected service name faas-frontend, got %s", otelServiceName)
+	}
+}
+
+func TestLoadCommonTracerConfigFallbackToLegacyEnv(t *testing.T) {
+	restore := preserveTracerConfig()
+	defer restore()
+
+	t.Setenv(EnableTraceEnvKey, "false")
+	t.Setenv(TraceConfigEnvKey, "")
+	t.Setenv(OtelGRPCEndpointEnvKey, "legacy:4317")
+	t.Setenv(OtelGRPCTokenEnvKey, "legacy-token")
+	t.Setenv(OtelEnableSampleEnvKey, "true")
+
+	err := loadCommonTracerConfig("frontend")
+	if err != nil {
+		t.Fatalf("loadCommonTracerConfig() error = %v", err)
+	}
+
+	if !enableOTELTracer {
+		t.Fatalf("expected tracer enabled from legacy env")
+	}
+	if otelGRPCEndpoint != "legacy:4317" {
+		t.Fatalf("expected endpoint legacy:4317, got %s", otelGRPCEndpoint)
+	}
+	if otelGRPCToken != "legacy-token" {
+		t.Fatalf("expected token legacy-token, got %s", otelGRPCToken)
+	}
+	if otelServiceName != "frontend" {
+		t.Fatalf("expected service name frontend, got %s", otelServiceName)
+	}
+}
+
+func TestLoadCommonTracerConfigInvalidTraceConfig(t *testing.T) {
+	restore := preserveTracerConfig()
+	defer restore()
+
+	t.Setenv(EnableTraceEnvKey, "true")
+	t.Setenv(TraceConfigEnvKey, "{invalid-json}")
+	t.Setenv(OtelGRPCEndpointEnvKey, "legacy:4317")
+	t.Setenv(OtelEnableSampleEnvKey, "true")
+
+	err := loadCommonTracerConfig("faas-frontend")
+	if err == nil {
+		t.Fatalf("expected loadCommonTracerConfig() to fail")
+	}
+	if enableOTELTracer {
+		t.Fatalf("expected tracer disabled on invalid trace config")
+	}
+	if otelGRPCEndpoint != "" {
+		t.Fatalf("expected endpoint cleared on invalid trace config, got %s", otelGRPCEndpoint)
+	}
+}
+
 func TestInitProvider(t *testing.T) {
 	type args struct {
 		ctx context.Context

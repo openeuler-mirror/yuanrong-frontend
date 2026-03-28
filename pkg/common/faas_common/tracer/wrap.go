@@ -39,13 +39,19 @@ func WrapGinHandler(originHandlerFunc func(c *gin.Context)) func(c *gin.Context)
 			method := c.Request.Method
 			tr := otel.Tracer(tracerName)
 			traceParent := c.Request.Header.Get(constant.HeaderTraceParent)
-			carrier := propagation.HeaderCarrier{}
-			carrier.Set(constant.HeaderTraceParent, traceParent)
 			propagattor := otel.GetTextMapPropagator()
-			// use request context as parent context for current parent span
-			pCtx := propagattor.Extract(c.Request.Context(), carrier)
+			pCtx, forceRoot := BuildInboundContext(
+				c.Request.Context(),
+				traceParent,
+				c.Request.Header.Get(constant.HeaderTraceID),
+				c.Request.Header.Get(constant.HeaderRequestID),
+			)
+			options := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindServer)}
+			if forceRoot {
+				options = append(options, trace.WithNewRoot())
+			}
 
-			childCtx, span := tr.Start(pCtx, path, trace.WithSpanKind(trace.SpanKindServer))
+			childCtx, span := tr.Start(pCtx, path, options...)
 			span.SetAttributes(attribute.Key("http.target").String(path))
 			span.SetAttributes(attribute.Key("http.method").String(method))
 			span.SetAttributes(attribute.Key("http.requestID").String(c.Request.Header.Get(constant.HeaderRequestID)))
@@ -71,13 +77,19 @@ func WrapFastHTTPHandler(originHandlerFunc func(ctx *fasthttp.RequestCtx)) func(
 			method := string(ctx.Method())
 			tr := otel.Tracer(tracerName)
 			traceParent := string(ctx.Request.Header.Peek(constant.HeaderTraceParent))
-			carrier := propagation.HeaderCarrier{}
-			carrier.Set(constant.HeaderTraceParent, traceParent)
 			propagattor := otel.GetTextMapPropagator()
-			// use request context as parent context for current parent span
-			pCtx := propagattor.Extract(context.Background(), carrier)
+			pCtx, forceRoot := BuildInboundContext(
+				context.Background(),
+				traceParent,
+				string(ctx.Request.Header.Peek(constant.HeaderTraceID)),
+				string(ctx.Request.Header.Peek(constant.HeaderRequestID)),
+			)
+			options := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindServer)}
+			if forceRoot {
+				options = append(options, trace.WithNewRoot())
+			}
 
-			childCtx, span := tr.Start(pCtx, path, trace.WithSpanKind(trace.SpanKindServer))
+			childCtx, span := tr.Start(pCtx, path, options...)
 			span.SetAttributes(attribute.Key("http.target").String(path))
 			span.SetAttributes(attribute.Key("http.method").String(method))
 			requestID := string(ctx.Request.Header.Peek(constant.HeaderRequestID))

@@ -301,7 +301,7 @@ exporters:
     tls:
       insecure: true
 
-  otlp_grpc/tempo:
+  otlp/tempo:
     # Tempo 在裸进程模式下使用 4320 避免与本机 OTel Collector 4317 冲突
     endpoint: localhost:4320
     tls:
@@ -339,7 +339,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [otlp_grpc/tempo, debug]
+      exporters: [otlp/tempo, debug]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]

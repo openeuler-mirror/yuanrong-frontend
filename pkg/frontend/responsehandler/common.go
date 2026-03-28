@@ -29,14 +29,14 @@ func generateRespBodyToUser(innerCode int, message json.RawMessage) ([]byte, err
 	if innerCode == statuscode.InnerResponseSuccessCode {
 		return message, nil
 	}
-	return createErrorResponseBody(innerCode, message)
+	return createErrorResponseBody(innerCode, message, "")
 }
 
-func createErrorResponseBody(errorCode int, message json.RawMessage) ([]byte, error) {
-	body, err := marshalJSONResponse(errorCode, message)
+func createErrorResponseBody(errorCode int, message json.RawMessage, traceID string) ([]byte, error) {
+	body, err := marshalJSONResponse(errorCode, message, traceID)
 	if err != nil {
 		log.GetLogger().Infof("message is not json format")
-		body, err = marshalStringResponse(errorCode, string(message))
+		body, err = marshalStringResponse(errorCode, string(message), traceID)
 		if err != nil {
 			return []byte{}, fmt.Errorf("failed to marshal response data: %s", err)
 		}
@@ -44,24 +44,28 @@ func createErrorResponseBody(errorCode int, message json.RawMessage) ([]byte, er
 	return body, nil
 }
 
-func marshalJSONResponse(errorCode int, message json.RawMessage) ([]byte, error) {
+func marshalJSONResponse(errorCode int, message json.RawMessage, traceID string) ([]byte, error) {
 	body, err := json.Marshal(struct {
 		Code    int             `json:"code"`
 		Message json.RawMessage `json:"message"`
+		TraceID string          `json:"trace_id,omitempty"`
 	}{
 		Code:    errorCode,
 		Message: message,
+		TraceID: traceID,
 	})
 	return body, err
 }
 
-func marshalStringResponse(errorCode int, message string) ([]byte, error) {
+func marshalStringResponse(errorCode int, message string, traceID string) ([]byte, error) {
 	body, err := json.Marshal(struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
+		TraceID string `json:"trace_id,omitempty"`
 	}{
 		Code:    errorCode,
 		Message: message,
+		TraceID: traceID,
 	})
 	return body, err
 }
@@ -71,7 +75,7 @@ func buildResponse(ctx *types.InvokeProcessContext, innerCode int, message inter
 	var err error
 	stringMessage, ok := message.(string)
 	if ok {
-		data, err = marshalStringResponse(innerCode, stringMessage)
+		data, err = marshalStringResponse(innerCode, stringMessage, ctx.TraceID)
 		if err != nil {
 			log.GetLogger().Errorf("failed to marshal string response data, traceID: %s, err: %s",
 				ctx.TraceID, err.Error())
@@ -80,7 +84,7 @@ func buildResponse(ctx *types.InvokeProcessContext, innerCode int, message inter
 	}
 	jsonMessage, ok := message.(json.RawMessage)
 	if ok {
-		data, err = marshalJSONResponse(innerCode, jsonMessage)
+		data, err = marshalJSONResponse(innerCode, jsonMessage, ctx.TraceID)
 		if err != nil {
 			log.GetLogger().Errorf("failed to marshal json response data, traceID: %s, err: %s",
 				ctx.TraceID, err.Error())

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	commonconstant "frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/faas_common/statuscode"
@@ -57,6 +58,7 @@ func makeAcquireOption(ctx *types.InvokeProcessContext, funcSpec *commontypes.Fu
 		DesignateInstanceID: "",
 		RequestID:           "",
 		TraceID:             ctx.TraceID,
+		TraceParent:         util.PeekIgnoreCase(ctx.ReqHeader, commonconstant.HeaderTraceParent),
 		FuncSig:             funcSpec.FuncMetaSignature,
 		Timeout:             getTimeout(util.GetAcquireTimeout(funcSpec), ctx.AcquireTimeout),
 		TrafficLimited:      ctx.TrafficLimited,

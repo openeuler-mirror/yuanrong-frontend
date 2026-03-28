@@ -367,6 +367,9 @@ func writeHTTPResponse(ctx *gin.Context, processCtx *types.InvokeProcessContext)
 			log.GetLogger().Errorf("failed to write DONE error %s", err.Error())
 		}
 	} else {
+		if processCtx.TraceID != "" {
+			ctx.Header(constant.HeaderTraceID, processCtx.TraceID)
+		}
 		_, err := ctx.Writer.Write(processCtx.RespBody)
 		if err != nil {
 			log.GetLogger().Errorf("failed to write response body error %s", err.Error())

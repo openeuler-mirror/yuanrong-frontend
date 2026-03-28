@@ -148,7 +148,7 @@ func doAcquireInvoke(option *types.AcquireOption, ip string, funcKey string, tim
 	defer fasthttp.ReleaseRequest(req)
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
-	err = prepareSchedulerRequest(req, ip, args, option.TraceID)
+	err = prepareSchedulerRequest(req, ip, args, option.TraceID, option.TraceParent)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func doReleaseInvoke(funcKey string, leaseId string, option *types.AcquireOption
 	defer fasthttp.ReleaseRequest(req)
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
-	err = prepareSchedulerRequest(req, schedulerInfo.InstanceInfo.Address, args, option.TraceID)
+	err = prepareSchedulerRequest(req, schedulerInfo.InstanceInfo.Address, args, option.TraceID, option.TraceParent)
 	if err != nil {
 		logger.Warnf("prepare scheduler request failed,, abort release err: %s", err.Error())
 		return
@@ -205,7 +205,7 @@ func doBatchRetainInvoke(batch *BatchRetainLeaseInfos, traceId string) (*types.B
 	defer fasthttp.ReleaseRequest(req)
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
-	err = prepareSchedulerRequest(req, batch.SchedulerAddress, args, traceId)
+	err = prepareSchedulerRequest(req, batch.SchedulerAddress, args, traceId, "")
 	if err != nil {
 		logger.Errorf("prepare scheduler request failed, err: %s", err.Error())
 		return nil, err
@@ -223,7 +223,7 @@ func doBatchRetainInvoke(batch *BatchRetainLeaseInfos, traceId string) (*types.B
 }
 
 func prepareSchedulerRequest(schedulerReq *fasthttp.Request, dstHost string,
-	args []*api.Arg, traceID string,
+	args []*api.Arg, traceID string, traceParent string,
 ) error {
 	schedulerReq.SetRequestURI(callSchedulerPath)
 	schedulerReq.Header.SetMethod(http.MethodPost)
@@ -231,6 +231,9 @@ func prepareSchedulerRequest(schedulerReq *fasthttp.Request, dstHost string,
 	schedulerReq.SetHost(dstHost)
 	schedulerReq.URI().SetScheme(tls.GetURLScheme(false))
 	schedulerReq.Header.Set(constant.HeaderTraceID, traceID)
+	if traceParent != "" {
+		schedulerReq.Header.Set(constant.HeaderTraceParent, traceParent)
+	}
 	argsData, err := json.Marshal(args)
 	if err != nil {
 		return err

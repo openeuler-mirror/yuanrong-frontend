@@ -18,6 +18,7 @@
 package frontend
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strconv"
@@ -25,9 +26,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
+	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/metrics"
@@ -119,6 +125,8 @@ func CreateHandler(ctx *gin.Context) {
 	}()
 
 	remoteClientID, traceID := getHeaderPrams(ctx)
+	spanCtx, span := otel.Tracer(tracer.GetOtelServiceName()).Start(ctx.Request.Context(), "http.create")
+	defer span.End()
 	log.GetLogger().Infof("%s|receive instance create request, remoteClientID: %s", traceID, remoteClientID)
 	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
@@ -129,7 +137,7 @@ func CreateHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
-	resp, err := util.NewClient().CreateInstanceRaw(body)
+	resp, err := util.NewClient().CreateInstanceRaw(body, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance create response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -175,6 +183,8 @@ func InvokeHandler(ctx *gin.Context) {
 	}()
 
 	remoteClientID, traceID := getHeaderPrams(ctx)
+	spanCtx, span := otel.Tracer(tracer.GetOtelServiceName()).Start(ctx.Request.Context(), "http.invoke")
+	defer span.End()
 	log.GetLogger().Infof("%s|receive instance invoke request, remoteClientID: %s", traceID, remoteClientID)
 
 	body, err := io.ReadAll(ctx.Request.Body)
@@ -186,7 +196,7 @@ func InvokeHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
-	notify, err := util.NewClient().InvokeInstanceRaw(body)
+	notify, err := util.NewClient().InvokeInstanceRaw(body, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance invoke response, msg: %s", notify)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -231,6 +241,8 @@ func KillHandler(ctx *gin.Context) {
 	}()
 
 	remoteClientID, traceID := getHeaderPrams(ctx)
+	spanCtx, span := otel.Tracer(tracer.GetOtelServiceName()).Start(ctx.Request.Context(), "http.kill")
+	defer span.End()
 	log.GetLogger().Infof("%s|receives instance kill request, remoteClientID: %s", traceID, remoteClientID)
 	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
@@ -240,7 +252,7 @@ func KillHandler(ctx *gin.Context) {
 		SetCtxResponse(ctx, nil, httpCode)
 		return
 	}
-	resp, err := util.NewClient().KillRaw(body)
+	resp, err := util.NewClient().KillRaw(body, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance kill response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -256,6 +268,14 @@ func getHeaderPrams(ctx *gin.Context) (string, string) {
 	remoteClientID := httputil.GetCompatibleGinHeader(ctx.Request, constant.HeaderRemoteClientId, "remoteClientId")
 	traceID := httputil.GetCompatibleGinHeader(ctx.Request, constant.HeaderTraceID, "traceId")
 	return remoteClientID, traceID
+}
+
+func buildRawRequestOption(ctx context.Context) api.RawRequestOption {
+	carrier := propagation.HeaderCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	return api.RawRequestOption{
+		TraceParent: carrier.Get(constant.HeaderTraceParent),
+	}
 }
 
 // SetCtxResponse set ctx response
