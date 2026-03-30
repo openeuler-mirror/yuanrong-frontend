@@ -35,6 +35,7 @@ import (
 	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/monitor"
+	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/util"
@@ -203,6 +204,8 @@ func SignalHandlerLibruntime(signal int, payload []byte) error {
 func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct{}) error {
 	util.SetAPIClientLibruntime(rt)
 	schedulerproxy.Proxy.RTAPI = rt
+	shutdown := func() {}
+	go tracer.InitCommonTracer(shutdown, "frontend")
 	cfg := config.GetConfig()
 	enableStream := os.Getenv(constant.EnableStream)
 	if strings.ToLower(enableStream) == "true" {

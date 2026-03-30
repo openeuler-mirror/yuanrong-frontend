@@ -187,7 +187,10 @@ func InitTraceID(ctx *gin.Context) string {
 	if config.GetConfig().BusinessType == constant.BusinessTypeWiseCloud {
 		traceID = ctx.Request.Header.Get(constant.CaaSHeaderTraceID)
 	} else {
-		traceID = ctx.Request.Header.Get(constant.HeaderRequestID)
+		traceID = ctx.Request.Header.Get(constant.HeaderTraceID)
+		if traceID == "" {
+			traceID = ctx.Request.Header.Get(constant.HeaderRequestID)
+		}
 	}
 	switch {
 	case traceID == "":
