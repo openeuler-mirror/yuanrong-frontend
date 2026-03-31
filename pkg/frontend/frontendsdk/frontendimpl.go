@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/valyala/fasthttp"
 
@@ -178,10 +179,10 @@ func parseRuntimeCfgAndSetEnv(configFilePath string) (*common.Configuration, err
 
 func parseSystemAuth(cfg *types.Config, runtimeCfg *common.Configuration) error {
 	encryptedKeyConfig := raw.Auth{
-		EnableIam: strconv.FormatBool(cfg.Runtime.SystemAuthConfig.Enable)
-		AccessKey: cfg.Runtime.SystemAuthConfig.AccessKey
-		SecretKey: cfg.Runtime.SystemAuthConfig.SecretKey
-		DataKey: cfg.Runtime.SystemAuthConfig.DataKey
+		EnableIam: strconv.FormatBool(cfg.Runtime.SystemAuthConfig.Enable),
+		AccessKey: cfg.Runtime.SystemAuthConfig.AccessKey,
+		SecretKey: cfg.Runtime.SystemAuthConfig.SecretKey,
+		DataKey: cfg.Runtime.SystemAuthConfig.DataKey,
 	}
 	decryptedKeyConfig := sts.DecryptSystemAuthConfig(encryptedKeyConfig)
 	runtimeCfg.SystemAuthAccessKey = decryptedKeyConfig.AccessKey

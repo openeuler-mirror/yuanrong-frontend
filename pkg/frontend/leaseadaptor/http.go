@@ -141,8 +141,7 @@ func createBatchRetainArgs(batch *BatchRetainLeaseInfos, traceId string) ([]*api
 }
 
 func doAcquireInvoke(option *types.AcquireOption, ip string, funcKey string, timeout int64) (
-	*types.InstanceResponse, error,
-) {
+	*types.InstanceResponse, error) {
 	args, err := createAcquireArgs(option, funcKey)
 	if err != nil {
 		return nil, err
@@ -199,8 +198,7 @@ func createQuerySessionArgs(sessionID, traceID, funcKey string) ([]*api.Arg, err
 }
 
 func doQuerySessionInvoke(sessionID, ip string, funcKey string, timeout int64, traceID string) (
-	*types.InstanceResponse, error,
-) {
+	*types.InstanceResponse, error) {
 	args, err := createQuerySessionArgs(sessionID, traceID, funcKey)
 	if err != nil {
 		return nil, err
@@ -299,8 +297,7 @@ func doBatchRetainInvoke(batch *BatchRetainLeaseInfos, traceId string) (*types.B
 }
 
 func prepareSchedulerRequest(schedulerReq *fasthttp.Request, dstHost string,
-	args []*api.Arg, traceID string,
-) error {
+	args []*api.Arg, traceID string) error {
 	schedulerReq.SetRequestURI(callSchedulerPath)
 	schedulerReq.Header.SetMethod(http.MethodPost)
 	schedulerReq.Header.ResetConnectionClose()

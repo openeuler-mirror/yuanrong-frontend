@@ -153,8 +153,7 @@ type defaultClient struct {
 }
 
 func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOption) (
-	*types.InstanceAllocationInfo, error,
-) {
+	*types.InstanceAllocationInfo, error) {
 	var err error
 	var instanceAllocation api.InstanceAllocation
 	functionMeta := api.FunctionMeta{

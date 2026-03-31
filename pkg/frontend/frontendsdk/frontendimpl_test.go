@@ -24,12 +24,12 @@ import (
 	"testing"
 
 	"github.com/agiledragon/gomonkey/v2"
-	"github.com/magiconair/properties"
 	"github.com/smartystreets/goconvey/convey"
 
 	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/common/faas_common/logger/config"
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/common/faas_common/sts"
 	"frontend/pkg/common/faas_common/sts/raw"
 	commonType "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/wisecloudtool"
@@ -86,6 +86,12 @@ func TestInit(t *testing.T) {
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return errors.New("init log error")
 			}).Reset()
+			defer gomonkey.ApplyFunc(sts.InitStsSDK, (serverCfg raw.ServerConfig) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.DecryptSensitiveConfig, func DecryptSystemAuthConfig(auth raw.Auth) raw.Auth {
+				return raw.Auth{}
+			}).Reset()
 			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
 				return nil
 			}).Reset()
@@ -103,6 +109,12 @@ func TestInit(t *testing.T) {
 				intfs execution.FunctionExecutionIntfs) error {
 				return errors.New("init InitRuntime error")
 			}).Reset()
+			defer gomonkey.ApplyFunc(sts.InitStsSDK, (serverCfg raw.ServerConfig) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.DecryptSensitiveConfig, func DecryptSystemAuthConfig(auth raw.Auth) raw.Auth {
+				return raw.Auth{}
+			}).Reset()
 			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
 				return nil
 			}).Reset()
@@ -119,6 +131,12 @@ func TestInit(t *testing.T) {
 			defer gomonkey.ApplyFunc(posixsdk.InitRuntime, func(conf *common.Configuration,
 				intfs execution.FunctionExecutionIntfs) error {
 				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.InitStsSDK, (serverCfg raw.ServerConfig) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.DecryptSensitiveConfig, func DecryptSystemAuthConfig(auth raw.Auth) raw.Auth {
+				return raw.Auth{}
 			}).Reset()
 			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
 				return nil
