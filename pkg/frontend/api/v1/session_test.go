@@ -18,6 +18,7 @@ package v1
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,7 @@ import (
 	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/common/faas_common/snerror"
 	commontype "frontend/pkg/common/faas_common/types"
+	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/invocation"
 	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/responsehandler"
@@ -50,6 +52,7 @@ func TestInterruptSessionHandler(t *testing.T) {
 		var capturedInstanceID string
 		var capturedPath string
 		var capturedBody string
+		var capturedIsInterrupted bool
 		patches := gomonkey.NewPatches()
 		defer patches.Reset()
 		patches.ApplyFunc(leaseadaptor.QuerySession,
@@ -63,6 +66,7 @@ func TestInterruptSessionHandler(t *testing.T) {
 				capturedInstanceID = instanceID
 				capturedPath = processCtx.ReqPath
 				capturedBody = string(processCtx.ReqBody)
+				capturedIsInterrupted = processCtx.IsInterrupted
 				processCtx.StatusCode = http.StatusOK
 				processCtx.RespBody = []byte("ok")
 				return nil
@@ -81,6 +85,7 @@ func TestInterruptSessionHandler(t *testing.T) {
 		convey.So(err, convey.ShouldBeNil)
 		err = setInstanceSessionHeader(processCtx.ReqHeader, "session-1")
 		convey.So(err, convey.ShouldBeNil)
+		processCtx.IsInterrupted = true
 		err = handleInterruptRequest(processCtx)
 		convey.So(err, convey.ShouldBeNil)
 
@@ -90,6 +95,7 @@ func TestInterruptSessionHandler(t *testing.T) {
 		convey.So(capturedFuncKey, convey.ShouldEqual, "12345678901234561234567890123456/0@yrservice@test-faas-python-runtime-001/")
 		convey.So(capturedSessionID, convey.ShouldEqual, "session-1")
 		convey.So(capturedInstanceID, convey.ShouldEqual, "instance-1")
+		convey.So(capturedIsInterrupted, convey.ShouldBeTrue)
 		convey.So(processCtx.StatusCode, convey.ShouldEqual, http.StatusOK)
 		convey.So(string(processCtx.RespBody), convey.ShouldEqual, "ok")
 		_ = rw
@@ -100,13 +106,19 @@ func TestDeleteSessionHandler(t *testing.T) {
 	convey.Convey("delete session success", t, func() {
 		var capturedKey string
 		var capturedTenantID string
-		patch := gomonkey.ApplyFunc(datasystemclient.KVDelWithRetry,
+		etcdKey, err := initSessionDeleteFuncMeta()
+		convey.So(err, convey.ShouldBeNil)
+		defer func() {
+			convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
+		}()
+		patches := gomonkey.NewPatches()
+		defer patches.Reset()
+		patches.ApplyFunc(datasystemclient.KVDelWithRetry,
 			func(key string, option *datasystemclient.Option, traceID string) error {
 				capturedKey = key
 				capturedTenantID = option.TenantID
 				return nil
 			})
-		defer patch.Reset()
 
 		rw := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(rw)
@@ -120,10 +132,15 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
 		convey.So(capturedTenantID, convey.ShouldEqual, "12345678901234561234567890123456")
 		convey.So(capturedKey, convey.ShouldEqual,
-			"12345678901234561234567890123456/0@yrservice@test-faas-python-runtime-001/-session-1")
+			"yr:agent_session:v1:OmH5nh0gvdq9c7oXxMaE9sKEmZG0_lLjGR2jZ9kY_GQ")
 	})
 
 	convey.Convey("delete session failed", t, func() {
+		etcdKey, err := initSessionDeleteFuncMeta()
+		convey.So(err, convey.ShouldBeNil)
+		defer func() {
+			convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
+		}()
 		patch := gomonkey.ApplyFunc(datasystemclient.KVDelWithRetry,
 			func(key string, option *datasystemclient.Option, traceID string) error {
 				return errors.New("delete failed")
@@ -142,4 +159,19 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusInternalServerError)
 		convey.So(rw.Body.String(), convey.ShouldContainSubstring, "delete failed")
 	})
+}
+
+func initSessionDeleteFuncMeta() (string, error) {
+	metaValue, _ := json.Marshal(commontype.FunctionMetaInfo{
+		FuncMetaData: commontype.FuncMetaData{
+			Name:     "0@yrservice@test-faas-python-runtime-001",
+			TenantID: "12345678901234561234567890123456",
+		},
+	})
+	etcdKey := "//////12345678901234561234567890123456//0@yrservice@test-faas-python-runtime-001//"
+	_ = functionmeta.ProcessDelete(etcdKey, "meta")
+	if err := functionmeta.ProcessUpdate(etcdKey, metaValue, "meta"); err != nil {
+		return "", err
+	}
+	return etcdKey, nil
 }

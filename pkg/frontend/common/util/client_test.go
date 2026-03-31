@@ -42,6 +42,11 @@ func TestNewClientLibruntime(t *testing.T) {
 			Function:   "test",
 			Args:       nil,
 			InstanceID: testInstID,
+			InstanceSession: &commontype.InstanceSessionConfig{
+				SessionID:   "session-1",
+				SessionTTL:  30,
+				Concurrency: 1,
+			},
 		}
 
 		patches := []*gomonkey.Patches{
@@ -68,6 +73,10 @@ func TestNewClientLibruntime(t *testing.T) {
 				func(_ *mockUtils.FakeLibruntimeSdkClient, funcMeta api.FunctionMeta, instanceID string, args []api.Arg,
 					invokeOpt api.InvokeOptions) (string, error) {
 					So(instanceID, ShouldEqual, testInstID)
+					So(invokeOpt.InstanceSession, ShouldNotBeNil)
+					So(invokeOpt.InstanceSession.SessionID, ShouldEqual, "session-1")
+					So(invokeOpt.InstanceSession.SessionTTL, ShouldEqual, 30)
+					So(invokeOpt.InstanceSession.Concurrency, ShouldEqual, 1)
 					return returnObjID, nil
 				}),
 		}
@@ -260,12 +269,14 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 				TraceID:       "id2",
 				InvokeTimeout: 60,
 				AcceptHeader:  httpconstant.AcceptEventStream,
+				IsInterrupted: true,
 			}
 			res := convertCommonInvokeOption(req)
 			So(res.TraceID, ShouldNotBeEmpty)
 			So(res.Timeout, ShouldNotEqual, 0)
 			So(res.InvokeLabels, ShouldNotBeNil)
 			So(res.InvokeLabels["accept"], ShouldNotBeNil)
+			So(res.IsInterrupted, ShouldBeTrue)
 		})
 	})
 }

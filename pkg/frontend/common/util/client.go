@@ -111,6 +111,7 @@ type InvokeRequest struct {
 	TenantID         string
 	AcceptHeader     string
 	ForceInvoke      bool
+	IsInterrupted    bool
 	types.ResponseWriter
 }
 
@@ -317,13 +318,6 @@ func convertInvokeOption(req InvokeRequest) api.InvokeOptions {
 	if req.InstanceLabel != "" {
 		invokeOpt.InvokeLabels[httpconstant.HeaderInstanceLabel] = req.InstanceLabel
 	}
-	if req.InstanceSession != nil {
-		invokeOpt.InstanceSession = &api.InstanceSessionConfig{
-			SessionID:   req.InstanceSession.SessionID,
-			SessionTTL:  req.InstanceSession.SessionTTL,
-			Concurrency: req.InstanceSession.Concurrency,
-		}
-	}
 	return invokeOpt
 }
 
@@ -337,6 +331,14 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 	if req.AcceptHeader == httpconstant.AcceptEventStream {
 		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
 	}
+	if req.InstanceSession != nil {
+		invokeOpt.InstanceSession = &api.InstanceSessionConfig{
+			SessionID:   req.InstanceSession.SessionID,
+			SessionTTL:  req.InstanceSession.SessionTTL,
+			Concurrency: req.InstanceSession.Concurrency,
+		}
+	}
+	invokeOpt.IsInterrupted = req.IsInterrupted
 	return invokeOpt
 }
 

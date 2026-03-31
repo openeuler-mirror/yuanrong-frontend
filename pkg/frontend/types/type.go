@@ -244,6 +244,7 @@ type InvokeProcessContext struct {
 	AcquireTimeout         int64
 	InvokeTimeout          int64
 	InvokeWithoutScheduler bool
+	IsInterrupted          bool
 
 	// request info
 	ReqHeader map[string]string

@@ -17,6 +17,8 @@
 package v1
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,6 +33,7 @@ import (
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
+	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/invocation"
 	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/middleware"
@@ -38,7 +41,11 @@ import (
 	"frontend/pkg/frontend/types"
 )
 
-const sessionIDParam = "sessionId"
+const (
+	sessionIDParam        = "sessionId"
+	agentSessionKeyPrefix = "yr:agent_session:v1"
+	maxSessionKeyLength   = 64
+)
 
 var interruptHandler = newInterruptHandler()
 
@@ -62,6 +69,7 @@ func InterruptSessionHandler(ctx *gin.Context) {
 		writeHTTPResponse(ctx, processCtx)
 		return
 	}
+	processCtx.IsInterrupted = true
 
 	if err = interruptHandler.Handle(processCtx); err != nil {
 		logger.Errorf("interrupt failed,error: %s", err.Error())
@@ -87,7 +95,7 @@ func DeleteSessionHandler(ctx *gin.Context) {
 	}
 
 	funcKey := urnutils.CombineFunctionKey(funcURN.TenantID, funcURN.FuncName, funcURN.FuncVersion)
-	sessionKey := buildSessionDataKey(funcKey, sessionID)
+	sessionKey := buildSessionDataKey(resolveSessionFunctionName(funcKey), sessionID)
 	if err = datasystemclient.KVDelWithRetry(sessionKey, &datasystemclient.Option{TenantID: funcURN.TenantID}, traceID); err != nil {
 		writeSessionError(ctx, http.StatusInternalServerError, statuscode.InternalErrorCode, err)
 		return
@@ -150,8 +158,21 @@ func handleInterruptRequest(processCtx *types.InvokeProcessContext) error {
 	return invocation.InvokeResolvedInstance(processCtx, instanceInfo.InstanceID)
 }
 
-func buildSessionDataKey(funcKey, sessionID string) string {
-	return funcKey + "-" + sessionID
+func buildSessionDataKey(functionName, sessionID string) string {
+	hash := sha256.Sum256([]byte(functionName + ":" + sessionID))
+	sessionKey := agentSessionKeyPrefix + ":" + base64.RawURLEncoding.EncodeToString(hash[:])
+	if len(sessionKey) > maxSessionKeyLength {
+		return sessionKey[:maxSessionKeyLength]
+	}
+	return sessionKey
+}
+
+func resolveSessionFunctionName(funcKey string) string {
+	funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
+	if !ok || funcSpec == nil || funcSpec.FuncMetaData.Name == "" {
+		return ""
+	}
+	return funcSpec.FuncMetaData.Name
 }
 
 func writeSessionError(ctx *gin.Context, httpCode int, innerCode int, err error) {
