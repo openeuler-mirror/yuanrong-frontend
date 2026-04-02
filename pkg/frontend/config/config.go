@@ -320,7 +320,7 @@ func initDefaultMemoryControlConfig() {
 }
 
 func initDefaultTenantLimitQuota() {
-	if fConfig.DefaultTenantLimitQuota == 0 {
+	if fConfig.DefaultTenantLimitQuota <= 0 {
 		fConfig.DefaultTenantLimitQuota = defaultTenantLimitQuota
 	}
 	log.GetLogger().Infof("defaultTenantLimitQuota %d", fConfig.DefaultTenantLimitQuota)

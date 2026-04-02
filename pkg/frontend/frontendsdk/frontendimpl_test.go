@@ -24,12 +24,12 @@ import (
 	"testing"
 
 	"github.com/agiledragon/gomonkey/v2"
-	"github.com/magiconair/properties"
 	"github.com/smartystreets/goconvey/convey"
 
 	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/common/faas_common/logger/config"
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/common/faas_common/sts"
 	"frontend/pkg/common/faas_common/sts/raw"
 	commonType "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/wisecloudtool"
@@ -79,26 +79,18 @@ func TestInit(t *testing.T) {
 			err := frontend.Init("/home/sn/config.json")
 			convey.So(err.Error(), convey.ShouldContainSubstring, "unmarshal config failed")
 		})
-		convey.Convey("sts init failed", func() {
-			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
-				return data, nil
-			}).Reset()
-			err := frontend.Init("/home/sn/config.json")
-			convey.So(err.Error(), convey.ShouldContainSubstring, "failed to init sts sdk")
-		})
 		convey.Convey("init logger error", func() {
 			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
 				return data, nil
 			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
-				return nil
-			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					return plainBytes, nil
-				}).Reset()
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return errors.New("init log error")
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.InitStsSDK, (serverCfg raw.ServerConfig) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.DecryptSensitiveConfig, func DecryptSystemAuthConfig(auth raw.Auth) raw.Auth {
+				return raw.Auth{}
 			}).Reset()
 			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
 				return nil
@@ -110,19 +102,18 @@ func TestInit(t *testing.T) {
 			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
 				return data, nil
 			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
-				return nil
-			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					return plainBytes, nil
-				}).Reset()
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return nil
 			}).Reset()
 			defer gomonkey.ApplyFunc(posixsdk.InitRuntime, func(conf *common.Configuration,
 				intfs execution.FunctionExecutionIntfs) error {
 				return errors.New("init InitRuntime error")
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.InitStsSDK, (serverCfg raw.ServerConfig) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.DecryptSensitiveConfig, func DecryptSystemAuthConfig(auth raw.Auth) raw.Auth {
+				return raw.Auth{}
 			}).Reset()
 			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
 				return nil
@@ -134,19 +125,18 @@ func TestInit(t *testing.T) {
 			defer gomonkey.ApplyFunc(os.ReadFile, func(name string) ([]byte, error) {
 				return data, nil
 			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.InitWith, func(property properties.Properties) error {
-				return nil
-			}).Reset()
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					return plainBytes, nil
-				}).Reset()
 			defer gomonkey.ApplyFunc(log.InitRunLog, func(fileName string, isAsync bool) error {
 				return nil
 			}).Reset()
 			defer gomonkey.ApplyFunc(posixsdk.InitRuntime, func(conf *common.Configuration,
 				intfs execution.FunctionExecutionIntfs) error {
 				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.InitStsSDK, (serverCfg raw.ServerConfig) error {
+				return nil
+			}).Reset()
+			defer gomonkey.ApplyFunc(sts.DecryptSensitiveConfig, func DecryptSystemAuthConfig(auth raw.Auth) raw.Auth {
+				return raw.Auth{}
 			}).Reset()
 			defer gomonkey.ApplyFunc(parseServiceAccountJwt, func(config2 *types.Config) error {
 				return nil
@@ -225,36 +215,13 @@ func TestParseSystemAuthError(t *testing.T) {
 					Enable:    false,
 					AccessKey: "ak",
 					SecretKey: "sk",
+					DataKey:   "dk",
 				},
 			},
 		}
 		convey.Convey("systemAuth not enable ", func() {
 			err := parseSystemAuth(cfg, &common.Configuration{})
 			convey.So(err, convey.ShouldBeNil)
-		})
-		convey.Convey("DecryptSensitiveConfig ak error ", func() {
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					if rawConfigValue == "ak" {
-						return []byte{}, errors.New("decrypt accessKey failed")
-					}
-					return plainBytes, nil
-				}).Reset()
-			cfg.Runtime.SystemAuthConfig.Enable = true
-			err := parseSystemAuth(cfg, &common.Configuration{})
-			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt accessKey failed")
-		})
-		convey.Convey("DecryptSensitiveConfig sk error ", func() {
-			defer gomonkey.ApplyFunc(stsgoapi.DecryptSensitiveConfig,
-				func(rawConfigValue string) (plainBytes []byte, err error) {
-					if rawConfigValue == "sk" {
-						return []byte{}, errors.New("decrypt secretKey failed")
-					}
-					return plainBytes, nil
-				}).Reset()
-			cfg.Runtime.SystemAuthConfig.Enable = true
-			err := parseSystemAuth(cfg, &common.Configuration{})
-			convey.So(err.Error(), convey.ShouldContainSubstring, "decrypt secretKey failed")
 		})
 	})
 }

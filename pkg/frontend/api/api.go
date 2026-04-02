@@ -47,6 +47,10 @@ const (
 	// naming convention: url + method + description
 	urlPostInvoke = "/serverless/v1/functions/" + common.GinUrnParamMark +
 		common.FunctionUrnParam + "/invocations"
+	urlInterruptSession = "/serverless/v1/functions/" + common.GinUrnParamMark +
+		common.FunctionUrnParam + "/sessions" + constants.DynamicRouterParamPrefix + "sessionId/interrupt"
+	urlDeleteSession = "/serverless/v1/functions/" + common.GinUrnParamMark +
+		common.FunctionUrnParam + "/sessions" + constants.DynamicRouterParamPrefix + "sessionId"
 	urlShortInvoke     = "/invocations/:tenant-id/:namespace/:function/"
 	urlShortInvokeOld  = "/:tenant-id/:namespace/:function/"
 	urlStreamSubscribe = "/serverless/v1/stream/subscribe"
@@ -103,6 +107,8 @@ func InitRoute(r *gin.Engine) {
 	r.GET(urlGetHealthCheck, v1.HealthzHandler)
 	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)                       // Health check
 	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))          // Invocation
+	r.POST(urlInterruptSession, tracer.WrapGinHandler(v1.InterruptSessionHandler))
+	r.DELETE(urlDeleteSession, tracer.WrapGinHandler(v1.DeleteSessionHandler))
 	r.POST(urlShortInvoke, tracer.WrapGinHandler(v1.ShortInvokeHandler))    // Invocation
 	r.POST(urlShortInvokeOld, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Deprecated short invocation (backward compatibility)
 	r.GET(urlGetAsyncResult, v1.GetAsyncResultHandler)                      // Async invocation result

@@ -240,11 +240,7 @@ func QuerySession(funcKey, sessionID, traceID string) (*types.InstanceAllocation
 	if queryResponse.ErrorCode != constant.InsReqSuccessCode {
 		return nil, snerror.New(queryResponse.ErrorCode, queryResponse.ErrorMessage)
 	}
-	instanceInfo := &types.InstanceAllocationInfo{
-		InstanceID: queryResponse.InstanceID,
-		Address:    queryResponse.Address,
-	}
-	return instanceInfo, nil
+	return &queryResponse.InstanceAllocationInfo, nil
 }
 
 // 不用关心是否成功
