@@ -147,6 +147,8 @@ type Config struct {
 	EnableEvent             bool             `json:"enableEvent" valid:"optional"`
 	WatchedConfigFilePath   string           `json:"watchedConfigFilePath" valid:"optional"`
 	AccessFaaSSchedulerType string           `json:"accessFaaSSchedulerType" valid:"optional"`
+	// Async invocation config
+	AsyncInvocation *AsyncInvocationConfig `json:"asyncInvocation" valid:"optional"`
 }
 
 // IamConfig -
@@ -178,6 +180,42 @@ type RedisConfig struct {
 // MemoryEvaluatorConfig memory evaluator config
 type MemoryEvaluatorConfig struct {
 	RequestMemoryEvaluator float64 `json:"requestMemoryEvaluator" valid:",optional"`
+}
+
+// AsyncInvocationConfig async invocation feature configuration
+type AsyncInvocationConfig struct {
+	Enabled                bool            `json:"enabled" valid:"optional"`
+	MaxConcurrent          int             `json:"maxConcurrent" valid:"optional"`
+	ResultRetentionMinutes int             `json:"resultRetentionMinutes" valid:"optional"`
+	CleanupIntervalMinutes int             `json:"cleanupIntervalMinutes" valid:"optional"`
+	Webhook                WebhookSettings `json:"webhook" valid:"optional"`
+	Storage                StorageSettings `json:"storage" valid:"optional"`
+}
+
+// WebhookSettings webhook configuration
+type WebhookSettings struct {
+	Enabled        bool          `json:"enabled" valid:"optional"`
+	TimeoutSeconds int           `json:"timeoutSeconds" valid:"optional"`
+	Retry          RetrySettings `json:"retry" valid:"optional"`
+}
+
+// RetrySettings retry configuration
+type RetrySettings struct {
+	MaxAttempts    int `json:"maxAttempts" valid:"optional"`
+	InitialDelayMs int `json:"initialDelayMs" valid:"optional"`
+}
+
+// StorageSettings storage configuration
+type StorageSettings struct {
+	Type  string        `json:"type" valid:"optional"`
+	Redis RedisSettings `json:"redis" valid:"optional"`
+}
+
+// RedisSettings Redis configuration
+type RedisSettings struct {
+	Addr     string `json:"addr" valid:"optional"`
+	Password string `json:"password" valid:"optional"`
+	DB       int    `json:"db" valid:"optional"`
 }
 
 // ShareKeys -
