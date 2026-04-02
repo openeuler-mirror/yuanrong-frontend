@@ -34,7 +34,6 @@ import (
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
-	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/invocation"
 	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/middleware"
@@ -175,14 +174,6 @@ func buildSessionDataKey(functionName, sessionID string) string {
 		return sessionKey[:maxSessionKeyLength]
 	}
 	return sessionKey
-}
-
-func resolveSessionFunctionName(funcKey string) string {
-	funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
-	if !ok || funcSpec == nil || funcSpec.FuncMetaData.Name == "" {
-		return ""
-	}
-	return funcSpec.FuncMetaData.Name
 }
 
 func writeSessionError(ctx *gin.Context, httpCode int, innerCode int, err error) {
