@@ -86,15 +86,15 @@ func (f *fakeClient) Invoke(req util.InvokeRequest) ([]byte, error) {
 	panic("implement me")
 }
 
-func (f *fakeClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
+func (f *fakeClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
+func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (f *fakeClient) KillRaw(killReq []byte) ([]byte, error) {
+func (f *fakeClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
@@ -154,15 +154,15 @@ func (c *fakeFailedClient) IsLibruntime() bool {
 	return false
 }
 
-func (c *fakeFailedClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
+func (c *fakeFailedClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (c *fakeFailedClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
+func (c *fakeFailedClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (c *fakeFailedClient) KillRaw(killReq []byte) ([]byte, error) {
+func (c *fakeFailedClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 

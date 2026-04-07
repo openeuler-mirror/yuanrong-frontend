@@ -2,9 +2,9 @@ package utils
 
 import (
 	"testing"
-	
+
 	"github.com/stretchr/testify/assert"
-	
+
 	"yuanrong.org/kernel/runtime/libruntime/api"
 )
 
@@ -26,13 +26,13 @@ func TestFakeLibruntimeSdkClient(t *testing.T) {
 	err = fakeLibruntimeSdkClient.Kill("", 0, []byte{})
 	assert.Equal(t, nil, err)
 
-	_, err = fakeLibruntimeSdkClient.CreateInstanceRaw([]byte{})
+	_, err = fakeLibruntimeSdkClient.CreateInstanceRaw([]byte{}, api.RawRequestOption{})
 	assert.Equal(t, nil, err)
 
-	_, err = fakeLibruntimeSdkClient.InvokeByInstanceIdRaw([]byte{})
+	_, err = fakeLibruntimeSdkClient.InvokeByInstanceIdRaw([]byte{}, api.RawRequestOption{})
 	assert.Equal(t, nil, err)
 
-	_, err = fakeLibruntimeSdkClient.KillRaw([]byte{})
+	_, err = fakeLibruntimeSdkClient.KillRaw([]byte{}, api.RawRequestOption{})
 	assert.Equal(t, nil, err)
 
 	_, err = fakeLibruntimeSdkClient.SaveState([]byte{})

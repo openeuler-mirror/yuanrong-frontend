@@ -272,6 +272,11 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if token == "" {
 			token = r.URL.Query().Get("token")
 		}
+		if token == "" {
+			if cookie, err := r.Cookie("iam_token"); err == nil {
+				token = cookie.Value
+			}
+		}
 		// Fall back to Sec-WebSocket-Protocol (browser WebSocket subprotocol trick)
 		if token == "" {
 			for _, proto := range websocket.Subprotocols(r) {
@@ -1255,7 +1260,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
                 // Build request payload
                 const payload = {
-                    entrypoint: 'python -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
+                    entrypoint: 'python3 -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
                     runtime_env: {
                         working_dir: '/tmp',
                         env_vars: {
@@ -1468,7 +1473,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
 
             try {
                 const payload = {
-                    entrypoint: 'python -m yr.cli.scripts sandbox ' + instanceId,
+                    entrypoint: 'python3 -m yr.cli.scripts sandbox ' + instanceId,
                     runtime_env: {
                         working_dir: '/tmp'
                     }

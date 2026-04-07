@@ -182,24 +182,24 @@ type MemoryEvaluatorConfig struct {
 
 // AsyncInvocationConfig async invocation feature configuration
 type AsyncInvocationConfig struct {
-	Enabled                 bool              `json:"enabled" valid:"optional"`
-	MaxConcurrent          int               `json:"maxConcurrent" valid:"optional"`
-	ResultRetentionMinutes int               `json:"resultRetentionMinutes" valid:"optional"`
-	CleanupIntervalMinutes int               `json:"cleanupIntervalMinutes" valid:"optional"`
-	Webhook                WebhookSettings   `json:"webhook" valid:"optional"`
-	Storage                StorageSettings   `json:"storage" valid:"optional"`
+	Enabled                bool            `json:"enabled" valid:"optional"`
+	MaxConcurrent          int             `json:"maxConcurrent" valid:"optional"`
+	ResultRetentionMinutes int             `json:"resultRetentionMinutes" valid:"optional"`
+	CleanupIntervalMinutes int             `json:"cleanupIntervalMinutes" valid:"optional"`
+	Webhook                WebhookSettings `json:"webhook" valid:"optional"`
+	Storage                StorageSettings `json:"storage" valid:"optional"`
 }
 
 // WebhookSettings webhook configuration
 type WebhookSettings struct {
-	Enabled        bool           `json:"enabled" valid:"optional"`
-	TimeoutSeconds int            `json:"timeoutSeconds" valid:"optional"`
-	Retry          RetrySettings  `json:"retry" valid:"optional"`
+	Enabled        bool          `json:"enabled" valid:"optional"`
+	TimeoutSeconds int           `json:"timeoutSeconds" valid:"optional"`
+	Retry          RetrySettings `json:"retry" valid:"optional"`
 }
 
 // RetrySettings retry configuration
 type RetrySettings struct {
-	MaxAttempts   int `json:"maxAttempts" valid:"optional"`
+	MaxAttempts    int `json:"maxAttempts" valid:"optional"`
 	InitialDelayMs int `json:"initialDelayMs" valid:"optional"`
 }
 

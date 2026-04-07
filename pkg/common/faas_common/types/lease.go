@@ -31,6 +31,7 @@ type AcquireOption struct {
 	SchedulerAddress    string
 	RequestID           string
 	TraceID             string
+	TraceParent         string
 	FuncSig             string
 	ResourceSpecs       map[string]int64
 	PoolLabel           string

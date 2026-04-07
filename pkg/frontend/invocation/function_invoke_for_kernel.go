@@ -415,6 +415,7 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 	req := &util.InvokeRequest{
 		Function:        ctx.FuncKey,
 		TraceID:         ctx.TraceID,
+		TraceParent:     util.PeekIgnoreCase(ctx.ReqHeader, constant.HeaderTraceParent),
 		RequestID:       ctx.RequestID,
 		ReturnObjectIDs: []string{},
 		ResourceSpecs:   resourceSpecs,

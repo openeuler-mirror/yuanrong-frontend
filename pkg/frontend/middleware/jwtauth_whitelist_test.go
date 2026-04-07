@@ -103,6 +103,24 @@ func TestIsInAuthWhitelist(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "auth login page - should be in whitelist",
+			path:     "/auth/login-page",
+			method:   "GET",
+			expected: true,
+		},
+		{
+			name:     "auth callback - should be in whitelist",
+			path:     "/auth/callback",
+			method:   "GET",
+			expected: true,
+		},
+		{
+			name:     "auth token exchange - should be in whitelist",
+			path:     "/auth/token/exchange",
+			method:   "POST",
+			expected: true,
+		},
+		{
 			name:     "invoke endpoint - should not be in whitelist",
 			path:     "/serverless/v1/posix/instance/invoke",
 			method:   "POST",
@@ -269,11 +287,11 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 			shouldCallNext:     true,
 		},
 		{
-			name:       "terminal path now requires auth",
-			path:       "/terminal/ws",
-			method:     "GET",
-			enableAuth: true,
-			authHeader: "",
+			name:               "terminal path now requires auth",
+			path:               "/terminal/ws",
+			method:             "GET",
+			enableAuth:         true,
+			authHeader:         "",
 			expectedStatusCode: http.StatusOK, // No auth header but optional auth
 			shouldCallNext:     true,
 		},

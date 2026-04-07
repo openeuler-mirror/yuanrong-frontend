@@ -19,8 +19,11 @@ package tracer
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -28,14 +31,17 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
-	"go.opentelemetry.io/otel/sdk/trace"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/semconv/v1.4.0"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 
 	"frontend/pkg/common/faas_common/logger/log"
 )
 
 const (
+	EnableTraceEnvKey = "ENABLE_TRACE"
+	TraceConfigEnvKey = "TRACE_CONFIG"
 	// OtelGRPCEndpointEnvKey -
 	OtelGRPCEndpointEnvKey = "OTEL_GRPC_ENDPOINT"
 	// OtelGRPCTokenEnvKey -
@@ -54,6 +60,47 @@ var (
 	otelServiceName  = os.Getenv(OtelServiceNameEnvKey)
 	enableOTELTracer = os.Getenv(OtelEnableSampleEnvKey) == "true"
 )
+
+type otlpGrpcExporterConfig struct {
+	Enable   bool   `json:"enable"`
+	Endpoint string `json:"endpoint"`
+	Token    string `json:"token"`
+}
+
+type traceConfig struct {
+	OTLPGrpcExporter otlpGrpcExporterConfig `json:"otlpGrpcExporter"`
+}
+
+func loadCommonTracerConfig(serviceName string) error {
+	otelServiceName = serviceName
+	otelGRPCEndpoint = ""
+	otelGRPCToken = ""
+	enableOTELTracer = false
+
+	if strings.EqualFold(os.Getenv(EnableTraceEnvKey), "true") {
+		rawTraceConfig := os.Getenv(TraceConfigEnvKey)
+		if rawTraceConfig != "" {
+			var cfg traceConfig
+			if err := json.Unmarshal([]byte(rawTraceConfig), &cfg); err != nil {
+				return err
+			}
+			if cfg.OTLPGrpcExporter.Enable && cfg.OTLPGrpcExporter.Endpoint != "" {
+				otelGRPCEndpoint = cfg.OTLPGrpcExporter.Endpoint
+				otelGRPCToken = cfg.OTLPGrpcExporter.Token
+				enableOTELTracer = true
+			}
+			return nil
+		}
+	}
+
+	otelGRPCEndpoint = os.Getenv(OtelGRPCEndpointEnvKey)
+	otelGRPCToken = os.Getenv(OtelGRPCTokenEnvKey)
+	enableOTELTracer = strings.EqualFold(os.Getenv(OtelEnableSampleEnvKey), "true")
+	if serviceName == "" {
+		otelServiceName = os.Getenv(OtelServiceNameEnvKey)
+	}
+	return nil
+}
 
 // GetOtelGRPCEndpoint -
 func GetOtelGRPCEndpoint() string {
@@ -82,6 +129,11 @@ func EnableCommonTracer() bool {
 
 // InitCommonTracer init common tracer with service name
 func InitCommonTracer(shutdown func(), serviceName string) {
+	if err := loadCommonTracerConfig(serviceName); err != nil {
+		fmt.Printf("failed to parse %s with error %s\n", TraceConfigEnvKey, err.Error())
+		log.GetLogger().Warnf("failed to parse %s with error %s", TraceConfigEnvKey, err.Error())
+		return
+	}
 	var err error
 	shutdown, err = InitProvider(context.Background())
 	if err != nil {
@@ -145,7 +197,32 @@ func makeTracerExporter(ctx context.Context) (*otlptrace.Exporter, error) {
 	return traceExporter, nil
 }
 
-func makeTraceProvider(ctx context.Context, traceExporter *otlptrace.Exporter) (*trace.TracerProvider, error) {
+type contextAwareIDGenerator struct{}
+
+func (g *contextAwareIDGenerator) NewIDs(ctx context.Context) (oteltrace.TraceID, oteltrace.SpanID) {
+	var spanID oteltrace.SpanID
+	if _, err := rand.Read(spanID[:]); err != nil {
+		return oteltrace.TraceID{}, oteltrace.SpanID{}
+	}
+	if traceID, ok := RootTraceIDFromContext(ctx); ok {
+		return traceID, spanID
+	}
+	var traceID oteltrace.TraceID
+	if _, err := rand.Read(traceID[:]); err != nil {
+		return oteltrace.TraceID{}, oteltrace.SpanID{}
+	}
+	return traceID, spanID
+}
+
+func (g *contextAwareIDGenerator) NewSpanID(ctx context.Context, traceID oteltrace.TraceID) oteltrace.SpanID {
+	var spanID oteltrace.SpanID
+	if _, err := rand.Read(spanID[:]); err != nil {
+		return oteltrace.SpanID{}
+	}
+	return spanID
+}
+
+func makeTraceProvider(ctx context.Context, traceExporter *otlptrace.Exporter) (*sdktrace.TracerProvider, error) {
 	res, err := resource.New(ctx,
 		resource.WithProcess(),
 		resource.WithTelemetrySDK(),
@@ -161,15 +238,16 @@ func makeTraceProvider(ctx context.Context, traceExporter *otlptrace.Exporter) (
 		return nil, err
 	}
 
-	bsp := trace.NewBatchSpanProcessor(traceExporter)
-	sample := trace.NeverSample()
+	bsp := sdktrace.NewBatchSpanProcessor(traceExporter)
+	sample := sdktrace.NeverSample()
 	if enableOTELTracer {
-		sample = trace.AlwaysSample()
+		sample = sdktrace.AlwaysSample()
 	}
-	tracerProvider := trace.NewTracerProvider(
-		trace.WithSampler(sample),
-		trace.WithResource(res),
-		trace.WithSpanProcessor(bsp),
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sample),
+		sdktrace.WithResource(res),
+		sdktrace.WithSpanProcessor(bsp),
+		sdktrace.WithIDGenerator(&contextAwareIDGenerator{}),
 	)
 	return tracerProvider, nil
 }

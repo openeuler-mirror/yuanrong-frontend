@@ -21,6 +21,7 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
+	commonconstant "frontend/pkg/common/faas_common/constant"
 	commontypes "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/types"
@@ -107,10 +108,11 @@ func TestMakeAcquireOption(t *testing.T) {
 				AcquireTimeout: 500,
 				TrafficLimited: true,
 				ReqHeader: map[string]string{
-					"x-pool-label":       "test-pool",
-					"x-instance-label":   "test-instance",
-					"x-instance-session": `{"session":"test"}`,
-					"x-invoke-tag":       `{"key":"value"}`,
+					"x-pool-label":                   "test-pool",
+					"x-instance-label":               "test-instance",
+					"x-instance-session":             `{"session":"test"}`,
+					"x-invoke-tag":                   `{"key":"value"}`,
+					commonconstant.HeaderTraceParent: "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01",
 				},
 			}
 
@@ -121,6 +123,7 @@ func TestMakeAcquireOption(t *testing.T) {
 			So(option.Timeout, ShouldEqual, 500)
 			So(option.TrafficLimited, ShouldBeTrue)
 			So(option.InvokeTag, ShouldContainKey, "key")
+			So(option.TraceParent, ShouldEqual, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 		})
 
 	})
