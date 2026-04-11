@@ -17,6 +17,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -29,6 +30,27 @@ import (
 )
 
 func TestInterfaceLogger(t *testing.T) {
+	testDefaultCoreInfo := config.CoreInfo{
+		FilePath:   os.Getenv("WORKSPACE"),
+		Level:      "INFO",
+		Tick:       0, // Unit: Second
+		First:      0, // Unit: Number of logs
+		Thereafter: 0, // Unit: Number of logs
+		SingleSize: 100,
+		Threshold:  10,
+		Tracing:    false, // tracing log switch
+		Disable:    false, // Disable file logger
+	}
+	coreInfoBytes, err := json.Marshal(testDefaultCoreInfo)
+	assert.Empty(t, err)
+
+	logConfig := os.Getenv("LOG_CONFIG")
+	defer func() {
+		os.Setenv("LOG_CONFIG", logConfig)
+	}()
+	err = os.Setenv("LOG_CONFIG", string(coreInfoBytes))
+	assert.Empty(t, err)
+
 	cfg := InterfaceEncoderConfig{ModuleName: "WorkerManager"}
 	interfaceLog, err := NewInterfaceLogger("", "worker-manager-interface", cfg)
 	interfaceLog.Write("123")

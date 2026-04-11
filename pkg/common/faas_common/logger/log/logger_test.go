@@ -18,6 +18,7 @@ package log
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/agiledragon/gomonkey/v2"
@@ -80,7 +81,10 @@ func TestFormatLogger(t *testing.T) {
 		assert.NotNil(t, err)
 	})
 	convey.Convey("new log success", t, func() {
-		logger, err := NewFormatLogger(constant.MonitorFileName, true, config.CoreInfo{})
+		filePath := os.Getenv("WORKSPACE")
+		logger, err := NewFormatLogger("test", true, config.CoreInfo{
+			FilePath: filePath,
+		})
 		assert.Nil(t, err)
 		logger.With(uberZap.Any("name", "test-log"))
 		logger.Info("info log")

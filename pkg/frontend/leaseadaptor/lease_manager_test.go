@@ -164,7 +164,7 @@ func TestInstanceManager_AcquireInstance(t *testing.T) {
 				}).Reset()
 			info, err := im.AcquireInstance(&types.InvokeProcessContext{
 				FuncKey: "test-func",
-			}, &commType.FuncSpec{}, log.GetLogger())
+			}, &commType.FuncSpec{InstanceMetaData: commType.InstanceMetaData{MaxInstance: 5}}, log.GetLogger())
 			convey.ShouldBeNil(err)
 			convey.ShouldEqual(info.FuncKey, "test-func")
 			convey.ShouldEqual(info.ThreadID, "test-lease-1")
