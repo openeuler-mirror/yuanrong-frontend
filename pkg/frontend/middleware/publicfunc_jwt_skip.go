@@ -46,8 +46,8 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 		// Check if this is an invoke URL
 		if isInvokeURL(path) {
 
-			// Extract function key and check if it's public
-			funcKey, err := extractFunctionKey(c)
+			// Extract all possible function keys and check if all are public
+			funcKeys, err := extractFunctionKeys(c)
 			if err != nil {
 				// If we can't extract function key, let the request continue
 				log.GetLogger().Debugf("Failed to extract function key from URL %s: %v", path, err)
@@ -55,8 +55,8 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 				return
 			}
 
-			// If funcKey is empty, this might be a test or invalid URL - let the request continue
-			if funcKey == "" {
+			// If funcKeys is empty, this might be a test or invalid URL - let the request continue
+			if len(funcKeys) == 0 {
 				log.GetLogger().Debugf("Empty function key extracted from URL %s", path)
 				c.Next()
 				return
@@ -65,18 +65,9 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 			// Mark as invoke URL for downstream middleware
 			c.Set(isInvokeURLKey, true)
 
-			// Load function metadata to check if it's public
-			funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
-			if !ok {
-				// If we can't load function spec, let the request continue
-				log.GetLogger().Debugf("Failed to load function spec for %s", funcKey)
-				c.Next()
-				return
-			}
-
-			// If function is public, set flag to skip JWT authentication
-			if funcSpec != nil && funcSpec.FuncMetaData.IsFuncPublic {
-				log.GetLogger().Infof("Function %s is public, setting flag to skip JWT authentication", funcKey)
+			if allFunctionsPublic(funcKeys) {
+				log.GetLogger().Infof("All candidate functions %v are public, setting flag to skip JWT authentication",
+					funcKeys)
 				c.Set(skipJWTAuthKey, true)
 			}
 		}
@@ -128,31 +119,18 @@ func isInvokeURL(path string) bool {
 	return false
 }
 
-// extractFunctionKey extracts the function key from the request context
-func extractFunctionKey(c *gin.Context) (string, error) {
+// extractFunctionKeys extracts all possible function keys from the request context without advancing RR.
+func extractFunctionKeys(c *gin.Context) ([]string, error) {
 	path := c.Request.URL.Path
 
 	// Handle standard invoke URL: /serverless/v1/functions/{urn}/invocations
 	if strings.HasPrefix(path, "/serverless/v1/functions/") && strings.HasSuffix(path, "/invocations") {
 		plainURN := c.Param(common.FunctionUrnParam)
 		if plainURN == "" {
-			return "", nil
+			return nil, nil
 		}
 
-		// Get headers for alias resolution
-		params := make(map[string]string)
-		for k := range c.Request.Header {
-			params[strings.ToLower(k)] = c.Request.Header.Get(k)
-		}
-
-		// Resolve alias to get actual function URN
-		functionURN := aliasroute.GetAliases().GetFuncVersionURNWithParams(plainURN, params)
-		functionInfo, err := urnutils.GetFunctionInfo(functionURN)
-		if err != nil {
-			return "", err
-		}
-
-		return urnutils.CombineFunctionKey(functionInfo.TenantID, functionInfo.FuncName, functionInfo.FuncVersion), nil
+		return buildFunctionKeys(aliasroute.GetAliases().GetCandidateFuncVersionURNsFromAlias(plainURN))
 	}
 
 	// Handle short invoke URL: /invocations/{tenant-id}/{namespace}/{function}/
@@ -162,24 +140,38 @@ func extractFunctionKey(c *gin.Context) (string, error) {
 
 	if tenantID != "" && namespace != "" && functionName != "" {
 		plainURN := urnutils.BuildFunctionShortURN(tenantID, namespace, functionName)
-
-		// Get headers for alias resolution
-		params := make(map[string]string)
-		for k := range c.Request.Header {
-			params[strings.ToLower(k)] = c.Request.Header.Get(k)
-		}
-
-		// Resolve alias to get actual function URN
-		functionURN := aliasroute.GetAliases().GetFuncVersionURNWithParams(plainURN, params)
-		functionInfo, err := urnutils.GetFunctionInfo(functionURN)
-		if err != nil {
-			return "", err
-		}
-
-		return urnutils.CombineFunctionKey(functionInfo.TenantID, functionInfo.FuncName, functionInfo.FuncVersion), nil
+		return buildFunctionKeys(aliasroute.GetAliases().GetCandidateFuncVersionURNsFromAlias(plainURN))
 	}
 
-	return "", nil
+	return nil, nil
+}
+
+func buildFunctionKeys(functionURNs []string) ([]string, error) {
+	funcKeys := make([]string, 0, len(functionURNs))
+	for _, functionURN := range functionURNs {
+		functionInfo, err := urnutils.GetFunctionInfo(functionURN)
+		if err != nil {
+			return nil, err
+		}
+		funcKeys = append(funcKeys,
+			urnutils.CombineFunctionKey(functionInfo.TenantID, functionInfo.FuncName, functionInfo.FuncVersion))
+	}
+	return funcKeys, nil
+}
+
+func allFunctionsPublic(funcKeys []string) bool {
+	for _, funcKey := range funcKeys {
+		funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
+		if !ok {
+			log.GetLogger().Debugf("Failed to load function spec for %s", funcKey)
+			return false
+		}
+		if funcSpec == nil || !funcSpec.FuncMetaData.IsFuncPublic {
+			log.GetLogger().Debugf("Function %s is not public", funcKey)
+			return false
+		}
+	}
+	return true
 }
 
 // ShouldSkipJWTAuth checks if JWT authentication should be skipped for the current request

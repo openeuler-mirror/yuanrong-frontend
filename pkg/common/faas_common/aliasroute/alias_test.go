@@ -162,6 +162,37 @@ func TestGetFuncURNFromAlias(t *testing.T) {
 
 }
 
+func TestGetCandidateFuncVersionURNsFromAlias(t *testing.T) {
+	ClearAliasRoute()
+	defer ClearAliasRoute()
+
+	convey.Convey("alias does not exist", t, func() {
+		urns := aliases.GetCandidateFuncVersionURNsFromAlias(aliasURN)
+		convey.So(urns, convey.ShouldResemble, []string{aliasURN})
+	})
+
+	convey.Convey("weight alias only returns routable versions", t, func() {
+		fakeAliasEle := GetFakeWeightAliasEle()
+		aliases.AddAlias(fakeAliasEle)
+		urns := aliases.GetCandidateFuncVersionURNsFromAlias(fakeAliasEle.AliasURN)
+		convey.So(urns, convey.ShouldResemble,
+			[]string{
+				"sn:cn:yrk:c53626012ba84727b938ca8bf03108ef:function:0@default@aliasfunc:latest",
+			})
+	})
+
+	convey.Convey("rule alias returns default and gray versions", t, func() {
+		fakeAliasEle := GetFakeRuleAliasEle()
+		aliases.AddAlias(fakeAliasEle)
+		urns := aliases.GetCandidateFuncVersionURNsFromAlias(fakeAliasEle.AliasURN)
+		convey.So(urns, convey.ShouldResemble,
+			[]string{
+				"sn:cn:yrk:12345678901234561234567890123456:function:helloworld:$latest",
+				"sn:cn:yrk:172120022620195843:function:0@default@test_func:3",
+			})
+	})
+}
+
 func TestFetchInfoFromAliasKey(t *testing.T) {
 	path := "/sn/aliases/business/yrk/tenant/12345678901234561234567890123456/function/helloworld/myalias"
 	aliasKey := FetchInfoFromAliasKey(path)

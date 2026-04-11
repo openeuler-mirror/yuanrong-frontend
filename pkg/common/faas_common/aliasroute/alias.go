@@ -129,6 +129,21 @@ func (a *Aliases) GetFuncURNFromAlias(urn string) string {
 	return existAlias.getFuncVersionURN()
 }
 
+// GetCandidateFuncVersionURNsFromAlias returns all possible routed target URNs for alias pre-checks
+// without advancing RR. If the alias does not exist, the original URN is returned as the only candidate.
+func (a *Aliases) GetCandidateFuncVersionURNsFromAlias(aliasURN string) []string {
+	existAliasIf, exist := a.AliasMap.Load(aliasURN)
+	if !exist {
+		return []string{aliasURN}
+	}
+	existAlias, ok := existAliasIf.(*AliasElement)
+	if !ok {
+		log.GetLogger().Warnf("Failed to convert the alias urn %s", aliasURN)
+		return nil
+	}
+	return existAlias.getCandidateFuncVersionURNs()
+}
+
 // GetFuncVersionURNWithParams gets the routing version URN of stateless functionName with parmas for rules
 func (a *Aliases) GetFuncVersionURNWithParams(aliasURN string, params map[string]string) string {
 	existAliasIf, exist := a.AliasMap.Load(aliasURN)
@@ -245,6 +260,37 @@ func (a *AliasElement) getFuncVersionURN() string {
 		return ""
 	}
 	return res
+}
+
+func (a *AliasElement) getCandidateFuncVersionURNs() []string {
+	a.aliasLock.RLock()
+	defer a.aliasLock.RUnlock()
+
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(a.RoutingConfigs)+2)
+	appendURN := func(urn string) {
+		if urn == "" {
+			return
+		}
+		if _, exists := seen[urn]; exists {
+			return
+		}
+		seen[urn] = struct{}{}
+		result = append(result, urn)
+	}
+
+	appendURN(a.FunctionVersionURN)
+	if a.RoutingType == routingTypeRule {
+		appendURN(a.RoutingRules.GrayVersion)
+		return result
+	}
+	for _, config := range a.RoutingConfigs {
+		if config.Weight <= 0 {
+			continue
+		}
+		appendURN(config.FunctionVersionURN)
+	}
+	return result
 }
 
 func (a *AliasElement) resetRR() {
