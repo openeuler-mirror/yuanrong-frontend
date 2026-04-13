@@ -331,10 +331,10 @@ func assembleBatchRetainLeaseInfo(funcKey string, pool *LeasePool, lease *Instan
 		MaxProcTime: report.MaxProcTime,
 		IsAbnormal:  report.IsAbnormal,
 		PoolKey:     getPoolKey(funcKey, lease.acquireOption),
+		FunctionKey: funcKey,
 	}
 
 	if lease.reacquire {
-		info.FunctionKey = funcKey
 		extraReacquireDataInfo := make(map[string][]byte)
 		extraReacquireDataInfo["resourcesData"] = []byte(pool.resSpecStr)
 		if pool.session != nil {
@@ -458,6 +458,27 @@ func (flps *FuncKeyLeasePools) processBatchLease(exitLeases []*InstanceLease,
 	}
 }
 
+func (flps *FuncKeyLeasePools) processSucceedRetainLeaseIdsBare(batch *BatchRetainLeaseInfos,
+	infos map[string]commontypes.InstanceAllocationSucceedInfo) {
+	for leaseId, _ := range infos {
+		info := batch.infos[leaseId]
+		pool, ok := flps.leasePools[info.PoolKey]
+		if !ok {
+			continue
+		}
+		pool.Lock()
+		lease, ok := pool.leaseMap[leaseId]
+		if !ok {
+			pool.Unlock()
+			continue
+		}
+		lease.Lock()
+		lease.reacquire = false
+		lease.Unlock()
+		pool.Unlock()
+	}
+}
+
 func (flps *FuncKeyLeasePools) processBatchResponse(batch *BatchRetainLeaseInfos,
 	resp *commontypes.BatchInstanceResponse) {
 	flps.interval.Store(resp.LeaseInterval / 2 * int64(time.Millisecond)) // half of leaseInterval
@@ -465,6 +486,7 @@ func (flps *FuncKeyLeasePools) processBatchResponse(batch *BatchRetainLeaseInfos
 
 	flps.Lock()
 	defer flps.Unlock()
+	flps.processSucceedRetainLeaseIdsBare(batch, resp.InstanceAllocSucceed)
 	for leaseId, schedulerInstanceId := range reacquireLeaseIds {
 		info := batch.infos[leaseId]
 		pool, ok := flps.leasePools[info.PoolKey]

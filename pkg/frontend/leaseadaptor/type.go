@@ -34,17 +34,3 @@ type BatchRetainLeaseInfo struct {
 	FunctionKey   string `json:"functionKey"`
 	PoolKey       string
 }
-
-// InstanceAllocationSucceedInfo -
-type InstanceAllocationSucceedInfo struct {
-	FuncKey    string `json:"funcKey"`
-	FuncSig    string `json:"funcSig"`
-	InstanceID string `json:"instanceID"`
-	ThreadID   string `json:"threadID"`
-}
-
-// InstanceAllocationFailedInfo -
-type InstanceAllocationFailedInfo struct {
-	ErrorCode    int    `json:"errorCode"`
-	ErrorMessage string `json:"errorMessage"`
-}
