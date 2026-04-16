@@ -1250,141 +1250,48 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const submitBtn = document.getElementById('submit-sandbox-btn');
 
             try {
-                // Disable button and show loading state
                 submitBtn.disabled = true;
                 submitBtn.textContent = '⏳ Creating...';
 
-                // Get current token
                 const currentParams = new URLSearchParams(window.location.search);
                 const token = currentParams.get('token');
 
-                // Build request payload
-                const payload = {
-                    entrypoint: 'python3 -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
-                    runtime_env: {
-                        working_dir: '/tmp',
-                        env_vars: {
-                            'YR_JWT_TOKEN': token || ''
-                        }
-                    }
-                };
-
-                // Build request options
                 const fetchOptions = {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({ name, namespace, tenant })
                 };
-
                 if (token) {
                     fetchOptions.headers['X-Auth'] = token;
                 }
 
-                // Call job creation API
-                const response = await fetch(jobsApiUrl, fetchOptions);
-
+                const response = await fetch('%s/api/sandbox/create', fetchOptions);
                 if (!response.ok) {
-                    throw new Error('Failed to create job: ' + response.status);
+                    throw new Error('Failed to create sandbox: ' + response.status);
                 }
 
                 const result = await response.json();
-
-                // Check returned submission_id
-                if (!result.submission_id) {
-                    throw new Error('submission_id not found in API response');
+                if (!result.instance_id) {
+                    throw new Error('instance_id not found in API response');
                 }
 
-                const submissionId = result.submission_id;
-                submitBtn.textContent = '⏳ Waiting...';
-
-                // Poll job status
-                await pollJobStatus(submissionId, namespace, name, tenant, token);
+                // Redirect immediately — WebSocket will retry until the sandbox is ready
+                const params = new URLSearchParams();
+                params.set('instance', result.instance_id);
+                params.set('tenant_id', tenant);
+                if (token) {
+                    params.set('token', token);
+                }
+                window.location.search = params.toString();
 
             } catch (error) {
                 console.error('Failed to create sandbox:', error);
                 alert('Failed to create sandbox: ' + error.message);
-
-                // Restore button state
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Create & Connect';
             }
-        }
-
-        // Poll job status
-        async function pollJobStatus(submissionId, namespace, name, tenant, token) {
-            const maxAttempts = 60; // max poll attempts
-            const pollInterval = 2000; // poll every 2 seconds
-            let attempts = 0;
-
-            const poll = async () => {
-                try {
-                    // Build request options
-                    const fetchOptions = {};
-                    if (token) {
-                        fetchOptions.headers = {
-                            'X-Auth': token
-                        };
-                    }
-
-                    // Query job status
-                    const response = await fetch('%s/api/jobs/' + encodeURIComponent(submissionId), fetchOptions);
-
-                    if (!response.ok) {
-                        throw new Error('Failed to query job status: ' + response.status);
-                    }
-
-                    const jobInfo = await response.json();
-                    const status = jobInfo.status;
-
-                    if (status === 'SUCCEEDED') {
-                        // Succeeded, redirect to web terminal
-                        const instanceId = namespace + '-' + name;
-                        const params = new URLSearchParams();
-                        params.set('instance', instanceId);
-                        params.set('tenant_id', tenant);
-                        if (token) {
-                            params.set('token', token);
-                        }
-                        window.location.search = params.toString();
-                        return;
-                    } else if (status === 'FAILED') {
-                        // Failed
-                        document.getElementById('custom-dialog-overlay').style.display = 'none';
-                        alert('Sandbox creation failed: job execution failed\n' + (jobInfo.message || ''));
-                        document.getElementById('submit-sandbox-btn').disabled = false;
-                        document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
-                        return;
-                    } else if (status === 'STOPPED') {
-                        // Stopped
-                        document.getElementById('custom-dialog-overlay').style.display = 'none';
-                        alert('Sandbox creation failed: job was stopped\n' + (jobInfo.message || ''));
-                        document.getElementById('submit-sandbox-btn').disabled = false;
-                        document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
-                        return;
-                    } else if (status === 'PENDING' || status === 'RUNNING') {
-                        // Still running, continue polling
-                        attempts++;
-                        if (attempts >= maxAttempts) {
-                            throw new Error('Timed out waiting. Check instance list later.');
-                        }
-                        setTimeout(poll, pollInterval);
-                        return;
-                    } else {
-                        // Unknown status
-                        throw new Error('Unknown job status: ' + status);
-                    }
-                } catch (error) {
-                    document.getElementById('custom-dialog-overlay').style.display = 'none';
-                    alert('Failed to query job status: ' + error.message);
-                    document.getElementById('submit-sandbox-btn').disabled = false;
-                    document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
-                }
-            };
-
-            // Start polling
-            poll();
         }
 
         // Show custom dialog
@@ -1472,33 +1379,19 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             }
 
             try {
-                const payload = {
-                    entrypoint: 'python3 -m yr.cli.scripts sandbox ' + instanceId,
-                    runtime_env: {
-                        working_dir: '/tmp'
-                    }
-                };
-
                 const fetchOptions = {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
+                    method: 'DELETE',
+                    headers: {}
                 };
                 if (token) {
                     fetchOptions.headers['X-Auth'] = token;
                 }
 
-                const response = await fetch(jobsApiUrl, fetchOptions);
+                const response = await fetch('%s/api/sandbox/' + encodeURIComponent(instanceId), fetchOptions);
                 if (!response.ok) {
-                    throw new Error('Failed to submit delete job: ' + response.status);
+                    throw new Error('Failed to delete sandbox: ' + response.status);
                 }
 
-                const result = await response.json();
-                alert('Delete job submitted' + (result && result.submission_id ? (': ' + result.submission_id) : ''));
-
-                // Refresh list after delete request is submitted
                 loadInstances(currentPage);
             } catch (error) {
                 console.error('Failed to delete instance:', error);
@@ -1761,20 +1654,107 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const _wsParams = new URLSearchParams(window.location.search);
             const _wsToken = _wsParams.get('token');
             _wsParams.delete('token');
-            // Add unique query suffix to avoid client/proxy caching surprises across tabs
-            const uniqueQuerySuffix = Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9);
-            _wsParams.set('_t', uniqueQuerySuffix);
-            const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + (_wsParams.toString() ? '?' + _wsParams.toString() : '');
-            document.getElementById('ws-url').textContent = wsUrl;
-
-            // Pass token as subprotocol (backend echoes it back to complete the handshake)
-            // IMPORTANT: pass raw token only, do not append suffixes
             const subprotocols = _wsToken ? [_wsToken] : [];
-            const ws = new WebSocket(wsUrl, subprotocols);
-            ws.binaryType = 'arraybuffer';
+
+            // Retry state: when a sandbox was just created it may not be ready immediately.
+            // Retry up to wsMaxRetries times before giving up.
+            const wsMaxRetries = 30;
+            const wsRetryIntervalMs = 3000;
+            let wsRetryCount = 0;
+            let wsEverConnected = false;
+            let ws;
+
+            function connectWebSocket() {
+                // Refresh unique suffix on each attempt to avoid proxy caching
+                const wsParamsCopy = new URLSearchParams(_wsParams.toString());
+                wsParamsCopy.set('_t', Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9));
+                const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + (wsParamsCopy.toString() ? '?' + wsParamsCopy.toString() : '');
+                document.getElementById('ws-url').textContent = wsUrl;
+
+                ws = new WebSocket(wsUrl, subprotocols);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    wsEverConnected = true;
+                    wsRetryCount = 0;
+                    document.getElementById('status-text').textContent = 'Connected';
+                    document.getElementById('status-indicator').classList.add('connected');
+                    document.getElementById('status-indicator').classList.remove('disconnected');
+
+                    // Send size immediately, then retry once in next frame and once after short delay.
+                    sendTerminalSize();
+                    requestAnimationFrame(() => {
+                        sendTerminalSize();
+                    });
+                    setTimeout(() => {
+                        sendTerminalSize();
+                    }, 120);
+
+                    // Periodic heartbeat to detect connection issues
+                    // Check WebSocket state every 10 seconds
+                    window.terminalHeartbeat = setInterval(() => {
+                        if (ws.readyState !== WebSocket.OPEN) {
+                            console.log('WebSocket heartbeat: connection lost, state=', ws.readyState);
+                            clearInterval(window.terminalHeartbeat);
+                            term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
+                            // Note: Don't refresh page as it would lose terminal context
+                            // Backend will clean up resources via gRPC keepalive timeout
+                        }
+                    }, 10000);
+
+                    term.focus();
+                };
+
+                ws.onmessage = (event) => {
+                    let data;
+                    if (event.data instanceof ArrayBuffer) {
+                        data = new Uint8Array(event.data);
+                        term.write(data);
+                    } else {
+                        term.write(event.data);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+
+                // Note: Do NOT explicitly close WebSocket on page unload.
+                // Let the browser handle connection closure naturally to avoid
+                // potentially affecting other WebSocket connections sharing the same HTTP/2 connection.
+                // Browser will properly clean up when the page is destroyed.
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed:', event.code, event.reason);
+
+                    // Clear heartbeat interval
+                    if (window.terminalHeartbeat) {
+                        clearInterval(window.terminalHeartbeat);
+                    }
+
+                    document.getElementById('status-text').textContent = 'Disconnected';
+                    document.getElementById('status-indicator').classList.remove('connected');
+                    document.getElementById('status-indicator').classList.add('disconnected');
+
+                    // code 1006 = abnormal close (server not reachable / sandbox not yet ready)
+                    if (event.code === 1006) {
+                        if (!wsEverConnected && wsRetryCount < wsMaxRetries) {
+                            wsRetryCount++;
+                            document.getElementById('status-text').textContent = 'Waiting for sandbox... (' + wsRetryCount + '/' + wsMaxRetries + ')';
+                            term.write('\r\n\x1b[1;33m[Waiting for sandbox to start... ' + wsRetryCount + '/' + wsMaxRetries + ']\x1b[0m\r\n');
+                            setTimeout(connectWebSocket, wsRetryIntervalMs);
+                            return;
+                        }
+                        term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
+                        return;
+                    }
+
+                    term.write('\r\n\x1b[1;33m[Connection Closed]\x1b[0m\r\n');
+                };
+            }
 
             function sendTerminalSize() {
-                if (ws.readyState !== WebSocket.OPEN) {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
                     return;
                 }
                 fitAddon.fit();
@@ -1790,93 +1770,24 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 sendTerminalSize();
             });
 
-            ws.onopen = () => {
-                document.getElementById('status-text').textContent = 'Connected';
-                document.getElementById('status-indicator').classList.add('connected');
-
-                // Send size immediately, then retry once in next frame and once after short delay.
-                sendTerminalSize();
-                requestAnimationFrame(() => {
-                    sendTerminalSize();
-                });
-                setTimeout(() => {
-                    sendTerminalSize();
-                }, 120);
-
-                // Periodic heartbeat to detect connection issues
-                // Check WebSocket state every 10 seconds
-                window.terminalHeartbeat = setInterval(() => {
-                    if (ws.readyState !== WebSocket.OPEN) {
-                        console.log('WebSocket heartbeat: connection lost, state=', ws.readyState);
-                        clearInterval(window.terminalHeartbeat);
-                        term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
-                        // Note: Don't refresh page as it would lose terminal context
-                        // Backend will clean up resources via gRPC keepalive timeout
-                    }
-                }, 10000);
-
-                term.focus();
-            };
-
-            ws.onmessage = (event) => {
-                let data;
-                if (event.data instanceof ArrayBuffer) {
-                    data = new Uint8Array(event.data);
-                    term.write(data);
-                } else {
-                    term.write(event.data);
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                term.write('\r\n\x1b[1;31m[Connection Error]\x1b[0m\r\n');
-            };
-
-            // Note: Do NOT explicitly close WebSocket on page unload.
-            // Let the browser handle connection closure naturally to avoid
-            // potentially affecting other WebSocket connections sharing the same HTTP/2 connection.
-            // Browser will properly clean up when the page is destroyed.
-
-            ws.onclose = (event) => {
-                console.log('WebSocket closed:', event.code, event.reason);
-
-                // Clear heartbeat interval
-                if (window.terminalHeartbeat) {
-                    clearInterval(window.terminalHeartbeat);
-                }
-
-                document.getElementById('status-text').textContent = 'Disconnected';
-                document.getElementById('status-indicator').classList.remove('connected');
-                document.getElementById('status-indicator').classList.add('disconnected');
-
-                // If closed abnormally (1006), inform user but don't refresh
-                if (event.code === 1006) {
-                    term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
-                    return;
-                }
-
-                term.write('\r\n\x1b[1;33m[Connection Closed]\x1b[0m\r\n');
-            };
-
             term.onData((data) => {
-                if (ws.readyState === WebSocket.OPEN) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(data);
                 }
             });
 
             term.onResize(({ cols, rows }) => {
                 console.log('Terminal resized:', cols, 'x', rows);
-                if (ws.readyState === WebSocket.OPEN) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send('RESIZE:' + cols + ':' + rows);
                 }
             });
 
-            term.focus();
+            connectWebSocket();
         }); // End DOMContentLoaded
     </script>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }
