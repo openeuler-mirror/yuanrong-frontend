@@ -30,6 +30,7 @@ import (
 	commonJob "frontend/pkg/common/job"
 	"frontend/pkg/frontend/api/app"
 	"frontend/pkg/frontend/api/auth"
+	"frontend/pkg/frontend/api/sandbox"
 	"frontend/pkg/frontend/api/datasystem"
 	frontend "frontend/pkg/frontend/api/functionsystem"
 	"frontend/pkg/frontend/api/job"
@@ -166,6 +167,13 @@ func InitRoute(r *gin.Engine) {
 		authGroup.POST("/token/direct", authHandler.DirectTokenHandler)
 		authGroup.POST("/token/exchange", authHandler.TokenExchangeHandler)
 		authGroup.GET("/user", authHandler.UserHandler)
+	}
+
+	// sandbox management (direct create/delete without job polling)
+	sandboxGroup := r.Group("/api/sandbox")
+	{
+		sandboxGroup.POST("/create", sandbox.CreateHandler)
+		sandboxGroup.DELETE("/:instanceId", sandbox.DeleteHandler)
 	}
 
 	// web terminal

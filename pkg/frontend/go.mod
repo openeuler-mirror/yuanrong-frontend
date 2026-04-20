@@ -145,5 +145,5 @@ replace (
 	k8s.io/api => k8s.io/api v0.31.2
 	k8s.io/apimachinery => k8s.io/apimachinery v0.31.2
 	k8s.io/client-go => k8s.io/client-go v0.31.2
-	yuanrong.org/kernel/runtime => ../../../yuanrong/api/go
+	yuanrong.org/kernel/runtime => ../../../api/go
 )
