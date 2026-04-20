@@ -1309,6 +1309,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 // Restore button state
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Create & Connect';
+                loadInstances(currentPage);
             }
         }
 
@@ -1355,6 +1356,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         alert('Sandbox creation failed: job execution failed\n' + (jobInfo.message || ''));
                         document.getElementById('submit-sandbox-btn').disabled = false;
                         document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
+                        loadInstances(currentPage);
                         return;
                     } else if (status === 'STOPPED') {
                         // Stopped
@@ -1362,6 +1364,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         alert('Sandbox creation failed: job was stopped\n' + (jobInfo.message || ''));
                         document.getElementById('submit-sandbox-btn').disabled = false;
                         document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
+                        loadInstances(currentPage);
                         return;
                     } else if (status === 'PENDING' || status === 'RUNNING') {
                         // Still running, continue polling
@@ -1380,6 +1383,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     alert('Failed to query job status: ' + error.message);
                     document.getElementById('submit-sandbox-btn').disabled = false;
                     document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
+                    loadInstances(currentPage);
                 }
             };
 
@@ -1679,12 +1683,8 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             }
             const currentInstance = params.get('instance');
 
-            // No instance param, show dialog
-            if (!currentInstance) {
-                showCustomDialog();
-                return; // Stop further init, wait for user input
-            }
-
+            // Bind sidebar buttons regardless of whether instance exists,
+            // so they remain functional after creation failures.
             loadInstances();
 
             // Manual instance input button event
@@ -1719,6 +1719,12 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 const totalPages = Math.ceil(totalInstances / pageSize);
                 loadInstances(totalPages);
             });
+
+            // No instance param, show dialog and skip terminal init
+            if (!currentInstance) {
+                showCustomDialog();
+                return; // Stop further init (terminal, websocket), wait for user input
+            }
 
             // Initialize Terminal (only when container ID is available)
             const term = new Terminal({
