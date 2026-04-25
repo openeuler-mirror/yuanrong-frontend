@@ -114,6 +114,7 @@ type InvokeRequest struct {
 	TenantID         string
 	AcceptHeader     string
 	RouteAddress     string
+	BypassDataSystem bool
 	ForceInvoke      bool
 	types.ResponseWriter
 }
@@ -227,8 +228,10 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		res = result
 		resErr = err
 		wait <- struct{}{}
-		if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
-			fmt.Printf("failed to decrease object ref,err: %s", err.Error())
+		if !req.BypassDataSystem {
+			if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
+				fmt.Printf("failed to decrease object ref,err: %s", err.Error())
+			}
 		}
 	})
 	log.GetLogger().Debugf("invoke AcceptHeader: %s, requestId: %s, objID: %s, instanceId: %s",
@@ -357,6 +360,7 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 	if req.AcceptHeader == httpconstant.AcceptEventStream {
 		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
 	}
+	invokeOpt.BypassDataSystem = req.BypassDataSystem
 	return invokeOpt
 }
 

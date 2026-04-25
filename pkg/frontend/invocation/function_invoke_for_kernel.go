@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -430,6 +431,8 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 		TenantID:        funcSpec.FuncMetaData.TenantID,
 		InstanceID:      instanceId,
 		ForceInvoke:     forceInvoke,
+		BypassDataSystem: strings.EqualFold(util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderBypassDataSystem),
+			"true"),
 	}
 	if leaseInfo != nil && leaseInfo.FunctionProxyID != "" {
 		req.RouteAddress = leaseInfo.FunctionProxyID
