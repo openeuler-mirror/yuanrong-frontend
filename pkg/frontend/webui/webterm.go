@@ -71,6 +71,17 @@ var (
 	grpcPoolMu sync.Mutex
 )
 
+func parseCommand(cmdStr string) []string {
+	if cmdStr == "" {
+		return nil
+	}
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return []string{cmdStr}
+	}
+	return parts
+}
+
 type pooledConn struct {
 	conn   *grpc.ClientConn
 	refCnt int
@@ -224,6 +235,8 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	return nil
 }
 
+var queryMasterFunc = queryMaster
+
 func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 	if instance == "" {
 		return InstanceInfo{}, fmt.Errorf("instance ID cannot be empty")
@@ -241,7 +254,7 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 
 	// Call generic query function
 	var response InstanceListResponse
-	if err := queryMaster(apiPath, queryParams, &response); err != nil {
+	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
 		return InstanceInfo{}, fmt.Errorf("failed to query instances: %w", err)
 	}
 
@@ -345,7 +358,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	cmdStr := query.Get("command")
 	command := defaultCommand
 	if cmdStr != "" {
-		command = []string{cmdStr}
+		command = parseCommand(cmdStr)
 	}
 
 	tty := defaultTTY
@@ -629,7 +642,7 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 
 	// Call generic query function
 	var response InstanceListResponse
-	if err := queryMaster(apiPath, queryParams, &response); err != nil {
+	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
 		log.GetLogger().Infof("Failed to query instances from master: %v", err)
 		// Return empty list on query failure instead of error, so frontend can continue
 		response.Instances = []InstanceInfo{}
@@ -646,6 +659,7 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		instance := map[string]interface{}{
 			"id":       inst.InstanceID,
+			"tenantID": inst.TenantID,
 			"function": inst.Function,
 			"status":   statusText,
 			"error":    errorDetail,
@@ -1917,7 +1931,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
         }); // End DOMContentLoaded
     </script>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, apiPrefix, apiPrefix, apiPrefix, apiPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, apiPrefix, apiPrefix, apiPrefix, apiPrefix, apiPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }

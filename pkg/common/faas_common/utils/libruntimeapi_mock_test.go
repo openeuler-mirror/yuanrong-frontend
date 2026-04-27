@@ -23,7 +23,7 @@ func TestFakeLibruntimeSdkClient(t *testing.T) {
 	_, err = fakeLibruntimeSdkClient.AcquireInstance("", api.FunctionMeta{}, api.InvokeOptions{})
 	assert.Equal(t, nil, err)
 
-	err = fakeLibruntimeSdkClient.Kill("", 0, []byte{})
+	err = fakeLibruntimeSdkClient.Kill("", 0, []byte{}, api.InvokeOptions{})
 	assert.Equal(t, nil, err)
 
 	_, err = fakeLibruntimeSdkClient.CreateInstanceRaw([]byte{}, api.RawRequestOption{})

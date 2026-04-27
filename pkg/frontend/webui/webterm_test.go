@@ -7,6 +7,45 @@ import (
 	"testing"
 )
 
+func TestParseCommandSplitsArguments(t *testing.T) {
+	got := parseCommand("python3 -m yr.cli --version")
+	want := []string{"python3", "-m", "yr.cli", "--version"}
+	if len(got) != len(want) {
+		t.Fatalf("len(parseCommand()) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommand()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestHandleInstancesIncludesTenantID(t *testing.T) {
+	info := InstanceInfo{
+		InstanceID: "instance-1",
+		TenantID:   "tenant-1",
+	}
+	oldQueryMasterFunc := queryMasterFunc
+	queryMasterFunc = func(apiPath string, queryParams map[string]string, result interface{}) error {
+		response := result.(*InstanceListResponse)
+		response.Instances = []InstanceInfo{info}
+		return nil
+	}
+	defer func() { queryMasterFunc = oldQueryMasterFunc }()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=tenant-1", nil)
+	recorder := httptest.NewRecorder()
+
+	HandleInstances(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HandleInstances status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"tenantID":"tenant-1"`) {
+		t.Fatalf("expected tenantID in response body, got %s", recorder.Body.String())
+	}
+}
+
 func TestHandleIndexIncludesSandboxCreateResponseParser(t *testing.T) {
 	t.Parallel()
 

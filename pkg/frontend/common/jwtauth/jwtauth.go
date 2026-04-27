@@ -21,12 +21,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
+
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	httputilclient "frontend/pkg/common/httputil/http/client"
 	"frontend/pkg/frontend/config"
-	"strings"
-	"time"
 )
 
 const (
@@ -123,13 +125,79 @@ func (jwt *ParsedJWT) ValidateTenantID(expectedTenantID string) error {
 	return nil
 }
 
-// ValidateWithIamServer sends a request to IAM server to validate the token
+const (
+	iamCacheTTL              = 30 * time.Second
+	iamCacheCleanupThreshold = 1000
+)
+
+type iamFlight struct {
+	wg  sync.WaitGroup
+	err error
+}
+
+var (
+	iamCacheMu sync.RWMutex
+	iamCache   = make(map[string]time.Time)
+
+	iamFlightMu sync.Mutex
+	iamFlights  = make(map[string]*iamFlight)
+)
+
+var iamValidator = doValidateWithIamServer
+
+// ValidateWithIamServer validates the token with IAM and avoids duplicate short-lived validations.
 func ValidateWithIamServer(authHeader string, traceID string) error {
 	iamServerAddress := config.GetConfig().IamConfig.Addr
 	if iamServerAddress == "" {
 		log.GetLogger().Warnf("IAM server address is not configured, skipping IAM validation, traceID %s", traceID)
 		return nil
 	}
+
+	iamCacheMu.RLock()
+	if validatedAt, ok := iamCache[authHeader]; ok && time.Since(validatedAt) < iamCacheTTL {
+		iamCacheMu.RUnlock()
+		return nil
+	}
+	iamCacheMu.RUnlock()
+
+	iamFlightMu.Lock()
+	if f, ok := iamFlights[authHeader]; ok {
+		iamFlightMu.Unlock()
+		f.wg.Wait()
+		return f.err
+	}
+	f := &iamFlight{}
+	f.wg.Add(1)
+	iamFlights[authHeader] = f
+	iamFlightMu.Unlock()
+
+	err := iamValidator(authHeader, traceID)
+	if err == nil {
+		iamCacheMu.Lock()
+		iamCache[authHeader] = time.Now()
+		if len(iamCache) > iamCacheCleanupThreshold {
+			now := time.Now()
+			for token, validatedAt := range iamCache {
+				if now.Sub(validatedAt) >= iamCacheTTL {
+					delete(iamCache, token)
+				}
+			}
+		}
+		iamCacheMu.Unlock()
+	}
+
+	f.err = err
+	f.wg.Done()
+
+	iamFlightMu.Lock()
+	delete(iamFlights, authHeader)
+	iamFlightMu.Unlock()
+
+	return err
+}
+
+func doValidateWithIamServer(authHeader string, traceID string) error {
+	iamServerAddress := config.GetConfig().IamConfig.Addr
 	url := "http://" + strings.TrimSuffix(iamServerAddress, "/") + "/iam-server/v1/token/auth"
 	client := httputilclient.GetInstance()
 	headers := map[string]string{
@@ -144,4 +212,14 @@ func ValidateWithIamServer(authHeader string, traceID string) error {
 		return fmt.Errorf("IAM server returned non-200 status code")
 	}
 	return nil
+}
+
+func resetIamCache() {
+	iamCacheMu.Lock()
+	iamCache = make(map[string]time.Time)
+	iamCacheMu.Unlock()
+
+	iamFlightMu.Lock()
+	iamFlights = make(map[string]*iamFlight)
+	iamFlightMu.Unlock()
 }

@@ -74,6 +74,8 @@ const (
 	SAAuthHeader = "service-account"
 	// HeaderInstanceSession -
 	HeaderInstanceSession = "X-Instance-Session"
+	// HeaderBypassDataSystem bypasses datasystem for invoke return path.
+	HeaderBypassDataSystem = "X-Bypass-Datasystem"
 )
 
 const (

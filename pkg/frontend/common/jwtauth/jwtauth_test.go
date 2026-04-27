@@ -19,11 +19,17 @@ package jwtauth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
+
+	"frontend/pkg/frontend/config"
 )
 
 // createValidJWT 创建一个有效的JWT token用于测试
@@ -304,6 +310,97 @@ func TestJWTPayloadIsExpired(t *testing.T) {
 			assert.Equal(t, tt.want, tt.payload.IsExpired(now))
 		})
 	}
+}
+
+func setupIamTest(t *testing.T) {
+	t.Helper()
+	cfg := config.GetConfig()
+	cfg.IamConfig.Addr = "127.0.0.1:31112"
+	resetIamCache()
+}
+
+func TestValidateWithIamServer_CacheHit(t *testing.T) {
+	setupIamTest(t)
+	var callCount atomic.Int32
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
+		return nil
+	}
+	defer func() { iamValidator = origValidator }()
+
+	err := ValidateWithIamServer("token-cache-hit", "trace1")
+	assert.NoError(t, err)
+	err = ValidateWithIamServer("token-cache-hit", "trace2")
+	assert.NoError(t, err)
+	assert.Equal(t, int32(1), callCount.Load())
+}
+
+func TestValidateWithIamServer_FailureNotCached(t *testing.T) {
+	setupIamTest(t)
+	var callCount atomic.Int32
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
+		return errors.New("iam error")
+	}
+	defer func() { iamValidator = origValidator }()
+
+	assert.Error(t, ValidateWithIamServer("token-fail", "trace1"))
+	assert.Error(t, ValidateWithIamServer("token-fail", "trace2"))
+	assert.Equal(t, int32(2), callCount.Load())
+}
+
+func TestValidateWithIamServer_Singleflight(t *testing.T) {
+	setupIamTest(t)
+	var callCount atomic.Int32
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+	defer func() { iamValidator = origValidator }()
+
+	const concurrency = 20
+	var wg sync.WaitGroup
+	errs := make([]error, concurrency)
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = ValidateWithIamServer("token-singleflight", "trace")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		assert.NoError(t, err, "goroutine %d should succeed", i)
+	}
+	assert.Equal(t, int32(1), callCount.Load())
+}
+
+func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
+	setupIamTest(t)
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		return nil
+	}
+	defer func() { iamValidator = origValidator }()
+
+	iamCacheMu.Lock()
+	expired := time.Now().Add(-iamCacheTTL - time.Second)
+	for i := 0; i < iamCacheCleanupThreshold+100; i++ {
+		iamCache[fmt.Sprintf("expired-token-%d", i)] = expired
+	}
+	iamCacheMu.Unlock()
+
+	assert.NoError(t, ValidateWithIamServer("trigger-cleanup", "trace1"))
+
+	iamCacheMu.RLock()
+	size := len(iamCache)
+	iamCacheMu.RUnlock()
+	assert.LessOrEqual(t, size, 2)
 }
 
 // 使用goconvey的BDD风格测试
