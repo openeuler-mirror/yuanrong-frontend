@@ -723,6 +723,9 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	queryParams := map[string]string{
 		"tenant_id": tenantID,
 	}
+	if instanceID := r.URL.Query().Get("instance_id"); instanceID != "" {
+		queryParams["instance_id"] = instanceID
+	}
 	paginationParams, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
