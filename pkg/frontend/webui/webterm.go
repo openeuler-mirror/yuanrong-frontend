@@ -20,11 +20,13 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -175,6 +177,40 @@ type InstanceListResponse struct {
 	Instances []InstanceInfo `json:"instances"` // Instance list
 	Count     int            `json:"count"`     // Instance count
 	TenantID  string         `json:"tenantID"`  // Tenant ID
+	Page      int            `json:"page"`      // Page number
+	PageSize  int            `json:"pageSize"`  // Page size
+}
+
+type paginatedInstanceListResponse struct {
+	Instances []map[string]interface{} `json:"instances"`
+	Count     int                      `json:"count"`
+	TenantID  string                   `json:"tenantID"`
+	Page      int                      `json:"page"`
+	PageSize  int                      `json:"pageSize"`
+}
+
+var queryMasterFunc = queryMaster
+
+type masterQueryError struct {
+	statusCode int
+	body       string
+}
+
+func (e masterQueryError) Error() string {
+	return fmt.Sprintf("master returned error status %d: %s", e.statusCode, e.body)
+}
+
+func writeMasterQueryError(w http.ResponseWriter, err error, fallbackStatus int) {
+	var masterErr masterQueryError
+	if errors.As(err, &masterErr) {
+		body := strings.TrimSpace(masterErr.body)
+		if body == "" {
+			body = http.StatusText(masterErr.statusCode)
+		}
+		http.Error(w, body, masterErr.statusCode)
+		return
+	}
+	http.Error(w, err.Error(), fallbackStatus)
 }
 
 // queryMaster is a generic function to query the master
@@ -224,7 +260,7 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	// Check response status code
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("master returned error status %d: %s", resp.StatusCode, string(body))
+		return masterQueryError{statusCode: resp.StatusCode, body: string(body)}
 	}
 
 	// Parse response
@@ -235,7 +271,55 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	return nil
 }
 
-var queryMasterFunc = queryMaster
+func parseInstancesPagination(query url.Values) (map[string]string, bool, int, int, error) {
+	rawPage := query.Get("page")
+	rawPageSize := query.Get("page_size")
+	if rawPage == "" && rawPageSize == "" {
+		return nil, false, 0, 0, nil
+	}
+
+	page := 1
+	pageSize := 10
+	var err error
+	if rawPage != "" {
+		page, err = strconv.Atoi(rawPage)
+		if err != nil || page <= 0 {
+			return nil, false, 0, 0, fmt.Errorf("page must be a positive integer")
+		}
+	}
+	if rawPageSize != "" {
+		pageSize, err = strconv.Atoi(rawPageSize)
+		if err != nil || pageSize <= 0 {
+			return nil, false, 0, 0, fmt.Errorf("page_size must be a positive integer")
+		}
+	}
+
+	return map[string]string{
+		"page":      strconv.Itoa(page),
+		"page_size": strconv.Itoa(pageSize),
+	}, true, page, pageSize, nil
+}
+
+func summarizeInstances(response InstanceListResponse) []map[string]interface{} {
+	instances := make([]map[string]interface{}, 0, len(response.Instances))
+	for _, inst := range response.Instances {
+		errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
+			inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
+		statusText := instanceStatusText(inst.InstanceStatus.Code)
+		if statusText == "unknown" {
+			statusText = inst.InstanceStatus.Msg
+		}
+		instance := map[string]interface{}{
+			"id":       inst.InstanceID,
+			"tenantID": inst.TenantID,
+			"function": inst.Function,
+			"status":   statusText,
+			"error":    errorDetail,
+		}
+		instances = append(instances, instance)
+	}
+	return instances
+}
 
 func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 	if instance == "" {
@@ -639,32 +723,51 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	queryParams := map[string]string{
 		"tenant_id": tenantID,
 	}
+	paginationParams, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for key, value := range paginationParams {
+		queryParams[key] = value
+	}
 
 	// Call generic query function
 	var response InstanceListResponse
 	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
 		log.GetLogger().Infof("Failed to query instances from master: %v", err)
+		if paginated {
+			writeMasterQueryError(w, err, http.StatusBadGateway)
+			return
+		}
 		// Return empty list on query failure instead of error, so frontend can continue
 		response.Instances = []InstanceInfo{}
 	}
 
 	// Convert to frontend expected format (simplified instance info)
-	instances := make([]map[string]interface{}, 0, len(response.Instances))
-	for _, inst := range response.Instances {
-		errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
-			inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
-		statusText := instanceStatusText(inst.InstanceStatus.Code)
-		if statusText == "unknown" {
-			statusText = inst.InstanceStatus.Msg
+	instances := summarizeInstances(response)
+	if paginated {
+		if response.Page == 0 {
+			response.Page = page
 		}
-		instance := map[string]interface{}{
-			"id":       inst.InstanceID,
-			"tenantID": inst.TenantID,
-			"function": inst.Function,
-			"status":   statusText,
-			"error":    errorDetail,
+		if response.PageSize == 0 {
+			response.PageSize = pageSize
 		}
-		instances = append(instances, instance)
+		if response.Count == 0 {
+			response.Count = len(instances)
+		}
+		err := json.NewEncoder(w).Encode(paginatedInstanceListResponse{
+			Instances: instances,
+			Count:     response.Count,
+			TenantID:  response.TenantID,
+			Page:      response.Page,
+			PageSize:  response.PageSize,
+		})
+		if err != nil {
+			log.GetLogger().Infof("Error encoding instances: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
 	}
 
 	// Return instance list
@@ -1557,12 +1660,17 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     };
                 }
 
-                const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId), fetchOptions);
-                const instances = await response.json();
+                const apiParams = new URLSearchParams();
+                apiParams.set('tenant_id', tenantId);
+                apiParams.set('page', String(page));
+                apiParams.set('page_size', String(pageSize));
+                const response = await fetch('%s/api/instances?' + apiParams.toString(), fetchOptions);
+                const result = await response.json();
+                const instances = Array.isArray(result) ? result : (result.instances || []);
 
                 // Save all instance data
                 allInstances = instances;
-                totalInstances = instances.length;
+                totalInstances = Array.isArray(result) ? instances.length : (result.count || instances.length);
                 currentPage = page;
 
                 const listContainer = document.getElementById('instance-list');
@@ -1580,11 +1688,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     return;
                 }
 
-                // Calculate pagination
-                const totalPages = Math.ceil(totalInstances / pageSize);
-                const startIndex = (currentPage - 1) * pageSize;
-                const endIndex = Math.min(startIndex + pageSize, totalInstances);
-                const pageInstances = instances.slice(startIndex, endIndex);
+                const pageInstances = instances;
 
                 // Render instance list
                 pageInstances.forEach(instance => {
