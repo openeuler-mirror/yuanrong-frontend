@@ -105,9 +105,10 @@ func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
 			t.Fatalf("unexpected api path: %s", apiPath)
 		}
 		expectedParams := map[string]string{
-			"tenant_id": "tenant-a",
-			"page":      "2",
-			"page_size": "1",
+			"tenant_id":   "tenant-a",
+			"instance_id": "instance-2",
+			"page":        "2",
+			"page_size":   "1",
 		}
 		for key, expected := range expectedParams {
 			if queryParams[key] != expected {
@@ -139,7 +140,11 @@ func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
 		return nil
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=tenant-a&page=2&page_size=1", nil)
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/instances?tenant_id=tenant-a&instance_id=instance-2&page=2&page_size=1",
+		nil,
+	)
 	recorder := httptest.NewRecorder()
 
 	HandleInstances(recorder, req)
