@@ -134,16 +134,6 @@ func CreateHandler(ctx *gin.Context) {
 	} else {
 		log.GetLogger().Warnf("failed to marshal sandbox resource spec: %v", err)
 	}
-	schedulerID, err := selectSandboxSchedulerID(defaultSandboxFunctionID)
-	if err != nil {
-		log.GetLogger().Errorf("failed to select scheduler for sandbox create name=%s ns=%s: %v",
-			req.Name, req.Namespace, err)
-		appapi.SetCtxResponse(ctx, nil, http.StatusServiceUnavailable,
-			fmt.Errorf("failed to create sandbox: no available scheduler"))
-		return
-	}
-	invokeOpts.SchedulerInstanceIDs = []string{schedulerID}
-	invokeOpts.CreateOpt[constant.SchedulerIDNote] = schedulerID + sandboxTemporarySchedulerNote
 
 	instanceID, err := util.NewClient().CreateInstanceByLibRt(funcMeta, []api.Arg{}, invokeOpts)
 	if err != nil {
