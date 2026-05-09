@@ -23,6 +23,28 @@ func TestParseCommandSplitsArguments(t *testing.T) {
 	}
 }
 
+func TestParseCommandPreservesShellCommandArgument(t *testing.T) {
+	got := parseCommand(
+		`sh -c 'mkdir -p "$(dirname "$1")" && head -c "$2" | tar -xmf - -C "$(dirname "$1")"' sh /tmp/remote.bin 10240`,
+	)
+	want := []string{
+		"sh",
+		"-c",
+		`mkdir -p "$(dirname "$1")" && head -c "$2" | tar -xmf - -C "$(dirname "$1")"`,
+		"sh",
+		"/tmp/remote.bin",
+		"10240",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(parseCommand()) = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("parseCommand()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	info := InstanceInfo{
 		InstanceID: "instance-1",

@@ -77,7 +77,65 @@ func parseCommand(cmdStr string) []string {
 	if cmdStr == "" {
 		return nil
 	}
-	parts := strings.Fields(cmdStr)
+
+	parts := make([]string, 0)
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	hasToken := false
+
+	flush := func() {
+		if hasToken {
+			parts = append(parts, current.String())
+			current.Reset()
+			hasToken = false
+		}
+	}
+
+	for _, ch := range cmdStr {
+		if escaped {
+			current.WriteRune(ch)
+			hasToken = true
+			escaped = false
+			continue
+		}
+
+		if quote != '\'' && ch == '\\' {
+			escaped = true
+			hasToken = true
+			continue
+		}
+
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+				hasToken = true
+				continue
+			}
+			current.WriteRune(ch)
+			hasToken = true
+			continue
+		}
+
+		switch ch {
+		case '\'', '"':
+			quote = ch
+			hasToken = true
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			current.WriteRune(ch)
+			hasToken = true
+		}
+	}
+
+	if escaped {
+		current.WriteRune('\\')
+	}
+	if quote != 0 {
+		return []string{cmdStr}
+	}
+	flush()
 	if len(parts) == 0 {
 		return []string{cmdStr}
 	}
