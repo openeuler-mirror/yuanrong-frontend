@@ -184,9 +184,8 @@ func TestCreateHandlerPropagatesHeaderTenantID(t *testing.T) {
 	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
 	require.Equal(t, "header-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
-	require.Equal(t, "scheduler-from-header-test"+sandboxTemporarySchedulerNote,
-		capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
-	require.Equal(t, []string{"scheduler-from-header-test"}, capturedInvokeOpt.SchedulerInstanceIDs)
+	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
+	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 
 	var resp job.Response
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
@@ -230,9 +229,8 @@ func TestCreateHandlerFallsBackToBodyTenant(t *testing.T) {
 	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
 	require.Equal(t, "body-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
-	require.Equal(t, "scheduler-from-body-test"+sandboxTemporarySchedulerNote,
-		capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
-	require.Equal(t, []string{"scheduler-from-body-test"}, capturedInvokeOpt.SchedulerInstanceIDs)
+	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
+	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 }
 
 func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *testing.T) {
@@ -242,9 +240,10 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 	}
 	oldWaitForSandboxInstanceRunning := waitForSandboxInstanceRunning
 	waitCalled := false
-	waitForSandboxInstanceRunning = func(instanceID, resourceSpecNote string) bool {
+	waitForSandboxInstanceRunning = func(instanceID, functionID, resourceSpecNote string) bool {
 		waitCalled = true
 		require.Equal(t, "instance-created-late", instanceID)
+		require.Equal(t, defaultSandboxFunctionID, functionID)
 		require.NotEmpty(t, resourceSpecNote)
 		return true
 	}
@@ -287,8 +286,112 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 	require.True(t, waitCalled)
 }
 
-func TestDefaultSandboxFunctionIDUsesBuiltInPy39Service(t *testing.T) {
-	require.Equal(t, "default/0-defaultservice-py39/$latest", defaultSandboxFunctionID)
+func TestSandboxFunctionIDUsesRuntime(t *testing.T) {
+	tests := []struct {
+		name      string
+		runtime   string
+		wantFunc  string
+		wantError string
+	}{
+		{
+			name:     "python310",
+			runtime:  "python3.10",
+			wantFunc: "default/0-defaultservice-py310/$latest",
+		},
+		{
+			name:     "python39",
+			runtime:  "python3.9",
+			wantFunc: "default/0-defaultservice-py39/$latest",
+		},
+		{
+			name:     "py310",
+			runtime:  "py310",
+			wantFunc: "default/0-defaultservice-py310/$latest",
+		},
+		{
+			name:     "empty uses default",
+			runtime:  "",
+			wantFunc: "default/0-defaultservice-py310/$latest",
+		},
+		{
+			name:      "unsupported",
+			runtime:   "python3.11",
+			wantError: "unsupported sandbox runtime",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := sandboxFunctionIDForRuntime(tt.runtime)
+			if tt.wantError != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantError)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantFunc, got)
+		})
+	}
+}
+
+func TestDefaultSandboxFunctionIDUsesBuiltInPy310Service(t *testing.T) {
+	require.Equal(t, "default/0-defaultservice-py310/$latest", defaultSandboxFunctionID)
+}
+
+func TestCreateHandlerUsesRequestedRuntime(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	var capturedFuncMeta api.FunctionMeta
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInvokeOpt = invokeOpt
+			return "instance-runtime", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{
+		Name:      "sandbox-runtime",
+		Namespace: "sandbox",
+		Tenant:    "body-tenant",
+		Runtime:   "python3.9",
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "default/0-defaultservice-py39/$latest", capturedFuncMeta.FuncID)
+	require.Equal(t, "default/0-defaultservice-py39/$latest", capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
+}
+
+func TestCreateHandlerRejectsUnsupportedRuntime(t *testing.T) {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called for unsupported runtime")
+			return "", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{
+		Name:      "sandbox-runtime",
+		Namespace: "sandbox",
+		Tenant:    "body-tenant",
+		Runtime:   "python3.11",
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "unsupported sandbox runtime")
 }
 
 func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
@@ -339,7 +442,7 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.EqualValues(t, 1000, resSpec.CPU)
 	require.EqualValues(t, 2048, resSpec.Memory)
 	require.Equal(t, "", resSpec.InvokeLabel)
-	require.Equal(t, []string{"scheduler-options-test"}, capturedInvokeOpt.SchedulerInstanceIDs)
+	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 }
 
 func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
@@ -392,45 +495,7 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	_, hasStaticOwner := capturedInvokeOpt.CreateOpt["resource.owner"]
 	require.False(t, hasStaticOwner)
 	require.Equal(t, sandboxInstanceType, capturedInvokeOpt.CreateOpt[faasconstant.InstanceTypeNote])
-	require.Equal(t, "scheduler-contract-test"+sandboxTemporarySchedulerNote,
-		capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
-}
-
-func TestCreateHandlerReturns503WhenNoSchedulerIsAvailable(t *testing.T) {
-	oldSelectScheduler := selectSandboxSchedulerID
-	selectSandboxSchedulerID = func(string) (string, error) {
-		return "", fmt.Errorf("no scheduler")
-	}
-	defer func() {
-		selectSandboxSchedulerID = oldSelectScheduler
-	}()
-
-	util.SetAPIClientLibruntime(&runtimeStub{
-		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
-			t.Fatalf("createInstance should not be called without a scheduler")
-			return "", nil
-		},
-	})
-
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	body, err := json.Marshal(CreateRequest{
-		Name:      "sandbox-e",
-		Namespace: "sandbox",
-		Tenant:    "body-tenant",
-	})
-	require.NoError(t, err)
-	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
-	require.NoError(t, err)
-
-	CreateHandler(ctx)
-
-	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-
-	var resp job.Response
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
-	require.Equal(t, http.StatusServiceUnavailable, resp.Code)
-	require.Contains(t, recorder.Body.String(), "no available scheduler")
+	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
 }
 
 func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {

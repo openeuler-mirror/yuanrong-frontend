@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -38,7 +39,8 @@ import (
 )
 
 const (
-	defaultSandboxFunctionID       = "default/0-defaultservice-py39/$latest"
+	defaultSandboxRuntime          = "python3.10"
+	defaultSandboxFunctionID       = "default/0-defaultservice-py310/$latest"
 	sandboxCreateTimeoutSeconds    = 60
 	sandboxInitTimeoutSeconds      = 305
 	sandboxGracefulShutdownSeconds = 900
@@ -47,6 +49,7 @@ const (
 	sandboxDelegateDirectory       = "/tmp"
 	sandboxConcurrency             = "1"
 	sandboxTemporarySchedulerNote  = "-temporary"
+	sandboxKillInstanceSignal      = constant.KillSignalVal
 	sandboxRunningPollTimeout      = 5 * time.Second
 	sandboxRunningPollInterval     = 200 * time.Millisecond
 )
@@ -62,15 +65,15 @@ var selectSandboxSchedulerID = func(funcKey string) (string, error) {
 	return schedulerInfo.InstanceInfo.InstanceID, nil
 }
 
-var waitForSandboxInstanceRunning = func(instanceID, resourceSpecNote string) bool {
+var waitForSandboxInstanceRunning = func(instanceID, functionID, resourceSpecNote string) bool {
 	deadline := time.Now().Add(sandboxRunningPollTimeout)
 	for time.Now().Before(deadline) {
-		if isSandboxInstanceRunning(instanceID, resourceSpecNote) {
+		if isSandboxInstanceRunning(instanceID, functionID, resourceSpecNote) {
 			return true
 		}
 		time.Sleep(sandboxRunningPollInterval)
 	}
-	return isSandboxInstanceRunning(instanceID, resourceSpecNote)
+	return isSandboxInstanceRunning(instanceID, functionID, resourceSpecNote)
 }
 
 // CreateRequest holds the parameters for sandbox creation.
@@ -78,6 +81,7 @@ type CreateRequest struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Tenant    string `json:"tenant"`
+	Runtime   string `json:"runtime"`
 }
 
 // CreateHandler handles POST /api/sandbox/create.
@@ -94,9 +98,14 @@ func CreateHandler(ctx *gin.Context) {
 		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("name and namespace are required"))
 		return
 	}
+	funcID, err := sandboxFunctionIDForRuntime(req.Runtime)
+	if err != nil {
+		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+		return
+	}
 
 	funcMeta := api.FunctionMeta{
-		FuncID:     defaultSandboxFunctionID,
+		FuncID:     funcID,
 		ModuleName: "yr.sandbox.sandbox",
 		ClassName:  "SandboxInstance",
 		Language:   api.Python,
@@ -121,7 +130,7 @@ func CreateHandler(ctx *gin.Context) {
 	if tenantID != "" {
 		invokeOpts.CreateOpt["tenantId"] = tenantID
 	}
-	invokeOpts.CreateOpt[constant.FunctionKeyNote] = defaultSandboxFunctionID
+	invokeOpts.CreateOpt[constant.FunctionKeyNote] = funcID
 	invokeOpts.CreateOpt[constant.InstanceTypeNote] = sandboxInstanceType
 	invokeOpts.CreateOpt["call_timeout"] = fmt.Sprintf("%d", sandboxCreateTimeoutSeconds)
 	invokeOpts.CreateOpt["init_call_timeout"] = fmt.Sprintf("%d", sandboxInitTimeoutSeconds)
@@ -138,7 +147,7 @@ func CreateHandler(ctx *gin.Context) {
 	instanceID, err := util.NewClient().CreateInstanceByLibRt(funcMeta, []api.Arg{}, invokeOpts)
 	if err != nil {
 		if shouldTreatCreateTimeoutAsSuccess(instanceID, err) {
-			if waitForSandboxInstanceRunning(instanceID, invokeOpts.CreateOpt[constant.ResourceSpecNote]) {
+			if waitForSandboxInstanceRunning(instanceID, funcID, invokeOpts.CreateOpt[constant.ResourceSpecNote]) {
 				log.GetLogger().Infof(
 					"sandbox instance reached running state after create timeout instanceID=%s name=%s ns=%s",
 					instanceID, req.Name, req.Namespace,
@@ -158,6 +167,22 @@ func CreateHandler(ctx *gin.Context) {
 
 	log.GetLogger().Infof("sandbox created: instanceID=%s name=%s ns=%s", instanceID, req.Name, req.Namespace)
 	appapi.SetCtxResponse(ctx, map[string]string{"instance_id": instanceID}, http.StatusOK, nil)
+}
+
+func sandboxFunctionIDForRuntime(runtime string) (string, error) {
+	selectedRuntime := strings.TrimSpace(runtime)
+	if selectedRuntime == "" {
+		selectedRuntime = defaultSandboxRuntime
+	}
+
+	switch strings.ToLower(selectedRuntime) {
+	case "python3.10", "py3.10", "py310", "3.10":
+		return "default/0-defaultservice-py310/$latest", nil
+	case "python3.9", "py3.9", "py39", "3.9":
+		return "default/0-defaultservice-py39/$latest", nil
+	default:
+		return "", fmt.Errorf("unsupported sandbox runtime %q", selectedRuntime)
+	}
 }
 
 func shouldTreatCreateTimeoutAsSuccess(instanceID string, err error) bool {
@@ -186,14 +211,14 @@ func buildSandboxResourceSpecJSON(cpu, memory int) (string, error) {
 	return string(data), nil
 }
 
-func isSandboxInstanceRunning(instanceID, resourceSpecNote string) bool {
+func isSandboxInstanceRunning(instanceID, functionID, resourceSpecNote string) bool {
 	resKey, err := resspeckey.GetResKeyFromStr(resourceSpecNote)
 	if err != nil {
 		log.GetLogger().Warnf("failed to parse sandbox resource spec while checking instance status: %v", err)
 		return false
 	}
 	return instancemanager.GetGlobalInstanceScheduler().GetInstance(
-		defaultSandboxFunctionID, resKey.String(), instanceID,
+		functionID, resKey.String(), instanceID,
 	) != nil
 }
 
@@ -206,7 +231,7 @@ func DeleteHandler(ctx *gin.Context) {
 		return
 	}
 
-	if err := util.NewClient().KillByLibRt(instanceID, constant.KillSignalVal, []byte("sandbox deleted")); err != nil {
+	if err := util.NewClient().KillByLibRt(instanceID, sandboxKillInstanceSignal, []byte("sandbox deleted")); err != nil {
 		log.GetLogger().Errorf("failed to kill sandbox instance %s: %v", instanceID, err)
 		appapi.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to delete sandbox: %v", err))
 		return
