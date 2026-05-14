@@ -445,6 +445,137 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 }
 
+func TestCreateHandlerPassesRootfsToSandboxCustomExtensions(t *testing.T) {
+	oldSelectScheduler := selectSandboxSchedulerID
+	selectSandboxSchedulerID = func(string) (string, error) {
+		return "scheduler-rootfs-test", nil
+	}
+	defer func() {
+		selectSandboxSchedulerID = oldSelectScheduler
+	}()
+
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-with-rootfs", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{
+		Name:      "sandbox-rootfs",
+		Namespace: "sandbox",
+		Rootfs:    "python:3.12-slim",
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "python:3.12-slim", capturedInvokeOpt.CustomExtensions["rootfs"])
+}
+
+func TestCreateHandlerAcceptsImageAliasForRootfs(t *testing.T) {
+	oldSelectScheduler := selectSandboxSchedulerID
+	selectSandboxSchedulerID = func(string) (string, error) {
+		return "scheduler-image-test", nil
+	}
+	defer func() {
+		selectSandboxSchedulerID = oldSelectScheduler
+	}()
+
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-with-image", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{
+		Name:      "sandbox-image",
+		Namespace: "sandbox",
+		Image:     "ubuntu:22.04",
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "ubuntu:22.04", capturedInvokeOpt.CustomExtensions["rootfs"])
+}
+
+func TestCreateHandlerPassesPortForwardingsToNetworkCreateOption(t *testing.T) {
+	oldSelectScheduler := selectSandboxSchedulerID
+	selectSandboxSchedulerID = func(string) (string, error) {
+		return "scheduler-ports-test", nil
+	}
+	defer func() {
+		selectSandboxSchedulerID = oldSelectScheduler
+	}()
+
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-with-ports", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{
+		Name:      "sandbox-ports",
+		Namespace: "sandbox",
+		Ports:     []string{"8080", "udp:9090"},
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(
+		t,
+		`{"portForwardings":[{"port":8080,"protocol":"TCP"},{"port":9090,"protocol":"UDP"}]}`,
+		capturedInvokeOpt.CreateOpt["network"],
+	)
+}
+
+func TestCreateHandlerRejectsInvalidPortForwarding(t *testing.T) {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called for invalid port forwarding")
+			return "", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{
+		Name:      "sandbox-ports",
+		Namespace: "sandbox",
+		Ports:     []string{"sctp:8080"},
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "protocol must be TCP or UDP")
+}
+
 func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	oldSelectScheduler := selectSandboxSchedulerID
 	selectSandboxSchedulerID = func(string) (string, error) {
