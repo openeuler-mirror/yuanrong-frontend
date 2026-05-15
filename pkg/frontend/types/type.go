@@ -145,6 +145,7 @@ type Config struct {
 	EnableEvent             bool             `json:"enableEvent" valid:"optional"`
 	WatchedConfigFilePath   string           `json:"watchedConfigFilePath" valid:"optional"`
 	AccessFaaSSchedulerType string           `json:"accessFaaSSchedulerType" valid:"optional"`
+	LeaseBypass             bool             `json:"leaseBypass" valid:"optional"`
 	// Async invocation config
 	AsyncInvocation *AsyncInvocationConfig `json:"asyncInvocation" valid:"optional"`
 }
@@ -252,6 +253,10 @@ type FrontendHTTP struct {
 	ServerListenIP                 string `json:"serverListenIP" valid:"optional"`
 	// PrometheusMetricsPort is the port for Prometheus metrics server
 	PrometheusMetricsPort int `json:"prometheusMetricsPort" valid:"optional"`
+	// ProcessingHeartbeatInterval is the interval (seconds) for sending HTTP 102 Processing
+	// responses during long-running invoke requests, to prevent intermediate proxies (VIP)
+	// from timing out. Default is 30 seconds. Set to 0 to use default.
+	ProcessingHeartbeatInterval int `json:"processingHeartbeatInterval" valid:"optional"`
 }
 
 // TrafficLimitParams parameters of traffic limitation

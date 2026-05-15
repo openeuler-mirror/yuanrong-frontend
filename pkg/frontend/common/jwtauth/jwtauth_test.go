@@ -92,7 +92,7 @@ func TestParseJWT(t *testing.T) {
 		},
 		{
 			name:       "header base64解码失败",
-			authHeader: createValidJWT("invalid-base64!!!", encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: time.Now().Unix()}), "signature"),
+			authHeader: createValidJWT("invalid-base64!!!", encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}), "signature"),
 			wantErr:    true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
@@ -102,7 +102,7 @@ func TestParseJWT(t *testing.T) {
 		},
 		{
 			name:       "payload base64解码失败",
-			authHeader: createValidJWT(encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}), "invalid-base64!!!", "signature"),
+			authHeader: createValidJWT(encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}), "invalid-base64!!!", "sig"),
 			wantErr:    true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
@@ -112,7 +112,7 @@ func TestParseJWT(t *testing.T) {
 		},
 		{
 			name:       "header JSON解析失败",
-			authHeader: createValidJWT(base64.RawURLEncoding.EncodeToString([]byte("invalid json")), encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: time.Now().Unix()}), "signature"),
+			authHeader: createValidJWT(base64.RawURLEncoding.EncodeToString([]byte("invalid json")), encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}), "signature"),
 			wantErr:    true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
@@ -146,7 +146,7 @@ func TestParseJWT(t *testing.T) {
 				assert.Equal(t, "JWT", jwt.Header.Typ)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant123", jwt.Payload.Sub)
-				assert.Equal(t, int64(1234567890), jwt.Payload.Exp)
+				assert.Equal(t, uint64(1234567890), jwt.Payload.Exp)
 				assert.Equal(t, "developer", jwt.Payload.Role)
 				assert.Equal(t, "signature123", jwt.Signature)
 			},
@@ -167,7 +167,7 @@ func TestParseJWT(t *testing.T) {
 				assert.Equal(t, "JWT", jwt.Header.Typ)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant456", jwt.Payload.Sub)
-				assert.Equal(t, int64(9876543210), jwt.Payload.Exp)
+				assert.Equal(t, uint64(9876543210), jwt.Payload.Exp)
 				assert.Equal(t, "user", jwt.Payload.Role)
 				assert.Equal(t, "signature456", jwt.Signature)
 			},
@@ -185,15 +185,15 @@ func TestParseJWT(t *testing.T) {
 				assert.NotNil(t, jwt)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant789", jwt.Payload.Sub)
-				assert.Equal(t, int64(1111111111), jwt.Payload.Exp)
+				assert.Equal(t, uint64(1111111111), jwt.Payload.Exp)
 				assert.Equal(t, "", jwt.Payload.Role)
 			},
 		},
 		{
-			name: "有效的JWT token-exp为-1表示永不过期",
+			name: "有效的JWT token-exp为0表示永不过期",
 			authHeader: createValidJWT(
 				encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}),
-				encodeBase64URL(JWTPayload{Sub: "tenant-permanent", Exp: -1, Role: "developer"}),
+				encodeBase64URL(JWTPayload{Sub: "tenant-permanent", Exp: 0, Role: "developer"}),
 				"signature-permanent",
 			),
 			wantErr: false,
@@ -202,7 +202,7 @@ func TestParseJWT(t *testing.T) {
 				assert.NotNil(t, jwt)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant-permanent", jwt.Payload.Sub)
-				assert.Equal(t, int64(-1), jwt.Payload.Exp)
+				assert.Equal(t, uint64(0), jwt.Payload.Exp)
 				assert.Equal(t, "developer", jwt.Payload.Role)
 			},
 		},
@@ -284,23 +284,18 @@ func TestJWTPayloadIsExpired(t *testing.T) {
 			want:    false,
 		},
 		{
-			name:    "exp minus one never expires",
-			payload: &JWTPayload{Exp: -1},
-			want:    false,
-		},
-		{
 			name:    "exp zero never expires",
 			payload: &JWTPayload{Exp: 0},
 			want:    false,
 		},
 		{
 			name:    "future exp is valid",
-			payload: &JWTPayload{Exp: now.Unix() + 60},
+			payload: &JWTPayload{Exp: uint64(now.Unix() + 60)},
 			want:    false,
 		},
 		{
 			name:    "past exp is expired",
-			payload: &JWTPayload{Exp: now.Unix() - 60},
+			payload: &JWTPayload{Exp: uint64(now.Unix() - 60)},
 			want:    true,
 		},
 	}
@@ -312,6 +307,7 @@ func TestJWTPayloadIsExpired(t *testing.T) {
 	}
 }
 
+// setupIamTest configures IAM address and resets cache for testing.
 func setupIamTest(t *testing.T) {
 	t.Helper()
 	cfg := config.GetConfig()
@@ -329,11 +325,41 @@ func TestValidateWithIamServer_CacheHit(t *testing.T) {
 	}
 	defer func() { iamValidator = origValidator }()
 
+	// First call: should hit IAM
 	err := ValidateWithIamServer("token-cache-hit", "trace1")
 	assert.NoError(t, err)
+	assert.Equal(t, int32(1), callCount.Load())
+
+	// Second call: should use cache
 	err = ValidateWithIamServer("token-cache-hit", "trace2")
 	assert.NoError(t, err)
+	assert.Equal(t, int32(1), callCount.Load(), "second call should not hit IAM")
+}
+
+func TestValidateWithIamServer_CacheExpiry(t *testing.T) {
+	setupIamTest(t)
+	var callCount atomic.Int32
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
+		return nil
+	}
+	defer func() { iamValidator = origValidator }()
+
+	// First call
+	err := ValidateWithIamServer("token-expiry", "trace1")
+	assert.NoError(t, err)
 	assert.Equal(t, int32(1), callCount.Load())
+
+	// Force cache entry to expire
+	iamCacheMu.Lock()
+	iamCache["token-expiry"] = time.Now().Add(-iamCacheTTL - time.Second)
+	iamCacheMu.Unlock()
+
+	// Should call IAM again
+	err = ValidateWithIamServer("token-expiry", "trace2")
+	assert.NoError(t, err)
+	assert.Equal(t, int32(2), callCount.Load(), "expired cache should trigger IAM call")
 }
 
 func TestValidateWithIamServer_FailureNotCached(t *testing.T) {
@@ -346,9 +372,15 @@ func TestValidateWithIamServer_FailureNotCached(t *testing.T) {
 	}
 	defer func() { iamValidator = origValidator }()
 
-	assert.Error(t, ValidateWithIamServer("token-fail", "trace1"))
-	assert.Error(t, ValidateWithIamServer("token-fail", "trace2"))
-	assert.Equal(t, int32(2), callCount.Load())
+	// First call: failure
+	err := ValidateWithIamServer("token-fail", "trace1")
+	assert.Error(t, err)
+	assert.Equal(t, int32(1), callCount.Load())
+
+	// Second call: should NOT use cache (failure not cached)
+	err = ValidateWithIamServer("token-fail", "trace2")
+	assert.Error(t, err)
+	assert.Equal(t, int32(2), callCount.Load(), "failure should not be cached")
 }
 
 func TestValidateWithIamServer_Singleflight(t *testing.T) {
@@ -357,14 +389,15 @@ func TestValidateWithIamServer_Singleflight(t *testing.T) {
 	origValidator := iamValidator
 	iamValidator = func(token, traceID string) error {
 		callCount.Add(1)
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // simulate IAM latency
 		return nil
 	}
 	defer func() { iamValidator = origValidator }()
 
-	const concurrency = 20
+	const concurrency = 100
 	var wg sync.WaitGroup
 	errs := make([]error, concurrency)
+
 	wg.Add(concurrency)
 	for i := 0; i < concurrency; i++ {
 		go func(idx int) {
@@ -377,7 +410,33 @@ func TestValidateWithIamServer_Singleflight(t *testing.T) {
 	for i, err := range errs {
 		assert.NoError(t, err, "goroutine %d should succeed", i)
 	}
-	assert.Equal(t, int32(1), callCount.Load())
+	assert.Equal(t, int32(1), callCount.Load(), "singleflight: IAM should be called only once")
+}
+
+func TestValidateWithIamServer_DifferentTokens(t *testing.T) {
+	setupIamTest(t)
+	var callCount atomic.Int32
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
+		return nil
+	}
+	defer func() { iamValidator = origValidator }()
+
+	err := ValidateWithIamServer("token-A", "trace1")
+	assert.NoError(t, err)
+
+	err = ValidateWithIamServer("token-B", "trace2")
+	assert.NoError(t, err)
+
+	assert.Equal(t, int32(2), callCount.Load(), "different tokens should each call IAM")
+
+	// Cached: neither should call again
+	err = ValidateWithIamServer("token-A", "trace3")
+	assert.NoError(t, err)
+	err = ValidateWithIamServer("token-B", "trace4")
+	assert.NoError(t, err)
+	assert.Equal(t, int32(2), callCount.Load(), "both tokens should be cached now")
 }
 
 func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
@@ -388,6 +447,7 @@ func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
 	}
 	defer func() { iamValidator = origValidator }()
 
+	// Fill cache with expired entries beyond cleanup threshold
 	iamCacheMu.Lock()
 	expired := time.Now().Add(-iamCacheTTL - time.Second)
 	for i := 0; i < iamCacheCleanupThreshold+100; i++ {
@@ -395,12 +455,36 @@ func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
 	}
 	iamCacheMu.Unlock()
 
-	assert.NoError(t, ValidateWithIamServer("trigger-cleanup", "trace1"))
+	// Trigger a new validation (will succeed and trigger cleanup)
+	err := ValidateWithIamServer("trigger-cleanup", "trace1")
+	assert.NoError(t, err)
 
+	// Check that expired entries were cleaned up
 	iamCacheMu.RLock()
 	size := len(iamCache)
 	iamCacheMu.RUnlock()
-	assert.LessOrEqual(t, size, 2)
+	assert.LessOrEqual(t, size, 2, "cleanup should have removed expired entries")
+}
+
+func TestValidateWithIamServer_SkipWhenNoAddr(t *testing.T) {
+	resetIamCache()
+	var callCount atomic.Int32
+	origValidator := iamValidator
+	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
+		return nil
+	}
+	defer func() { iamValidator = origValidator }()
+
+	// Set empty IAM address
+	cfg := config.GetConfig()
+	origAddr := cfg.IamConfig.Addr
+	cfg.IamConfig.Addr = ""
+	defer func() { cfg.IamConfig.Addr = origAddr }()
+
+	err := ValidateWithIamServer("token-skip", "trace1")
+	assert.NoError(t, err)
+	assert.Equal(t, int32(0), callCount.Load(), "should skip IAM when address is empty")
 }
 
 // 使用goconvey的BDD风格测试
@@ -408,7 +492,7 @@ func TestParseJWT_Convey(t *testing.T) {
 	convey.Convey("测试ParseJWT函数", t, func() {
 		convey.Convey("当输入有效的JWT token时", func() {
 			header := encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"})
-			payload := encodeBase64URL(JWTPayload{Sub: "test-tenant", Exp: time.Now().Unix(), Role: "developer"})
+			payload := encodeBase64URL(JWTPayload{Sub: "test-tenant", Exp: uint64(time.Now().Unix()), Role: "developer"})
 			authHeader := createValidJWT(header, payload, "test-signature")
 
 			jwt, err := ParseJWT(authHeader)

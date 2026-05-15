@@ -73,10 +73,14 @@ var (
 	grpcPoolMu sync.Mutex
 )
 
+// parseCommand parses a command string into a slice of arguments.
+// It handles basic space separation and preserves empty strings for consecutive spaces.
 func parseCommand(cmdStr string) []string {
 	if cmdStr == "" {
 		return nil
 	}
+	// Simple space splitting - each token becomes an argument
+	// This handles commands like "ls -la /home" -> ["ls", "-la", "/home"]
 	parts := strings.Fields(cmdStr)
 	if len(parts) == 0 {
 		return []string{cmdStr}
@@ -442,6 +446,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	cmdStr := query.Get("command")
 	command := defaultCommand
 	if cmdStr != "" {
+		// Split command string into arguments, handling shell-like parsing
 		command = parseCommand(cmdStr)
 	}
 

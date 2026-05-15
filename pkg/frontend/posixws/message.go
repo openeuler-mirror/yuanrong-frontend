@@ -51,11 +51,11 @@ const (
 
 // RequestMessage represents a client request message
 type RequestMessage struct {
-	Type      MessageType       `json:"type"`
-	ID        string            `json:"id"`
-	Operation OperationType     `json:"operation"`
-	Payload   string            `json:"payload"` // Base64-encoded protobuf
-	Headers   map[string]string `json:"headers,omitempty"`
+	Type      MessageType            `json:"type"`
+	ID        string                 `json:"id"`
+	Operation OperationType          `json:"operation"`
+	Payload   string                 `json:"payload"` // Base64-encoded protobuf
+	Headers   map[string]string      `json:"headers,omitempty"`
 }
 
 // ResponseMessage represents a server response message

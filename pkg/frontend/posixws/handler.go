@@ -38,13 +38,13 @@ var upgrader = websocket.Upgrader{
 
 // Session represents a WebSocket session
 type Session struct {
-	conn      *websocket.Conn
-	tenantID  string
-	clientID  string
-	processor *Processor
-	mu        sync.Mutex
-	ctx       context.Context
-	cancel    context.CancelFunc
+	conn       *websocket.Conn
+	tenantID   string
+	clientID   string
+	processor  *Processor
+	mu         sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // HandlePosixWebSocket handles WebSocket connections for POSIX operations
@@ -347,9 +347,9 @@ func (s *Session) sendPong() {
 
 // Error definitions
 var (
-	ErrNoToken          = &ErrorInfo{Code: 1001, Message: "no authentication token provided"}
-	ErrInvalidToken     = &ErrorInfo{Code: 1002, Message: "invalid authentication token"}
-	ErrInvalidMessage   = &ErrorInfo{Code: 1003, Message: "invalid message format"}
+	ErrNoToken        = &ErrorInfo{Code: 1001, Message: "no authentication token provided"}
+	ErrInvalidToken   = &ErrorInfo{Code: 1002, Message: "invalid authentication token"}
+	ErrInvalidMessage = &ErrorInfo{Code: 1003, Message: "invalid message format"}
 	ErrInvalidOperation = &ErrorInfo{Code: 1004, Message: "invalid operation type"}
-	ErrProcessFailed    = &ErrorInfo{Code: 1005, Message: "operation processing failed"}
+	ErrProcessFailed  = &ErrorInfo{Code: 1005, Message: "operation processing failed"}
 )

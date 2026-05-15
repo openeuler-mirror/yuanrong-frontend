@@ -890,18 +890,15 @@ func (c *invokerLibruntimeMock) Kill(instanceID string, signal int, payload []by
 	return nil
 }
 
-func (c *invokerLibruntimeMock) CreateInstanceRaw(createReqRaw []byte,
-	option api.RawRequestOption) (createRespRaw []byte, err error) {
+func (c *invokerLibruntimeMock) CreateInstanceRaw(createReqRaw []byte) (createRespRaw []byte, err error) {
 	return []byte{}, nil
 }
 
-func (c *invokerLibruntimeMock) InvokeByInstanceIdRaw(invokeReqRaw []byte,
-	option api.RawRequestOption) (resultRaw []byte, err error) {
+func (c *invokerLibruntimeMock) InvokeByInstanceIdRaw(invokeReqRaw []byte) (resultRaw []byte, err error) {
 	return []byte{}, nil
 }
 
-func (f *invokerLibruntimeMock) KillRaw(killReqRaw []byte,
-	option api.RawRequestOption) (killRespRaw []byte, err error) {
+func (f *invokerLibruntimeMock) KillRaw(killReqRaw []byte) (killRespRaw []byte, err error) {
 	return []byte{}, nil
 }
 

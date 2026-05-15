@@ -29,8 +29,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
-	"yuanrong.org/kernel/runtime/libruntime/api"
-
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/tracer"
@@ -137,7 +135,9 @@ func CreateHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
+	stopHeartbeat := httputil.StartProcessingHeartbeat(ctx, log.GetLogger())
 	resp, err := util.NewClient().CreateInstanceRaw(body, buildRawRequestOption(spanCtx))
+	stopHeartbeat()
 	log.GetLogger().Debugf("receive instance create response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -196,7 +196,9 @@ func InvokeHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
+	stopHeartbeat := httputil.StartProcessingHeartbeat(ctx, log.GetLogger())
 	notify, err := util.NewClient().InvokeInstanceRaw(body, buildRawRequestOption(spanCtx))
+	stopHeartbeat()
 	log.GetLogger().Debugf("receive instance invoke response, msg: %s", notify)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -270,10 +272,10 @@ func getHeaderPrams(ctx *gin.Context) (string, string) {
 	return remoteClientID, traceID
 }
 
-func buildRawRequestOption(ctx context.Context) api.RawRequestOption {
+func buildRawRequestOption(ctx context.Context) util.RawRequestOption {
 	carrier := propagation.HeaderCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
-	return api.RawRequestOption{
+	return util.RawRequestOption{
 		TraceParent: carrier.Get(constant.HeaderTraceParent),
 	}
 }

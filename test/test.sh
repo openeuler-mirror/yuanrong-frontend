@@ -51,8 +51,8 @@ export -f generate_mock
 # create source code link, go cover report dependent on GOPATH src
 link_source_code()
 {
-    rm -rf "${GOPATH}/pkg"
-    rm -rf "${GOPATH}/src/frontend"
+    rm -rf "${GOPATH}/pkg" 2>/dev/null || true
+    rm -rf "${GOPATH}/src/frontend" 2>/dev/null || true
 
     mkdir -p "${GOPATH}"/src/
     ln -s "${ROOT_PATH}" "${GOPATH}"/src/frontend

@@ -46,11 +46,11 @@ type invokerLibruntime interface {
 		acquireOpt api.InvokeOptions) (api.InstanceAllocation, error)
 
 	ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions)
-	Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) (err error)
+	Kill(instanceID string, signal int, payload []byte) error
 
-	CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) (createRespRaw []byte, err error)
-	InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) (resultRaw []byte, err error)
-	KillRaw(killReqRaw []byte, option api.RawRequestOption) (killRespRaw []byte, err error)
+	CreateInstanceRaw(createReqRaw []byte) (createRespRaw []byte, err error)
+	InvokeByInstanceIdRaw(invokeReqRaw []byte) (resultRaw []byte, err error)
+	KillRaw(killReqRaw []byte) (killRespRaw []byte, err error)
 
 	SaveState(state []byte) (stateID string, err error)
 	LoadState(checkpointID string) (state []byte, err error)
@@ -127,15 +127,20 @@ type SSEChan struct {
 	WaitEvent chan struct{}
 }
 
+// RawRequestOption carries optional metadata for raw API calls.
+type RawRequestOption struct {
+	TraceParent string
+}
+
 // Client is used to invoke an instance and wait for its response
 type Client interface {
 	AcquireInstance(functionKey string, req types.AcquireOption) (*types.InstanceAllocationInfo, error)
 	ReleaseInstance(allocation *types.InstanceAllocationInfo, abnormal bool)
 	Invoke(req InvokeRequest) ([]byte, error)
 	InvokeByName(req InvokeRequest) ([]byte, error)
-	CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error)
-	InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error)
-	KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error)
+	CreateInstanceRaw(createReq []byte, option RawRequestOption) ([]byte, error)
+	InvokeInstanceRaw(invokeReq []byte, option RawRequestOption) ([]byte, error)
+	KillRaw(killReq []byte, option RawRequestOption) ([]byte, error)
 	CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg,
 		invokeOpt api.InvokeOptions) (instanceID string, err error)
 	KillByLibRt(instanceID string, signal int, payload []byte) (err error)
@@ -173,12 +178,11 @@ func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOpt
 		return nil, err
 	}
 	return &types.InstanceAllocationInfo{
-		FuncKey:         instanceAllocation.FuncKey,
-		FuncSig:         instanceAllocation.FuncSig,
-		InstanceID:      instanceAllocation.InstanceID,
-		ThreadID:        instanceAllocation.LeaseID,
-		FunctionProxyID: instanceAllocation.RouteAddress,
-		LeaseInterval:   instanceAllocation.LeaseInterval,
+		FuncKey:       instanceAllocation.FuncKey,
+		FuncSig:       instanceAllocation.FuncSig,
+		InstanceID:    instanceAllocation.InstanceID,
+		ThreadID:      instanceAllocation.LeaseID,
+		LeaseInterval: instanceAllocation.LeaseInterval,
 	}, nil
 }
 
@@ -360,7 +364,6 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 	if req.AcceptHeader == httpconstant.AcceptEventStream {
 		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
 	}
-	invokeOpt.BypassDataSystem = req.BypassDataSystem
 	return invokeOpt
 }
 
@@ -404,18 +407,18 @@ func (c *defaultClient) InvokeByName(req InvokeRequest) ([]byte, error) {
 	return c.getRes(objID, req)
 }
 
-func (c *defaultClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
-	resp, err := c.clientLibruntime.CreateInstanceRaw(createReq, option)
+func (c *defaultClient) CreateInstanceRaw(createReq []byte, option RawRequestOption) ([]byte, error) {
+	resp, err := c.clientLibruntime.CreateInstanceRaw(createReq)
 	return resp, err
 }
 
-func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
-	notify, err := c.clientLibruntime.InvokeByInstanceIdRaw(invokeReq, option)
+func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte, option RawRequestOption) ([]byte, error) {
+	notify, err := c.clientLibruntime.InvokeByInstanceIdRaw(invokeReq)
 	return notify, err
 }
 
 func (c *defaultClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
-	return c.clientLibruntime.Kill(instanceID, signal, payload, api.InvokeOptions{})
+	return c.clientLibruntime.Kill(instanceID, signal, payload)
 }
 
 func (c *defaultClient) CreateInstanceByLibRt(
@@ -426,8 +429,8 @@ func (c *defaultClient) CreateInstanceByLibRt(
 	return c.clientLibruntime.CreateInstance(funcMeta, args, invokeOpt)
 }
 
-func (c *defaultClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
-	resp, err := c.clientLibruntime.KillRaw(killReq, option)
+func (c *defaultClient) KillRaw(killReq []byte, option RawRequestOption) ([]byte, error) {
+	resp, err := c.clientLibruntime.KillRaw(killReq)
 	return resp, err
 }
 

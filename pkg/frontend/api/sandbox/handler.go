@@ -113,13 +113,11 @@ func CreateHandler(ctx *gin.Context) {
 	}
 
 	funcMeta := api.FunctionMeta{
-		FuncID:     funcID,
-		ModuleName: "yr.sandbox.sandbox",
-		ClassName:  "SandboxInstance",
-		Language:   api.Python,
-		Api:        api.ActorApi,
-		Name:       &req.Name,
-		Namespace:  &req.Namespace,
+		FuncID:    funcID,
+		Language:  api.Python,
+		Api:       api.ActorApi,
+		Name:      &req.Name,
+		Namespace: &req.Namespace,
 	}
 	invokeOpts := api.InvokeOptions{
 		Cpu:       1000,

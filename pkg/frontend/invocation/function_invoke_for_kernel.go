@@ -429,10 +429,9 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 		TrafficLimited:  ctx.TrafficLimited,
 		BusinessType:    funcSpec.FuncMetaData.BusinessType,
 		TenantID:        funcSpec.FuncMetaData.TenantID,
-		InstanceID:      instanceId,
-		ForceInvoke:     forceInvoke,
-		BypassDataSystem: strings.EqualFold(util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderBypassDataSystem),
-			"true"),
+		InstanceID:       instanceId,
+		ForceInvoke:      forceInvoke,
+		BypassDataSystem: strings.EqualFold(util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderBypassDataSystem), "true"),
 	}
 	if leaseInfo != nil && leaseInfo.FunctionProxyID != "" {
 		req.RouteAddress = leaseInfo.FunctionProxyID
