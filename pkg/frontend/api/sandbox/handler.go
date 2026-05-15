@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,10 +79,13 @@ var waitForSandboxInstanceRunning = func(instanceID, functionID, resourceSpecNot
 
 // CreateRequest holds the parameters for sandbox creation.
 type CreateRequest struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Tenant    string `json:"tenant"`
-	Runtime   string `json:"runtime"`
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Tenant    string   `json:"tenant"`
+	Runtime   string   `json:"runtime"`
+	Rootfs    string   `json:"rootfs"`
+	Image     string   `json:"image"`
+	Ports     []string `json:"ports"`
 }
 
 // CreateHandler handles POST /api/sandbox/create.
@@ -97,6 +101,10 @@ func CreateHandler(ctx *gin.Context) {
 	if req.Name == "" || req.Namespace == "" {
 		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("name and namespace are required"))
 		return
+	}
+	rootfs := req.Rootfs
+	if rootfs == "" {
+		rootfs = req.Image
 	}
 	funcID, err := sandboxFunctionIDForRuntime(req.Runtime)
 	if err != nil {
@@ -122,6 +130,17 @@ func CreateHandler(ctx *gin.Context) {
 			"lifecycle":   "detached",
 			"Concurrency": sandboxConcurrency,
 		},
+	}
+	if rootfs != "" {
+		invokeOpts.CustomExtensions["rootfs"] = rootfs
+	}
+	if len(req.Ports) > 0 {
+		networkConfig, err := buildSandboxNetworkConfig(req.Ports)
+		if err != nil {
+			appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+			return
+		}
+		invokeOpts.CreateOpt["network"] = networkConfig
 	}
 	tenantID := httputil.GetCompatibleGinHeader(ctx.Request, constant.HeaderTenantID, "tenantId")
 	if tenantID == "" {
@@ -205,6 +224,53 @@ func buildSandboxResourceSpecJSON(cpu, memory int) (string, error) {
 		InvokeLabel: "",
 	}
 	data, err := json.Marshal(resourceSpec)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+type sandboxPortForwarding struct {
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol"`
+}
+
+func buildSandboxNetworkConfig(ports []string) (string, error) {
+	portForwardings := make([]sandboxPortForwarding, 0, len(ports))
+	for _, portForward := range ports {
+		protocol := "TCP"
+		portString := strings.TrimSpace(portForward)
+		parts := strings.Split(portString, ":")
+		switch len(parts) {
+		case 1:
+			portString = strings.TrimSpace(parts[0])
+		case 2:
+			protocol = strings.ToUpper(strings.TrimSpace(parts[0]))
+			portString = strings.TrimSpace(parts[1])
+		default:
+			return "", fmt.Errorf("invalid port forwarding format %q, expected PORT or PROTOCOL:PORT", portForward)
+		}
+
+		port, err := strconv.Atoi(portString)
+		if err != nil {
+			return "", fmt.Errorf("invalid port number %q", portString)
+		}
+		if port < 1 || port > 65535 {
+			return "", fmt.Errorf("port must be in [1, 65535], got %d", port)
+		}
+		if protocol != "TCP" && protocol != "UDP" {
+			return "", fmt.Errorf("protocol must be TCP or UDP, got %s", protocol)
+		}
+		portForwardings = append(portForwardings, sandboxPortForwarding{
+			Port:     port,
+			Protocol: protocol,
+		})
+	}
+
+	networkConfig := map[string][]sandboxPortForwarding{
+		"portForwardings": portForwardings,
+	}
+	data, err := json.Marshal(networkConfig)
 	if err != nil {
 		return "", err
 	}
