@@ -56,9 +56,8 @@ run_gocover_report()
     echo "mode: ${GOCOVER_MODE}" > coverage.out && cat ./*.cover | grep -v mode: | grep -v pb.go | sort -r | \
     awk '{if($1 != last) {print $0;last=$1}}' >> coverage.out
 
-    gocov convert coverage.out > coverage.json
-    gocov report coverage.json > CoverResult.txt
-    gocov-html coverage.json > coverage.html
+    go tool cover -func=coverage.out > CoverResult.txt || true
+    go tool cover -html=coverage.out -o coverage.html || true
 }
 
 run_gocover_report
