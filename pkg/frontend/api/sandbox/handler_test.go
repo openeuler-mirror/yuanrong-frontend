@@ -20,7 +20,7 @@ import (
 
 type runtimeStub struct {
 	createInstance func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error)
-	kill           func(instanceID string, signal int, payload []byte) error
+	kill           func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error
 }
 
 func (r *runtimeStub) CreateInstance(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
@@ -45,22 +45,22 @@ func (r *runtimeStub) AcquireInstance(state string, funcMeta api.FunctionMeta, a
 func (r *runtimeStub) ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions) {
 }
 
-func (r *runtimeStub) Kill(instanceID string, signal int, payload []byte) error {
+func (r *runtimeStub) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
 	if r.kill != nil {
-		return r.kill(instanceID, signal, payload)
+		return r.kill(instanceID, signal, payload, invokeOpt)
 	}
 	return nil
 }
 
-func (r *runtimeStub) CreateInstanceRaw(createReqRaw []byte) ([]byte, error) {
+func (r *runtimeStub) CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (r *runtimeStub) InvokeByInstanceIdRaw(invokeReqRaw []byte) ([]byte, error) {
+func (r *runtimeStub) InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (r *runtimeStub) KillRaw(killReqRaw []byte) ([]byte, error) {
+func (r *runtimeStub) KillRaw(killReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
@@ -636,10 +636,11 @@ func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 		capturedPayload    []byte
 	)
 	util.SetAPIClientLibruntime(&runtimeStub{
-		kill: func(instanceID string, signal int, payload []byte) error {
+		kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
 			capturedInstanceID = instanceID
 			capturedSignal = signal
 			capturedPayload = append([]byte(nil), payload...)
+			require.Equal(t, api.InvokeOptions{}, invokeOpt)
 			return nil
 		},
 	})
@@ -669,7 +670,7 @@ func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 
 func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {
 	util.SetAPIClientLibruntime(&runtimeStub{
-		kill: func(instanceID string, signal int, payload []byte) error {
+		kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
 			return fmt.Errorf("kill failed")
 		},
 	})

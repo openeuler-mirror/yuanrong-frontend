@@ -59,7 +59,7 @@ func (f *FakeLibruntimeSdkClient) ReleaseInstance(allocation api.InstanceAllocat
 }
 
 // Kill -
-func (f *FakeLibruntimeSdkClient) Kill(instanceID string, signal int, payload []byte) error {
+func (f *FakeLibruntimeSdkClient) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
 	return nil
 }
 
@@ -271,20 +271,6 @@ func (f *FakeLibruntimeSdkClient) IsDsHealth() bool {
 // GetActiveMasterAddr for getting active master address
 func (f *FakeLibruntimeSdkClient) GetActiveMasterAddr() string {
 	return "mockMasterAddr"
-}
-
-// SetGauge -
-func (f *FakeLibruntimeSdkClient) SetGauge(data api.GaugeData) error { return nil }
-
-// IncreaseGauge -
-func (f *FakeLibruntimeSdkClient) IncreaseGauge(data api.GaugeData) error { return nil }
-
-// DecreaseGauge -
-func (f *FakeLibruntimeSdkClient) DecreaseGauge(data api.GaugeData) error { return nil }
-
-// IncreaseUInt64Counter -
-func (f *FakeLibruntimeSdkClient) IncreaseUInt64Counter(data api.UInt64CounterData) error {
-	return nil
 }
 
 // FakeStreamProducer -

@@ -46,7 +46,7 @@ type invokerLibruntime interface {
 		acquireOpt api.InvokeOptions) (api.InstanceAllocation, error)
 
 	ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions)
-	Kill(instanceID string, signal int, payload []byte) error
+	Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) (err error)
 
 	CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) (createRespRaw []byte, err error)
 	InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) (resultRaw []byte, err error)
@@ -173,11 +173,12 @@ func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOpt
 		return nil, err
 	}
 	return &types.InstanceAllocationInfo{
-		FuncKey:       instanceAllocation.FuncKey,
-		FuncSig:       instanceAllocation.FuncSig,
-		InstanceID:    instanceAllocation.InstanceID,
-		ThreadID:      instanceAllocation.LeaseID,
-		LeaseInterval: instanceAllocation.LeaseInterval,
+		FuncKey:         instanceAllocation.FuncKey,
+		FuncSig:         instanceAllocation.FuncSig,
+		InstanceID:      instanceAllocation.InstanceID,
+		ThreadID:        instanceAllocation.LeaseID,
+		FunctionProxyID: instanceAllocation.RouteAddress,
+		LeaseInterval:   instanceAllocation.LeaseInterval,
 	}, nil
 }
 
@@ -359,6 +360,7 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 	if req.AcceptHeader == httpconstant.AcceptEventStream {
 		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
 	}
+	invokeOpt.BypassDataSystem = req.BypassDataSystem
 	return invokeOpt
 }
 
@@ -413,7 +415,7 @@ func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte, option api.RawReques
 }
 
 func (c *defaultClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
-	return c.clientLibruntime.Kill(instanceID, signal, payload)
+	return c.clientLibruntime.Kill(instanceID, signal, payload, api.InvokeOptions{})
 }
 
 func (c *defaultClient) CreateInstanceByLibRt(
