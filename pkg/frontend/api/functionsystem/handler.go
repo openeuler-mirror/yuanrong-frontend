@@ -29,6 +29,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"yuanrong.org/kernel/runtime/libruntime/api"
+
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/tracer"
@@ -272,10 +274,10 @@ func getHeaderPrams(ctx *gin.Context) (string, string) {
 	return remoteClientID, traceID
 }
 
-func buildRawRequestOption(ctx context.Context) util.RawRequestOption {
+func buildRawRequestOption(ctx context.Context) api.RawRequestOption {
 	carrier := propagation.HeaderCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
-	return util.RawRequestOption{
+	return api.RawRequestOption{
 		TraceParent: carrier.Get(constant.HeaderTraceParent),
 	}
 }

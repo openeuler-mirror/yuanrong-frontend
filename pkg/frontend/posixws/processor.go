@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/base64"
 
+	"yuanrong.org/kernel/runtime/libruntime/api"
+
 	"frontend/pkg/frontend/common/util"
 )
 
@@ -42,7 +44,7 @@ func (p *Processor) ProcessCreate(ctx context.Context, payload string, headers m
 		return "", err
 	}
 
-	option := util.RawRequestOption{
+	option := api.RawRequestOption{
 		TraceParent: headers["X-Trace-Parent"],
 	}
 
@@ -61,7 +63,7 @@ func (p *Processor) ProcessInvoke(ctx context.Context, payload string, headers m
 		return "", err
 	}
 
-	option := util.RawRequestOption{
+	option := api.RawRequestOption{
 		TraceParent: headers["X-Trace-Parent"],
 	}
 
@@ -75,7 +77,7 @@ func (p *Processor) ProcessInvoke(ctx context.Context, payload string, headers m
 
 // ProcessCreateRaw handles create operation with raw binary payload (no base64)
 func (p *Processor) ProcessCreateRaw(ctx context.Context, payload []byte, headers map[string]string) ([]byte, error) {
-	option := util.RawRequestOption{
+	option := api.RawRequestOption{
 		TraceParent: headers["X-Trace-Parent"],
 	}
 	return p.client.CreateInstanceRaw(payload, option)
@@ -83,7 +85,7 @@ func (p *Processor) ProcessCreateRaw(ctx context.Context, payload []byte, header
 
 // ProcessInvokeRaw handles invoke operation with raw binary payload (no base64)
 func (p *Processor) ProcessInvokeRaw(ctx context.Context, payload []byte, headers map[string]string) ([]byte, error) {
-	option := util.RawRequestOption{
+	option := api.RawRequestOption{
 		TraceParent: headers["X-Trace-Parent"],
 	}
 	return p.client.InvokeInstanceRaw(payload, option)
