@@ -29,6 +29,11 @@ import (
 )
 
 func TestInterfaceLogger(t *testing.T) {
+	tmpDir := t.TempDir()
+	patch := gomonkey.ApplyFunc(config.GetDefaultCoreInfo, func() config.CoreInfo {
+		return config.CoreInfo{FilePath: tmpDir, Level: "INFO"}
+	})
+	defer patch.Reset()
 	cfg := InterfaceEncoderConfig{ModuleName: "WorkerManager"}
 	interfaceLog, err := NewInterfaceLogger("", "worker-manager-interface", cfg)
 	interfaceLog.Write("123")

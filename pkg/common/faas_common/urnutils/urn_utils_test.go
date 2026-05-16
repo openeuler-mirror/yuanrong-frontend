@@ -460,7 +460,7 @@ func TestCheckAliasUrnTenant(t *testing.T) {
 		args args
 		want bool
 	}{
-		{"case1", args{tenantID: "default",
+		{"case1", args{tenantID: "12345678901234561234567890123456",
 			aliasUrn: "sn:cn:yrk:12345678901234561234567890123456:function:helloworld:myaliasv1"}, true},
 		{"case2 error", args{tenantID: "default",
 			aliasUrn: "sn:cn:yrk:12345678901234561234567890123456:function:helloworld"}, false},

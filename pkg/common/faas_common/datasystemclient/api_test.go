@@ -1053,6 +1053,16 @@ func (f *invokerLibruntimeMock) GetActiveMasterAddr() string {
 	return "mockMasterAddr"
 }
 
+func (f *invokerLibruntimeMock) SetGauge(data api.GaugeData) error { return nil }
+
+func (f *invokerLibruntimeMock) IncreaseGauge(data api.GaugeData) error { return nil }
+
+func (f *invokerLibruntimeMock) DecreaseGauge(data api.GaugeData) error { return nil }
+
+func (f *invokerLibruntimeMock) IncreaseUInt64Counter(data api.UInt64CounterData) error {
+	return nil
+}
+
 func TestKVGet(t *testing.T) {
 	convey.Convey("TestKVGetLibruntime", t, func() {
 		keyNotFound := 1
