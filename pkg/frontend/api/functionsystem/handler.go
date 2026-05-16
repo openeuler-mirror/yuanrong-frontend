@@ -137,9 +137,7 @@ func CreateHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
-	stopHeartbeat := httputil.StartProcessingHeartbeat(ctx, log.GetLogger())
 	resp, err := util.NewClient().CreateInstanceRaw(body, buildRawRequestOption(spanCtx))
-	stopHeartbeat()
 	log.GetLogger().Debugf("receive instance create response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -198,9 +196,7 @@ func InvokeHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
-	stopHeartbeat := httputil.StartProcessingHeartbeat(ctx, log.GetLogger())
 	notify, err := util.NewClient().InvokeInstanceRaw(body, buildRawRequestOption(spanCtx))
-	stopHeartbeat()
 	log.GetLogger().Debugf("receive instance invoke response, msg: %s", notify)
 	if err != nil {
 		httpCode = http.StatusBadRequest

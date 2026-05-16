@@ -147,11 +147,9 @@ func invokeWrap(ctx *gin.Context, isShortUrl bool) {
 	}
 	defer writeInterfaceLog(processCtx)
 	logger = logger.With(zap.Any("funcKey", processCtx.FuncKey))
-	stopHeartbeat := httputil.StartProcessingHeartbeat(ctx, logger)
 	if err := middleware.Invoker.Handle(processCtx); err != nil {
 		logger.Errorf("invoke failed,error: %s", err.Error())
 	}
-	stopHeartbeat()
 	writeHTTPResponse(ctx, processCtx)
 	sessionId := processCtx.ReqHeader[httpconstant.HeaderInstanceSession]
 	instanceLabel := processCtx.ReqHeader[httpconstant.HeaderInstanceLabel]
