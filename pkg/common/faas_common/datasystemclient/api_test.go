@@ -1063,6 +1063,10 @@ func (f *invokerLibruntimeMock) IncreaseUInt64Counter(data api.UInt64CounterData
 	return nil
 }
 
+func (f *invokerLibruntimeMock) ReleaseGRefs(remoteClientID string) error {
+	return nil
+}
+
 func TestKVGet(t *testing.T) {
 	convey.Convey("TestKVGetLibruntime", t, func() {
 		keyNotFound := 1
