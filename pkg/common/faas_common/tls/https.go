@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 
+	"frontend/pkg/common/crypto"
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/utils"
@@ -209,6 +210,7 @@ func loadHTTPSConfig(config InternalHTTPSConfig) error {
 		return errors.New("invalid TLS ciphers")
 	}
 	httpsConfigs.CipherSuite = cipherSuites
+
 	return nil
 }
 
@@ -289,6 +291,13 @@ func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
 	plainKeyBlock := &pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: keyBlock.Bytes,
+	}
+	if _, ok := keyBlock.Headers["DEK-Info"]; ok {
+		decryptedBytes, err := crypto.DecryptPEMBlock(keyBlock, []byte(passPhase))
+		if err != nil {
+			return nil, err
+		}
+		plainKeyBlock.Bytes = decryptedBytes
 	}
 	keyContent = pem.EncodeToMemory(plainKeyBlock)
 	return keyContent, nil

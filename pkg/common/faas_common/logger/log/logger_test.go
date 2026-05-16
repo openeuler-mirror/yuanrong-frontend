@@ -80,6 +80,10 @@ func TestFormatLogger(t *testing.T) {
 		assert.NotNil(t, err)
 	})
 	convey.Convey("new log success", t, func() {
+		patch := gomonkey.ApplyFunc(zap.NewWithLevel, func(coreInfo config.CoreInfo, isAsync bool) (*uberZap.Logger, error) {
+			return uberZap.NewNop(), nil
+		})
+		defer patch.Reset()
 		logger, err := NewFormatLogger(constant.MonitorFileName, true, config.CoreInfo{})
 		assert.Nil(t, err)
 		logger.With(uberZap.Any("name", "test-log"))

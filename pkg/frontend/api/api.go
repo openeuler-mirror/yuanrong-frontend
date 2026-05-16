@@ -187,7 +187,7 @@ func InitRoute(r *gin.Engine) {
 	}
 	r.GET("api/instances", gin.WrapF(webui.HandleInstances))
 
-	// POSIX WebSocket for create/invoke operations.
+	// POSIX WebSocket for create/invoke operations
 	r.GET("/serverless/v1/posix/ws", gin.WrapF(posixws.HandlePosixWebSocket))
 
 	// Function invoke tool (requires authentication)
