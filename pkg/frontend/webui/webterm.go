@@ -443,11 +443,15 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	instance := query.Get("instance")
 
-	cmdStr := query.Get("command")
+	// Support multi-value command= params (new format: each argv element is a separate param)
+	// and legacy single-value format (space-separated string, e.g. "echo hello").
 	command := defaultCommand
-	if cmdStr != "" {
-		// Split command string into arguments, handling shell-like parsing
-		command = parseCommand(cmdStr)
+	if cmdValues := query["command"]; len(cmdValues) > 1 {
+		// Multi-element argv: use as-is (each query param is one argument)
+		command = cmdValues
+	} else if len(cmdValues) == 1 {
+		// Single string: parse space-separated for legacy compatibility
+		command = parseCommand(cmdValues[0])
 	}
 
 	tty := defaultTTY
@@ -689,6 +693,17 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						}
 						break
 					}
+				}
+				// STDIN_EOF signals end of stdin — close the remote stdin pipe
+				if string(message) == "STDIN_EOF" {
+					err := stream.Send(&exec_service.ExecMessage{
+						SessionId: sessionID,
+						Payload:   &exec_service.ExecMessage_StdinEof{StdinEof: &exec_service.ExecStdinEof{}},
+					})
+					if err != nil {
+						log.GetLogger().Infof("gRPC stdin_eof error: %v", err)
+					}
+					break
 				}
 				fallthrough
 			case websocket.BinaryMessage:
