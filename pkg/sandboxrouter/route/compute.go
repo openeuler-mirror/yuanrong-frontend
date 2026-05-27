@@ -1,0 +1,99 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package route
+
+import (
+	"encoding/json"
+	"errors"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+// portForwardKey mirrors the C++ PORT_FORWARD_KEY extension key.
+const portForwardKey = "portForward"
+
+// ErrInvalidTarget means the InstanceInfo cannot yield a usable backend
+// (e.g. proxyGrpcAddress has no extractable IP).
+var ErrInvalidTarget = errors.New("invalid route target")
+
+// ComputeRoutes replicates the C++ TraefikRouteCache::ParseRoutes computation:
+// it turns one InstanceInfo into the set of (safeID, containerPort) -> backend
+// targets implied by extensions["portForward"]. It does NOT consult instance
+// status; the caller decides whether a RUNNING instance's routes are added or
+// an exited instance's routes are removed (matching the C++ actor split).
+//
+// portForward is a JSON array of strings, each "protocol:hostPort:containerPort"
+// (3 parts) or "hostPort:containerPort" (2 parts, http). The route key uses the
+// containerPort (sandbox port); the target uses hostPort (node port). The host
+// IP comes from proxyGrpcAddress.
+//
+// Valid inputs match the C++ output byte-for-byte. Malformed individual entries
+// are skipped (slightly more lenient than the C++ try/catch, which aborts the
+// remainder); a non-array / non-JSON portForward returns an error.
+func ComputeRoutes(info *InstanceInfo) ([]*RouteTarget, error) {
+	raw, ok := info.Extensions[portForwardKey]
+	if !ok || raw == "" {
+		return nil, nil // not a port-forwarding (sandbox) instance
+	}
+
+	hostIP := ExtractIP(info.ProxyGrpcAddress)
+	if hostIP == "" {
+		return nil, ErrInvalidTarget
+	}
+	safeID := SanitizeID(info.InstanceID)
+
+	var entries []string
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, err
+	}
+
+	routes := make([]*RouteTarget, 0, len(entries))
+	for _, e := range entries {
+		parts := strings.Split(e, ":")
+		var protocol, hostPort, containerPort string
+		switch len(parts) {
+		case 3:
+			protocol, hostPort, containerPort = parts[0], parts[1], parts[2]
+		case 2:
+			protocol, hostPort, containerPort = "http", parts[0], parts[1]
+		default:
+			continue
+		}
+
+		cport, err := strconv.ParseUint(containerPort, 10, 16)
+		if err != nil || cport == 0 {
+			continue
+		}
+		hport, err := strconv.ParseUint(hostPort, 10, 16)
+		if err != nil || hport == 0 {
+			continue
+		}
+
+		scheme := "http"
+		if strings.EqualFold(protocol, "https") {
+			scheme = "https"
+		}
+		u := &url.URL{Scheme: scheme, Host: hostIP + ":" + strconv.FormatUint(hport, 10)}
+		routes = append(routes, &RouteTarget{
+			Key:       RouteKey{SafeInstanceID: safeID, Port: uint16(cport)},
+			TargetURL: u,
+			Scheme:    scheme,
+		})
+	}
+	return routes, nil
+}
