@@ -74,6 +74,13 @@ func New(cfg *config.SandboxRouterConfig) (*Router, error) {
 
 	res := resolver.NewInstanceInfoWatchResolver()
 	server := proxy.New(res)
+
+	backendTLS, err := cfg.BackendTLSConfig()
+	if err != nil {
+		return nil, fmt.Errorf("sandboxrouter: backend TLS config: %w", err)
+	}
+	server.SetHTTPSTransport(&http.Transport{TLSClientConfig: backendTLS})
+
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.ListenPort),
 		Handler: server,

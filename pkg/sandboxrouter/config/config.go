@@ -32,6 +32,15 @@ type SandboxRouterConfig struct {
 	TLSCAFile           string `json:"tlsCAFile" valid:"optional"`
 	TLSCertFile         string `json:"tlsCertFile" valid:"optional"`
 	TLSKeyFile          string `json:"tlsKeyFile" valid:"optional"`
+
+	// Backend TLS for https-protocol sandbox ports (equivalent of FunctionMaster's
+	// serversTransport). Defaults mirror the platform's yr-backend-tls@file, which
+	// currently uses insecureSkipVerify; set BackendTLSVerify to opt into verification.
+	BackendTLSVerify     bool   `json:"backendTLSVerify" valid:"optional"`   // false = skip verify (default)
+	BackendTLSCAFile     string `json:"backendTLSCAFile" valid:"optional"`   // verify backend against this CA
+	BackendTLSCertFile   string `json:"backendTLSCertFile" valid:"optional"` // client cert to backend (mTLS)
+	BackendTLSKeyFile    string `json:"backendTLSKeyFile" valid:"optional"`
+	BackendTLSServerName string `json:"backendTLSServerName" valid:"optional"` // SNI override
 }
 
 // Defaults for unset fields.

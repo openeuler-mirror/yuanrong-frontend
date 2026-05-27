@@ -18,6 +18,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -118,10 +119,41 @@ func TestProxyUpstreamTimeoutIs504(t *testing.T) {
 	defer upstream.Close()
 
 	s := New(fakeResolver{target: targetTo(t, upstream.URL)})
-	s.transport = &http.Transport{ResponseHeaderTimeout: 20 * time.Millisecond}
+	s.httpTransport = &http.Transport{ResponseHeaderTimeout: 20 * time.Millisecond}
 
 	rec := do(s, http.MethodGet, "/inst/8080/x")
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Errorf("status = %d, want 504", rec.Code)
+	}
+}
+
+// An https target is dispatched to the https transport; with skip-verify
+// configured (the platform serversTransport default) a self-signed backend works.
+func TestProxyHTTPSBackendSkipVerify(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "secure-pong")
+	}))
+	defer upstream.Close()
+
+	s := New(fakeResolver{target: targetTo(t, upstream.URL)}) // upstream.URL is https://...
+	s.SetHTTPSTransport(&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}})
+
+	rec := do(s, http.MethodGet, "/inst/8443/api")
+	if rec.Code != http.StatusOK || rec.Body.String() != "secure-pong" {
+		t.Errorf("status = %d body = %q, want 200 secure-pong", rec.Code, rec.Body.String())
+	}
+}
+
+// Without skip-verify, the self-signed backend cert fails verification -> 502.
+func TestProxyHTTPSBackendVerifyFails(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	s := New(fakeResolver{target: targetTo(t, upstream.URL)})
+	s.SetHTTPSTransport(&http.Transport{TLSClientConfig: &tls.Config{}}) // verify against system roots
+
+	rec := do(s, http.MethodGet, "/inst/8443/api")
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (TLS verify failure)", rec.Code)
 	}
 }

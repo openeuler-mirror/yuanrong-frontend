@@ -48,22 +48,41 @@ type ctxKey int
 
 const reqInfoKey ctxKey = 0
 
-// Server parses, resolves, and reverse-proxies sandbox traffic.
+// Server parses, resolves, and reverse-proxies sandbox traffic. http and https
+// backends use separate transports so https targets can carry backend TLS
+// config (the equivalent of FunctionMaster's serversTransport).
 type Server struct {
-	resolver  Resolver
-	transport *http.Transport
-	proxy     *httputil.ReverseProxy
+	resolver       Resolver
+	httpTransport  *http.Transport
+	httpsTransport *http.Transport
+	proxy          *httputil.ReverseProxy
 }
 
-// New builds a Server over the given resolver.
+// New builds a Server over the given resolver with default transports. The
+// https transport uses Go defaults until SetHTTPSTransport configures backend
+// TLS; callers serving https targets should set it.
 func New(r Resolver) *Server {
-	s := &Server{resolver: r, transport: &http.Transport{}}
+	s := &Server{resolver: r, httpTransport: &http.Transport{}, httpsTransport: &http.Transport{}}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:      s.rewrite,
-		Transport:    roundTripperFunc(func(req *http.Request) (*http.Response, error) { return s.transport.RoundTrip(req) }),
+		Transport:    roundTripperFunc(s.roundTrip),
 		ErrorHandler: errorHandler,
 	}
 	return s
+}
+
+// SetHTTPSTransport sets the transport used for https backends, carrying the
+// backend TLS configuration.
+func (s *Server) SetHTTPSTransport(t *http.Transport) {
+	s.httpsTransport = t
+}
+
+// roundTrip dispatches to the http or https transport by target scheme.
+func (s *Server) roundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme == "https" {
+		return s.httpsTransport.RoundTrip(req)
+	}
+	return s.httpTransport.RoundTrip(req)
 }
 
 // ServeHTTP parses the path, resolves the backend, and proxies. Error codes
