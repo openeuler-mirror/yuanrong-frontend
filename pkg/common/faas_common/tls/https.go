@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 
+	"frontend/pkg/common/crypto"
 	"frontend/pkg/common/faas_common/localauth"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/utils"
@@ -52,17 +53,17 @@ type HTTPSConfig struct {
 
 // InternalHTTPSConfig is for input config
 type InternalHTTPSConfig struct {
-	HTTPSEnable             bool     `json:"httpsEnable" yaml:"httpsEnable" valid:"optional"`
-	TLSProtocol             string   `json:"tlsProtocol" yaml:"tlsProtocol" valid:"optional"`
-	TLSCiphers              string   `json:"tlsCiphers" yaml:"tlsCiphers" valid:"optional"`
-	TLSCipherSlices         []string `json:"TLSCipherSlices" valid:"optional"`
-	SSLBasePath             string   `json:"sslBasePath" yaml:"sslBasePath" valid:"optional"`
-	RootCAFile              string   `json:"rootCAFile" yaml:"rootCAFile" valid:"optional"`
-	ModuleCertFile          string   `json:"moduleCertFile" yaml:"moduleCertFile" valid:"optional"`
-	ModuleKeyFile           string   `json:"moduleKeyFile" yaml:"moduleKeyFile" valid:"optional"`
-	PwdFile        string `json:"pwdFile" yaml:"pwdFile" valid:"optional"`
-	SecretName     string `json:"secretName" yaml:"secretName" valid:"optional"`
-	SSLDecryptTool string `json:"sslDecryptTool" yaml:"sslDecryptTool" valid:"optional"`
+	HTTPSEnable     bool     `json:"httpsEnable" yaml:"httpsEnable" valid:"optional"`
+	TLSProtocol     string   `json:"tlsProtocol" yaml:"tlsProtocol" valid:"optional"`
+	TLSCiphers      string   `json:"tlsCiphers" yaml:"tlsCiphers" valid:"optional"`
+	TLSCipherSlices []string `json:"TLSCipherSlices" valid:"optional"`
+	SSLBasePath     string   `json:"sslBasePath" yaml:"sslBasePath" valid:"optional"`
+	RootCAFile      string   `json:"rootCAFile" yaml:"rootCAFile" valid:"optional"`
+	ModuleCertFile  string   `json:"moduleCertFile" yaml:"moduleCertFile" valid:"optional"`
+	ModuleKeyFile   string   `json:"moduleKeyFile" yaml:"moduleKeyFile" valid:"optional"`
+	PwdFile         string   `json:"pwdFile" yaml:"pwdFile" valid:"optional"`
+	SecretName      string   `json:"secretName" yaml:"secretName" valid:"optional"`
+	SSLDecryptTool  string   `json:"sslDecryptTool" yaml:"sslDecryptTool" valid:"optional"`
 	// ClientAuthType specifies the TLS client authentication mode:
 	//   - NoClientCert: One-way TLS, client cert not required (most common HTTPS scenario)
 	//   - RequestClientCert: Request but don't require client cert
@@ -181,7 +182,7 @@ func loadTLSConfig() error {
 func loadHTTPSConfig(config InternalHTTPSConfig) error {
 	// Parse client auth type
 	clientAuthType := parseClientAuthType(config.ClientAuthType)
-	
+
 	httpsConfigs = &HTTPSConfig{
 		MinVers:        tls.VersionTLS12,
 		MaxVers:        tls.VersionTLS12,
@@ -209,6 +210,7 @@ func loadHTTPSConfig(config InternalHTTPSConfig) error {
 		return errors.New("invalid TLS ciphers")
 	}
 	httpsConfigs.CipherSuite = cipherSuites
+
 	return nil
 }
 
@@ -290,6 +292,13 @@ func containPassPhase(keyContent []byte, passPhase string, decryptTool string,
 		Type:  "RSA PRIVATE KEY",
 		Bytes: keyBlock.Bytes,
 	}
+	if _, ok := keyBlock.Headers["DEK-Info"]; ok {
+		decryptedBytes, err := crypto.DecryptPEMBlock(keyBlock, []byte(passPhase))
+		if err != nil {
+			return nil, err
+		}
+		plainKeyBlock.Bytes = decryptedBytes
+	}
 	keyContent = pem.EncodeToMemory(plainKeyBlock)
 	return keyContent, nil
 }
@@ -332,7 +341,7 @@ func parseClientAuthType(authType string) tls.ClientAuthType {
 	if authType == "" {
 		return tls.RequireAndVerifyClientCert
 	}
-	
+
 	// Parse ClientAuthType string
 	switch authType {
 	case "NoClientCert":

@@ -20,6 +20,8 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -62,5 +64,19 @@ func TestInitRoute(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			InitRoute(tt.args.r)
 		})
+	}
+}
+
+func TestInitRouteRegistersPosixWebSocket(t *testing.T) {
+	config.InitFunctionConfig([]byte(cfg))
+	r := gin.New()
+	InitRoute(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/serverless/v1/posix/ws", nil)
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+
+	if resp.Code == http.StatusNotFound {
+		t.Fatalf("POSIX WebSocket route is not registered")
 	}
 }

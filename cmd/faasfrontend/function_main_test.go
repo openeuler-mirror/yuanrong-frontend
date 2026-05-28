@@ -17,7 +17,6 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"reflect"
 	"testing"
@@ -25,7 +24,6 @@ import (
 	"github.com/agiledragon/gomonkey/v2"
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
-	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/server"
 	"frontend/pkg/frontend/state"
 	"github.com/stretchr/testify/assert"
@@ -55,16 +53,35 @@ var cfg = `{
 var invalidCfg = `{"abc":"123"`
 
 func TestCheckpointHandler(t *testing.T) {
-	state.InitState()
-	_ = state.SetState([]byte(`{}`))
-
-	got, err := CheckpointHandlerLibruntime("123")
-	assert.NoError(t, err)
-	assert.NotEmpty(t, got)
-
-	// Verify the checkpoint bytes can be round-tripped back via RecoverHandler
-	var roundTrip state.FrontendState
-	assert.NoError(t, json.Unmarshal(got, &roundTrip))
+	state.SetState([]byte(`{}`))
+	type args struct {
+		checkpointID string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:    "success",
+			args:    args{"123"},
+			want:    []byte(`{"Config":null}`),
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CheckpointHandlerLibruntime(tt.args.checkpointID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CheckpointHandler() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("CheckpointHandler() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestCallHandler(t *testing.T) {
@@ -83,7 +100,7 @@ func TestCallHandler(t *testing.T) {
 			args: args{
 				args: []api.Arg{},
 			},
-			want:    []byte(nil),
+			want:    nil,
 			wantErr: true,
 		},
 		{
@@ -97,7 +114,10 @@ func TestCallHandler(t *testing.T) {
 					{Data: []byte("5")},
 				},
 			},
-			want:    []byte(`{"Code":0,"Message":"Successful in-cloud invoke"}`),
+			want: InCloudFunctionInvokeResponse{
+				Code:    0,
+				Message: "Successful in-cloud invoke",
+			},
 			wantErr: false,
 		},
 	}
@@ -124,12 +144,6 @@ func TestInitHandlerError(t *testing.T) {
 		gomonkey.ApplyFunc(server.GracefulShutdown, func(httpServer *http.Server) {
 			return
 		}),
-		gomonkey.ApplyFunc(config.InitEtcd, func(stopCh <-chan struct{}) error {
-			return nil
-		}),
-		gomonkey.ApplyFunc(setupFaaSFrontendLibruntime, func(rt api.LibruntimeAPI, stopCh <-chan struct{}) error {
-			return nil
-		}),
 	}
 	defer func() {
 		for _, patch := range patches {
@@ -138,11 +152,11 @@ func TestInitHandlerError(t *testing.T) {
 	}()
 	res, err := InitHandlerLibruntime([]api.Arg{{Data: []byte(invalidCfg)}}, nil)
 	assert.NotNil(t, err)
-	assert.Nil(t, res)
+	assert.Equal(t, nil, res)
 
 	res, err = InitHandlerLibruntime([]api.Arg{{Data: []byte(cfg)}}, nil)
 	assert.Nil(t, err)
-	assert.Nil(t, res)
+	assert.Equal(t, "", res)
 }
 
 func TestRecoverHandler(t *testing.T) {
@@ -150,10 +164,6 @@ func TestRecoverHandler(t *testing.T) {
 		return
 	})
 	defer applyFunc.Reset()
-	setupPatch := gomonkey.ApplyFunc(setupFaaSFrontendLibruntime, func(rt api.LibruntimeAPI, stopCh <-chan struct{}) error {
-		return nil
-	})
-	defer setupPatch.Reset()
 	patches := gomonkey.ApplyFunc(server.GracefulShutdown, func(httpServer *http.Server) {
 		return
 	})

@@ -55,14 +55,19 @@ func InitState() {
 		log.GetLogger().Warnf("state is disable, skip init state")
 		return
 	}
+	frontendStateLock.Lock()
 	if frontendHandlerQueue != nil {
+		frontendStateLock.Unlock()
 		return
 	}
 	frontendHandlerQueue = state.NewStateQueue(defaultHandlerQueueSize)
 	if frontendHandlerQueue == nil {
+		frontendStateLock.Unlock()
 		return
 	}
-	go frontendHandlerQueue.Run(updateState)
+	queue := frontendHandlerQueue
+	frontendStateLock.Unlock()
+	go queue.Run(updateState)
 }
 
 // SetState -
@@ -82,7 +87,7 @@ func GetStateByte() ([]byte, error) {
 	frontendStateLock.RLock()
 	defer frontendStateLock.RUnlock()
 	if frontendHandlerQueue == nil {
-		return json.Marshal(frontendState)
+		return nil, fmt.Errorf("frontendHandlerQueue is not initialized")
 	}
 	stateBytes, err := frontendHandlerQueue.GetState(stateKey)
 	if err != nil {
@@ -94,21 +99,21 @@ func GetStateByte() ([]byte, error) {
 
 // DeleteStateByte -
 func DeleteStateByte() error {
+	frontendStateLock.RLock()
+	defer frontendStateLock.RUnlock()
 	if frontendHandlerQueue == nil {
 		return fmt.Errorf("frontendHandlerQueue is not initialized")
 	}
-	frontendStateLock.RLock()
-	defer frontendStateLock.RUnlock()
 	return frontendHandlerQueue.DeleteState(stateKey)
 }
 
 func updateState(value interface{}, tags ...string) {
+	frontendStateLock.Lock()
+	defer frontendStateLock.Unlock()
 	if frontendHandlerQueue == nil {
 		log.GetLogger().Errorf("frontend state frontendHandlerQueue is nil")
 		return
 	}
-	frontendStateLock.Lock()
-	defer frontendStateLock.Unlock()
 	switch v := value.(type) {
 	case types.Config:
 		frontendState.Config = v
@@ -132,10 +137,13 @@ func updateState(value interface{}, tags ...string) {
 
 // Update is used to write frontend state to the cache queue
 func Update(value interface{}, tags ...string) {
-	if frontendHandlerQueue == nil {
+	frontendStateLock.RLock()
+	queue := frontendHandlerQueue
+	frontendStateLock.RUnlock()
+	if queue == nil {
 		return
 	}
-	if err := frontendHandlerQueue.Push(value, tags...); err != nil {
+	if err := queue.Push(value, tags...); err != nil {
 		log.GetLogger().Errorf("failed to push state to state queue: %s", err.Error())
 	}
 }

@@ -59,9 +59,7 @@ const (
 
 // InitHandlerLibruntime is the init handler called by runtime
 func InitHandlerLibruntime(args []api.Arg, rt api.LibruntimeAPI) ([]byte, error) {
-	if rt != nil {
-		log.SetupLoggerLibruntime(rt.GetFormatLogger())
-	}
+	log.SetupLoggerLibruntime(rt.GetFormatLogger())
 	var err error
 	defer func() {
 		if err != nil {
@@ -72,25 +70,25 @@ func InitHandlerLibruntime(args []api.Arg, rt api.LibruntimeAPI) ([]byte, error)
 	}()
 	if err = config.InitFunctionConfig(args[0].Data); err != nil {
 		log.GetLogger().Errorf("init frontend config fail, err: %s", err)
-		return nil, err
+		return []byte{}, err
 	}
 	if err = config.InitEtcd(stopCh); err != nil {
 		log.GetLogger().Errorf("failed to init etcd ,err:%s", err.Error())
-		return nil, err
+		return []byte{}, err
 	}
 	state.InitState()
 	var stateByte []byte
 	stateByte, err = state.GetStateByte()
 	if err == nil && len(stateByte) != 0 {
-		return nil, RecoverHandlerLibruntime(stateByte, rt)
+		return []byte{}, RecoverHandlerLibruntime(stateByte, rt)
 	}
 	cfg := config.GetConfig()
 	state.Update(cfg)
 	if err = setupFaaSFrontendLibruntime(rt, stopCh); err != nil {
-		return nil, err
+		return []byte{}, err
 	}
 	config.ClearSensitiveInfo()
-	return nil, nil
+	return []byte{}, nil
 }
 
 // CallHandlerLibruntime handles the invoke request between in-cloud faas functions
@@ -115,7 +113,7 @@ func CallHandlerLibruntime(argsLibrt []api.Arg) ([]byte, error) {
 	resp := innerInvoke(req)
 	b, err := json.Marshal(resp)
 	if err != nil {
-		return nil, err
+		return []byte{}, err
 	}
 	return b, nil
 }
@@ -163,9 +161,7 @@ func initStateAndConfig(stateData []byte) error {
 // RecoverHandlerLibruntime is the recover handler called by runtime
 func RecoverHandlerLibruntime(stateData []byte, rt api.LibruntimeAPI) error {
 	var err error
-	if rt != nil {
-		log.SetupLoggerLibruntime(rt.GetFormatLogger())
-	}
+	log.SetupLoggerLibruntime(rt.GetFormatLogger())
 	err = initStateAndConfig(stateData)
 	if err != nil {
 		return err

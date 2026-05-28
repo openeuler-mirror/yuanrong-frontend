@@ -58,18 +58,19 @@ type InstanceAllocationFailedInfo struct {
 
 // InstanceAllocationInfo contains instance router info and lease returned to function accessor
 type InstanceAllocationInfo struct {
-	FuncKey       string `json:"funcKey"`
-	FuncSig       string `json:"funcSig"`
-	InstanceID    string `json:"instanceID"`
-	ThreadID      string `json:"threadID"`
-	InstanceIP    string `json:"instanceIP"`
-	InstancePort  string `json:"instancePort"`
-	NodeIP        string `json:"nodeIP"`
-	NodePort      string `json:"nodePort"`
-	LeaseInterval int64  `json:"leaseInterval"`
-	CPU           int64  `json:"cpu"`
-	Memory        int64  `json:"memory"`
-	ForceInvoke   bool   `json:"forceInvoke"`
+	FuncKey         string `json:"funcKey"`
+	FuncSig         string `json:"funcSig"`
+	InstanceID      string `json:"instanceID"`
+	ThreadID        string `json:"threadID"`
+	InstanceIP      string `json:"instanceIP"`
+	InstancePort    string `json:"instancePort"`
+	NodeIP          string `json:"nodeIP"`
+	NodePort        string `json:"nodePort"`
+	FunctionProxyID string `json:"functionProxyID"`
+	LeaseInterval   int64  `json:"leaseInterval"`
+	CPU             int64  `json:"cpu"`
+	Memory          int64  `json:"memory"`
+	ForceInvoke     bool   `json:"forceInvoke"`
 }
 
 // ExtraParams for interface CreateInstance

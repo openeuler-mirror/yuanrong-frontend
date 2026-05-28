@@ -80,11 +80,11 @@ func TestNewClientLibruntime(t *testing.T) {
 					return returnObjID, nil
 				}),
 		}
-		defer func() {
+		Reset(func() {
 			for _, patch := range patches {
 				patch.Reset()
 			}
-		}()
+		})
 
 		client := newDefaultClientLibruntime(mock)
 		So(client, ShouldNotBeNil)
@@ -121,7 +121,7 @@ func Test_defaultClient_AcquireInstance(t *testing.T) {
 
 func Test_defaultClient_getRes(t *testing.T) {
 	Convey("Test (c *defaultClient) getRes", t, func() {
-		mock := &mockUtils.FakeLibruntimeSdkClient{}
+		mock := &getResRuntime{}
 		c := newDefaultClientLibruntime(mock)
 		clientDisconnectChan := make(chan struct{})
 		req := InvokeRequest{
@@ -133,18 +133,14 @@ func Test_defaultClient_getRes(t *testing.T) {
 			},
 		}
 		result := []byte("response")
-		defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "GetEvent",
-			func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
-				cb(result, nil)
-				return
-			}).Reset()
+		mock.getEvent = func(objectID string, cb api.GetEventCallback) {
+			cb([]byte("{}"), nil)
+		}
 
 		Convey("When request is not SSE", func() {
-			defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "GetAsync",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
-					cb(result, nil)
-					return
-				}).Reset()
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {
+				cb(result, nil)
+			}
 			req.AcceptHeader = "application/json"
 			res, err := c.getRes("obj1", req)
 			So(err, ShouldBeNil)
@@ -152,17 +148,29 @@ func Test_defaultClient_getRes(t *testing.T) {
 		})
 
 		Convey("When request is SSE", func() {
-			defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "GetAsync",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
-					cb(result, errors.New("test error"))
-					return
-				}).Reset()
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {
+				cb(result, errors.New("test error"))
+			}
 			req.AcceptHeader = httpconstant.AcceptEventStream
 			res, err := c.getRes("obj1", req)
 			So(err, ShouldNotBeNil)
 			So(string(res), ShouldEqual, "response")
 		})
 	})
+}
+
+type getResRuntime struct {
+	mockUtils.FakeLibruntimeSdkClient
+	getAsync func(objectID string, cb api.GetAsyncCallback)
+	getEvent func(objectID string, cb api.GetEventCallback)
+}
+
+func (g *getResRuntime) GetAsync(objectID string, cb api.GetAsyncCallback) {
+	g.getAsync(objectID, cb)
+}
+
+func (g *getResRuntime) GetEvent(objectID string, cb api.GetEventCallback) {
+	g.getEvent(objectID, cb)
 }
 
 type mockResponseWriter struct {
@@ -269,14 +277,22 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 				TraceID:       "id2",
 				InvokeTimeout: 60,
 				AcceptHeader:  httpconstant.AcceptEventStream,
-				IsInterrupted: true,
 			}
 			res := convertCommonInvokeOption(req)
 			So(res.TraceID, ShouldNotBeEmpty)
 			So(res.Timeout, ShouldNotEqual, 0)
 			So(res.InvokeLabels, ShouldNotBeNil)
 			So(res.InvokeLabels["accept"], ShouldNotBeNil)
-			So(res.IsInterrupted, ShouldBeTrue)
+		})
+
+		Convey("check route address and bypass datasystem options", func() {
+			req := InvokeRequest{
+				RouteAddress:     "scheduler-proxy",
+				BypassDataSystem: true,
+			}
+			res := convertCommonInvokeOption(req)
+			So(res.CreateOpt["YR_ROUTE"], ShouldEqual, "scheduler-proxy")
+			So(res.BypassDataSystem, ShouldBeTrue)
 		})
 	})
 }

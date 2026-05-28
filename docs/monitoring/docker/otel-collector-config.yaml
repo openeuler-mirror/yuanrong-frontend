@@ -351,4 +351,4 @@ service:
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
-      exporters: [prometheusremotewrite, debug, prometheus]
+      exporters: [prometheusremotewrite, debug]

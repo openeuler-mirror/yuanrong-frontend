@@ -31,9 +31,8 @@ export GO111MODULE=on
 export GONOSUMDB=*
 export CGO_ENABLED=1
 export GOPROXY=https://goproxy.cn,direct
+export GOWORK=off
 mkdir -p ${OUTPUT_DIR}
-# resolve missing go.sum entry
-go env -w "GOFLAGS"="-mod=mod"
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 export PATH=$(go env GOPATH)/bin:$PATH

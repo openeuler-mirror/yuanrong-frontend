@@ -35,11 +35,13 @@ import (
 	"frontend/pkg/frontend/api/job"
 	"frontend/pkg/frontend/api/lease"
 	"frontend/pkg/frontend/api/metaservice"
+	"frontend/pkg/frontend/api/sandbox"
 	v1 "frontend/pkg/frontend/api/v1"
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/frontendsdkadapter/handler"
 	"frontend/pkg/frontend/middleware"
+	"frontend/pkg/frontend/posixws"
 	"frontend/pkg/frontend/webui"
 )
 
@@ -105,8 +107,8 @@ func InitRoute(r *gin.Engine) {
 	r.Use(middleware.GlobalJWTAuthMiddleware())
 
 	r.GET(urlGetHealthCheck, v1.HealthzHandler)
-	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)                       // Health check
-	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))          // Invocation
+	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)              // Health check
+	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler)) // Invocation
 	r.POST(urlInterruptSession, tracer.WrapGinHandler(v1.InterruptSessionHandler))
 	r.DELETE(urlDeleteSession, tracer.WrapGinHandler(v1.DeleteSessionHandler))
 	r.POST(urlShortInvoke, tracer.WrapGinHandler(v1.ShortInvokeHandler))    // Invocation
@@ -174,6 +176,13 @@ func InitRoute(r *gin.Engine) {
 		authGroup.GET("/user", authHandler.UserHandler)
 	}
 
+	// sandbox management (direct create/delete without job polling)
+	sandboxGroup := r.Group("/api/sandbox")
+	{
+		sandboxGroup.POST("/create", sandbox.CreateHandler)
+		sandboxGroup.DELETE("/:instanceId", sandbox.DeleteHandler)
+	}
+
 	// web terminal
 	terminalGroup := r.Group("/terminal")
 	{
@@ -183,6 +192,9 @@ func InitRoute(r *gin.Engine) {
 		terminalGroup.GET("/static/*filepath", gin.WrapH(http.StripPrefix("/terminal/static", http.FileServer(http.FS(staticFS)))))
 	}
 	r.GET("api/instances", gin.WrapF(webui.HandleInstances))
+
+	// POSIX WebSocket for create/invoke operations
+	r.GET("/serverless/v1/posix/ws", gin.WrapF(posixws.HandlePosixWebSocket))
 
 	// Function invoke tool (requires authentication)
 	r.GET("/functions", gin.WrapF(webui.HandleInvokePage))

@@ -222,13 +222,13 @@ func (f *fakeClient) Invoke(req util.InvokeRequest) ([]byte, error) {
 	panic("implement me")
 }
 
-func (f *fakeClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
+func (f *fakeClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
+func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeClient) KillRaw(killReq []byte) ([]byte, error) {
+func (f *fakeClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
@@ -671,7 +671,8 @@ func TestKernelRequestHandler_legacyMakeReq(t *testing.T) {
 			})
 
 			// Mock convert 函数
-			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, _ *types.FuncSpec, instanceId string, forceInvoke bool, legacySchedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, _ *types.FuncSpec, instanceId string,
+				forceInvoke bool, _ *types.InstanceAllocationInfo, legacySchedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 				return &util.InvokeRequest{InstanceID: instanceId}, nil
 			})
 
@@ -746,7 +747,8 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 			})
 
 			// Mock convert 函数
-			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string, forceInvoke bool, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string,
+				forceInvoke bool, _ *types.InstanceAllocationInfo, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 				return &util.InvokeRequest{InstanceID: instanceId}, nil
 			})
 
@@ -798,7 +800,8 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 		}).Reset()
 
 		// Mock convert 函数
-		defer gomonkey.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string, forceInvoke bool, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+		defer gomonkey.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string,
+			forceInvoke bool, _ *types.InstanceAllocationInfo, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 			return &util.InvokeRequest{InstanceID: instanceId}, nil
 		}).Reset()
 

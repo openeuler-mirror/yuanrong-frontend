@@ -46,11 +46,11 @@ type invokerLibruntime interface {
 		acquireOpt api.InvokeOptions) (api.InstanceAllocation, error)
 
 	ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions)
-	Kill(instanceID string, signal int, payload []byte) (err error)
+	Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) (err error)
 
-	CreateInstanceRaw(createReqRaw []byte) (createRespRaw []byte, err error)
-	InvokeByInstanceIdRaw(invokeReqRaw []byte) (resultRaw []byte, err error)
-	KillRaw(killReqRaw []byte) (killRespRaw []byte, err error)
+	CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) (createRespRaw []byte, err error)
+	InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) (resultRaw []byte, err error)
+	KillRaw(killReqRaw []byte, option api.RawRequestOption) (killRespRaw []byte, err error)
 
 	SaveState(state []byte) (stateID string, err error)
 	LoadState(checkpointID string) (state []byte, err error)
@@ -113,6 +113,8 @@ type InvokeRequest struct {
 	BusinessType     string
 	TenantID         string
 	AcceptHeader     string
+	RouteAddress     string
+	BypassDataSystem bool
 	ForceInvoke      bool
 	IsInterrupted    bool
 	types.ResponseWriter
@@ -132,9 +134,9 @@ type Client interface {
 	ReleaseInstance(allocation *types.InstanceAllocationInfo, abnormal bool)
 	Invoke(req InvokeRequest) ([]byte, error)
 	InvokeByName(req InvokeRequest) ([]byte, error)
-	CreateInstanceRaw(createReq []byte) ([]byte, error)
-	InvokeInstanceRaw(invokeReq []byte) ([]byte, error)
-	KillRaw(killReq []byte) ([]byte, error)
+	CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error)
+	InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error)
+	KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error)
 	CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg,
 		invokeOpt api.InvokeOptions) (instanceID string, err error)
 	KillByLibRt(instanceID string, signal int, payload []byte) (err error)
@@ -172,11 +174,12 @@ func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOpt
 		return nil, err
 	}
 	return &types.InstanceAllocationInfo{
-		FuncKey:       instanceAllocation.FuncKey,
-		FuncSig:       instanceAllocation.FuncSig,
-		InstanceID:    instanceAllocation.InstanceID,
-		ThreadID:      instanceAllocation.LeaseID,
-		LeaseInterval: instanceAllocation.LeaseInterval,
+		FuncKey:         instanceAllocation.FuncKey,
+		FuncSig:         instanceAllocation.FuncSig,
+		InstanceID:      instanceAllocation.InstanceID,
+		ThreadID:        instanceAllocation.LeaseID,
+		FunctionProxyID: instanceAllocation.RouteAddress,
+		LeaseInterval:   instanceAllocation.LeaseInterval,
 	}, nil
 }
 
@@ -226,8 +229,10 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		res = result
 		resErr = err
 		wait <- struct{}{}
-		if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
-			fmt.Printf("failed to decrease object ref,err: %s", err.Error())
+		if !req.BypassDataSystem {
+			if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
+				fmt.Printf("failed to decrease object ref,err: %s", err.Error())
+			}
 		}
 	})
 	log.GetLogger().Debugf("invoke AcceptHeader: %s, requestId: %s, objID: %s, instanceId: %s",
@@ -343,6 +348,9 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 		CustomExtensions: customExtensions,
 		InvokeLabels:     map[string]string{},
 	}
+	if req.RouteAddress != "" {
+		invokeOpt.CreateOpt = map[string]string{"YR_ROUTE": req.RouteAddress}
+	}
 	if req.AcceptHeader == httpconstant.AcceptEventStream {
 		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
 	}
@@ -353,7 +361,7 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 			Concurrency: req.InstanceSession.Concurrency,
 		}
 	}
-	invokeOpt.IsInterrupted = req.IsInterrupted
+	invokeOpt.BypassDataSystem = req.BypassDataSystem
 	return invokeOpt
 }
 
@@ -397,18 +405,18 @@ func (c *defaultClient) InvokeByName(req InvokeRequest) ([]byte, error) {
 	return c.getRes(objID, req)
 }
 
-func (c *defaultClient) CreateInstanceRaw(createReq []byte) ([]byte, error) {
-	resp, err := c.clientLibruntime.CreateInstanceRaw(createReq)
+func (c *defaultClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
+	resp, err := c.clientLibruntime.CreateInstanceRaw(createReq, option)
 	return resp, err
 }
 
-func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
-	notify, err := c.clientLibruntime.InvokeByInstanceIdRaw(invokeReq)
+func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
+	notify, err := c.clientLibruntime.InvokeByInstanceIdRaw(invokeReq, option)
 	return notify, err
 }
 
 func (c *defaultClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
-	return c.clientLibruntime.Kill(instanceID, signal, payload)
+	return c.clientLibruntime.Kill(instanceID, signal, payload, api.InvokeOptions{})
 }
 
 func (c *defaultClient) CreateInstanceByLibRt(
@@ -419,8 +427,8 @@ func (c *defaultClient) CreateInstanceByLibRt(
 	return c.clientLibruntime.CreateInstance(funcMeta, args, invokeOpt)
 }
 
-func (c *defaultClient) KillRaw(killReq []byte) ([]byte, error) {
-	resp, err := c.clientLibruntime.KillRaw(killReq)
+func (c *defaultClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
+	resp, err := c.clientLibruntime.KillRaw(killReq, option)
 	return resp, err
 }
 

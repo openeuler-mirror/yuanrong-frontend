@@ -21,12 +21,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
+
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	httputilclient "frontend/pkg/common/httputil/http/client"
 	"frontend/pkg/frontend/config"
-	"strings"
-	"time"
 )
 
 const (
@@ -47,7 +49,7 @@ type JWTHeader struct {
 // JWTPayload represents the JWT payload structure
 type JWTPayload struct {
 	Sub  string `json:"sub"`            // Subject: tenant ID (required)
-	Exp  int64  `json:"exp"`            // Expiration: timestamp, <=0 means never expire
+	Exp  uint64 `json:"exp"`            // Expiration: timestamp (required)
 	Role string `json:"role,omitempty"` // Role: user role (optional)
 }
 
@@ -64,7 +66,7 @@ func (payload *JWTPayload) IsExpired(now time.Time) bool {
 	if payload == nil || payload.Exp <= 0 {
 		return false
 	}
-	return now.Unix() > payload.Exp
+	return now.Unix() > int64(payload.Exp)
 }
 
 // ParseJWT parses the X-Auth header value which is in the format Header.Payload.Signature
@@ -123,13 +125,92 @@ func (jwt *ParsedJWT) ValidateTenantID(expectedTenantID string) error {
 	return nil
 }
 
-// ValidateWithIamServer sends a request to IAM server to validate the token
+// iamCacheTTL is the time-to-live for cached IAM validation results.
+const iamCacheTTL = 30 * time.Second
+
+// iamCacheCleanupThreshold triggers lazy cleanup when cache size exceeds this.
+const iamCacheCleanupThreshold = 1000
+
+// iamFlight represents an in-flight IAM validation request (singleflight).
+type iamFlight struct {
+	wg  sync.WaitGroup
+	err error
+}
+
+var (
+	iamCacheMu sync.RWMutex
+	iamCache   = make(map[string]time.Time) // token -> validated_at
+
+	iamFlightMu sync.Mutex
+	iamFlights  = make(map[string]*iamFlight)
+)
+
+// iamValidator is the function that performs the actual IAM server call.
+// Replaceable in tests.
+var iamValidator = doValidateWithIamServer
+
+// ValidateWithIamServer validates a token with the IAM server,
+// using a short-lived cache and singleflight to avoid redundant calls.
 func ValidateWithIamServer(authHeader string, traceID string) error {
 	iamServerAddress := config.GetConfig().IamConfig.Addr
 	if iamServerAddress == "" {
 		log.GetLogger().Warnf("IAM server address is not configured, skipping IAM validation, traceID %s", traceID)
 		return nil
 	}
+
+	// 1. Check cache
+	iamCacheMu.RLock()
+	if validatedAt, ok := iamCache[authHeader]; ok && time.Since(validatedAt) < iamCacheTTL {
+		iamCacheMu.RUnlock()
+		return nil
+	}
+	iamCacheMu.RUnlock()
+
+	// 2. Singleflight: if another goroutine is already validating this token, wait for it
+	iamFlightMu.Lock()
+	if f, ok := iamFlights[authHeader]; ok {
+		iamFlightMu.Unlock()
+		f.wg.Wait()
+		return f.err
+	}
+	f := &iamFlight{}
+	f.wg.Add(1)
+	iamFlights[authHeader] = f
+	iamFlightMu.Unlock()
+
+	// 3. Call IAM server
+	err := iamValidator(authHeader, traceID)
+
+	// 4. Cache successful result
+	if err == nil {
+		iamCacheMu.Lock()
+		iamCache[authHeader] = time.Now()
+		// Lazy cleanup: if cache grows too large, remove expired entries
+		if len(iamCache) > iamCacheCleanupThreshold {
+			now := time.Now()
+			for k, v := range iamCache {
+				if now.Sub(v) >= iamCacheTTL {
+					delete(iamCache, k)
+				}
+			}
+		}
+		iamCacheMu.Unlock()
+	}
+
+	// 5. Complete singleflight
+	f.err = err
+	f.wg.Done()
+
+	iamFlightMu.Lock()
+	delete(iamFlights, authHeader)
+	iamFlightMu.Unlock()
+
+	return err
+}
+
+// doValidateWithIamServer performs the actual HTTP call to the IAM server.
+func doValidateWithIamServer(authHeader string, traceID string) error {
+	iamServerAddress := config.GetConfig().IamConfig.Addr
 	url := "http://" + strings.TrimSuffix(iamServerAddress, "/") + "/iam-server/v1/token/auth"
 	client := httputilclient.GetInstance()
 	headers := map[string]string{
@@ -144,4 +225,15 @@ func ValidateWithIamServer(authHeader string, traceID string) error {
 		return fmt.Errorf("IAM server returned non-200 status code")
 	}
 	return nil
+}
+
+// resetIamCache clears the IAM validation cache. Used in tests.
+func resetIamCache() {
+	iamCacheMu.Lock()
+	iamCache = make(map[string]time.Time)
+	iamCacheMu.Unlock()
+
+	iamFlightMu.Lock()
+	iamFlights = make(map[string]*iamFlight)
+	iamFlightMu.Unlock()
 }

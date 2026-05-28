@@ -31,7 +31,7 @@ func InvokeResolvedInstance(ctx *types.InvokeProcessContext, instanceID string) 
 		return err
 	}
 
-	req, err := convert(ctx, funcSpec, instanceID, false, nil)
+	req, err := convert(ctx, funcSpec, instanceID, false, nil, nil)
 	if err != nil {
 		return err
 	}
