@@ -28,10 +28,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/grpc/pb/core"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/frontend/common/httputil"
@@ -252,7 +255,25 @@ func KillHandler(ctx *gin.Context) {
 		SetCtxResponse(ctx, nil, httpCode)
 		return
 	}
-	resp, err := util.NewClient().KillRaw(body, buildRawRequestOption(spanCtx))
+
+	// Clients may send the kill request as a JSON object instead of a serialized
+	// core_service.KillRequest protobuf. When the Content-Type is application/json,
+	// transcode the JSON body to protobuf here so callers (e.g. the yr CLI) don't
+	// need to implement protobuf encoding/decoding themselves.
+	isJSON := ctx.ContentType() == "application/json"
+	killReqRaw := body
+	if isJSON {
+		killReqRaw, err = killRequestJSONToProto(body)
+		if err != nil {
+			log.GetLogger().Errorf("%s|failed to decode kill request json: %s", traceID, err.Error())
+			httpCode = http.StatusBadRequest
+			hasError = true
+			SetCtxResponse(ctx, []byte(err.Error()), httpCode)
+			return
+		}
+	}
+
+	resp, err := util.NewClient().KillRaw(killReqRaw, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance kill response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -261,7 +282,47 @@ func KillHandler(ctx *gin.Context) {
 		return
 	}
 	httpCode = http.StatusOK
+	if isJSON {
+		jsonResp, convErr := killResponseProtoToJSON(resp)
+		if convErr != nil {
+			log.GetLogger().Errorf("%s|failed to encode kill response json: %s", traceID, convErr.Error())
+			httpCode = http.StatusInternalServerError
+			hasError = true
+			SetCtxResponse(ctx, []byte(convErr.Error()), httpCode)
+			return
+		}
+		ctx.Writer.Header().Set("Content-Type", "application/json")
+		SetCtxResponse(ctx, jsonResp, httpCode)
+		return
+	}
 	SetCtxResponse(ctx, resp, httpCode)
+}
+
+// killRequestJSONToProto transcodes a JSON-encoded kill request into the
+// serialized core_service.KillRequest protobuf expected by the runtime. Unknown
+// JSON fields are ignored so the wire contract can evolve without breaking
+// older clients.
+func killRequestJSONToProto(body []byte) ([]byte, error) {
+	killReq := &core.KillRequest{}
+	if len(body) > 0 {
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, killReq); err != nil {
+			return nil, err
+		}
+	}
+	return proto.Marshal(killReq)
+}
+
+// killResponseProtoToJSON transcodes a serialized core_service.KillResponse
+// protobuf into JSON. Enum codes are emitted as numbers and all fields are
+// always populated so clients can rely on a stable {"code","message"} shape.
+func killResponseProtoToJSON(raw []byte) ([]byte, error) {
+	killResp := &core.KillResponse{}
+	if len(raw) > 0 {
+		if err := proto.Unmarshal(raw, killResp); err != nil {
+			return nil, err
+		}
+	}
+	return protojson.MarshalOptions{UseEnumNumbers: true, EmitUnpopulated: true}.Marshal(killResp)
 }
 
 func getHeaderPrams(ctx *gin.Context) (string, string) {
