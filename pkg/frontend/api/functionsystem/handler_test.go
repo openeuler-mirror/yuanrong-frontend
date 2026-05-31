@@ -29,9 +29,11 @@ import (
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/smartystreets/goconvey/convey"
+	"google.golang.org/protobuf/proto"
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/grpc/pb/core"
 	mockUtils "frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/util"
 )
@@ -168,6 +170,62 @@ func Test_KillHandler(t *testing.T) {
 			bodyMarshal, _ := json.Marshal(reqBody)
 			ctx.Request, _ = http.NewRequest("POST", "/test", bytes.NewBuffer(bodyMarshal))
 			ctx.Request.Header.Set("remoteClientId", "test-client-id")
+			KillHandler(ctx)
+			convey.So(rw.Code, convey.ShouldEqual, http.StatusBadRequest)
+		})
+		convey.Convey("KillHandler json body transcoded to protobuf", func() {
+			var captured []byte
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}),
+				"KillRaw",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, killReqRaw []byte,
+					option api.RawRequestOption) (killRespRaw []byte, err error) {
+					captured = killReqRaw
+					resp := &core.KillResponse{Code: 0, Message: ""}
+					out, _ := proto.Marshal(resp)
+					return out, nil
+				}).Reset()
+			rw := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rw)
+			ctx.Request, _ = http.NewRequest("POST", "/test",
+				bytes.NewBufferString(`{"instanceID":"inst-json-1","signal":1}`))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			KillHandler(ctx)
+			convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
+			// the runtime must still receive a protobuf KillRequest
+			decoded := &core.KillRequest{}
+			convey.So(proto.Unmarshal(captured, decoded), convey.ShouldBeNil)
+			convey.So(decoded.GetInstanceID(), convey.ShouldEqual, "inst-json-1")
+			convey.So(decoded.GetSignal(), convey.ShouldEqual, 1)
+			// the client gets a JSON response with a numeric code
+			convey.So(rw.Header().Get("Content-Type"), convey.ShouldEqual, "application/json")
+			convey.So(rw.Body.String(), convey.ShouldContainSubstring, "\"code\":0")
+		})
+		convey.Convey("KillHandler json not-found code surfaced to client", func() {
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}),
+				"KillRaw",
+				func(_ *mockUtils.FakeLibruntimeSdkClient, killReqRaw []byte,
+					option api.RawRequestOption) (killRespRaw []byte, err error) {
+					resp := &core.KillResponse{Message: "instance not found"}
+					resp.Code = 22 // a non-zero error code
+					out, _ := proto.Marshal(resp)
+					return out, nil
+				}).Reset()
+			rw := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rw)
+			ctx.Request, _ = http.NewRequest("POST", "/test",
+				bytes.NewBufferString(`{"instanceID":"missing","signal":1}`))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			KillHandler(ctx)
+			convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
+			convey.So(rw.Body.String(), convey.ShouldContainSubstring, "\"code\":22")
+			convey.So(rw.Body.String(), convey.ShouldContainSubstring, "instance not found")
+		})
+		convey.Convey("KillHandler invalid json body returns bad request", func() {
+			rw := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rw)
+			ctx.Request, _ = http.NewRequest("POST", "/test",
+				bytes.NewBufferString(`{not-json`))
+			ctx.Request.Header.Set("Content-Type", "application/json")
 			KillHandler(ctx)
 			convey.So(rw.Code, convey.ShouldEqual, http.StatusBadRequest)
 		})
