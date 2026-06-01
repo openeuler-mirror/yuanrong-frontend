@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strconv"
+	"time"
 
 	"frontend/pkg/sandboxrouter/route"
 )
@@ -62,7 +63,7 @@ type Server struct {
 // https transport uses Go defaults until SetHTTPSTransport configures backend
 // TLS; callers serving https targets should set it.
 func New(r Resolver) *Server {
-	s := &Server{resolver: r, httpTransport: &http.Transport{}, httpsTransport: &http.Transport{}}
+	s := &Server{resolver: r, httpTransport: tunedTransport(&http.Transport{}), httpsTransport: tunedTransport(&http.Transport{})}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:      s.rewrite,
 		Transport:    roundTripperFunc(s.roundTrip),
@@ -72,9 +73,32 @@ func New(r Resolver) *Server {
 }
 
 // SetHTTPSTransport sets the transport used for https backends, carrying the
-// backend TLS configuration.
+// backend TLS configuration. Connection-pool defaults are applied (preserving
+// the caller's TLS settings) so https backends pool connections too.
 func (s *Server) SetHTTPSTransport(t *http.Transport) {
-	s.httpsTransport = t
+	s.httpsTransport = tunedTransport(t)
+}
+
+// tunedTransport sets backend connection-pool defaults on t so the data plane
+// reuses keep-alive connections under concurrency instead of churning a new
+// TCP connection per request: a bare http.Transport caps MaxIdleConnsPerHost
+// at 2 (DefaultMaxIdleConnsPerHost), which collapses under load. Mirrors
+// Traefik's default backend transport (maxIdleConnsPerHost=200). Only zero
+// fields are set, so explicit caller settings (e.g. TLS) are preserved.
+func tunedTransport(t *http.Transport) *http.Transport {
+	if t == nil {
+		t = &http.Transport{}
+	}
+	if t.MaxIdleConns == 0 {
+		t.MaxIdleConns = 1000
+	}
+	if t.MaxIdleConnsPerHost == 0 {
+		t.MaxIdleConnsPerHost = 200
+	}
+	if t.IdleConnTimeout == 0 {
+		t.IdleConnTimeout = 90 * time.Second
+	}
+	return t
 }
 
 // roundTrip dispatches to the http or https transport by target scheme.
