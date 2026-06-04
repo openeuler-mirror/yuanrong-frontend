@@ -44,6 +44,12 @@
         "serviceID": "com.huawei.hmscorecameracloudenhanceservice"
       }
     },
+    "sandboxRouter": {
+      "enabled": false,
+      "listenIP": "0.0.0.0",
+      "listenPort": 8080,
+      "routeBackend": "instanceinfo-watch"
+    },
     "http": {
       "resptimeout": 5,
       "workerInstanceReadTimeOut": 5,

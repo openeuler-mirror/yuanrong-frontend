@@ -38,6 +38,7 @@ import (
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/server"
 	"frontend/pkg/frontend/stream"
+	"frontend/pkg/sandboxrouter"
 )
 
 const (
@@ -136,6 +137,9 @@ func setupModuleFrontend(stopCh <-chan struct{}) error {
 	fgAdapter := &invocation.FGAdapter{}
 	responsehandler.Handler = fgAdapter.MakeResponseHandler()
 	middleware.Invoker = fgAdapter.MakeInvoker()
+	if err := sandboxrouter.StartIfEnabled(config.GetConfig().SandboxRouter, stopCh); err != nil {
+		return err
+	}
 	return nil
 }
 

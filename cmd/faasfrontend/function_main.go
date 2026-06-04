@@ -47,6 +47,7 @@ import (
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/server"
 	"frontend/pkg/frontend/state"
+	"frontend/pkg/sandboxrouter"
 )
 
 var stopCh = make(chan struct{})
@@ -238,6 +239,10 @@ func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct
 		} else {
 			log.GetLogger().Infof("Prometheus metrics server started on port %d", cfg.HTTPConfig.PrometheusMetricsPort)
 		}
+	}
+
+	if err := sandboxrouter.StartIfEnabled(config.GetConfig().SandboxRouter, stopCh); err != nil {
+		return err
 	}
 
 	return nil
