@@ -45,7 +45,7 @@
       }
     },
     "sandboxRouter": {
-      "enabled": true,
+      "enabled": false,
       "listenIP": "0.0.0.0",
       "listenPort": 8080,
       "routeBackend": "instanceinfo-watch"
