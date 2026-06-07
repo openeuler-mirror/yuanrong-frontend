@@ -80,3 +80,17 @@ func TestInitRouteRegistersPosixWebSocket(t *testing.T) {
 		t.Fatalf("POSIX WebSocket route is not registered")
 	}
 }
+
+func TestInitRouteRegistersGlobalSchedulerResources(t *testing.T) {
+	config.InitFunctionConfig([]byte(cfg))
+	r := gin.New()
+	InitRoute(r)
+
+	for _, route := range r.Routes() {
+		if route.Method == http.MethodGet && route.Path == "/global-scheduler/resources" {
+			return
+		}
+	}
+
+	t.Fatalf("GET /global-scheduler/resources route is not registered")
+}

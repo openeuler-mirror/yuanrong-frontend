@@ -35,6 +35,7 @@ import (
 	"frontend/pkg/frontend/api/job"
 	"frontend/pkg/frontend/api/lease"
 	"frontend/pkg/frontend/api/metaservice"
+	"frontend/pkg/frontend/api/resources"
 	"frontend/pkg/frontend/api/sandbox"
 	v1 "frontend/pkg/frontend/api/v1"
 	"frontend/pkg/frontend/common"
@@ -54,6 +55,7 @@ const (
 	urlStreamSubscribe = "/serverless/v1/stream/subscribe"
 	urlGetHealthCheck  = "/healthz"
 	urlClusterHealthy  = "/serverless/v1/componentshealth"
+	urlResources       = "/global-scheduler/resources"
 	urlGetAsyncResult  = "/serverless/v1/functions/async-results/:request-id"
 	// url to faasmanager
 	urlLease          = "/client/v1/lease"
@@ -104,6 +106,7 @@ func InitRoute(r *gin.Engine) {
 
 	r.GET(urlGetHealthCheck, v1.HealthzHandler)
 	r.GET(urlClusterHealthy, v1.ClusterHealthHandler)                       // Health check
+	r.GET(urlResources, resources.QueryHandler)                             // Cluster resource query
 	r.POST(urlPostInvoke, tracer.WrapGinHandler(v1.InvokeHandler))          // Invocation
 	r.POST(urlShortInvoke, tracer.WrapGinHandler(v1.ShortInvokeHandler))    // Invocation
 	r.POST(urlShortInvokeOld, tracer.WrapGinHandler(v1.ShortInvokeHandler)) // Deprecated short invocation (backward compatibility)
