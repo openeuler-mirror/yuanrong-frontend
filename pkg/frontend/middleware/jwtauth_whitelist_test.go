@@ -126,6 +126,12 @@ func TestIsInAuthWhitelist(t *testing.T) {
 			method:   "POST",
 			expected: false,
 		},
+		{
+			name:     "global scheduler resources should require auth",
+			path:     "/global-scheduler/resources",
+			method:   "GET",
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
