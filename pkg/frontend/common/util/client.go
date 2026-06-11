@@ -284,7 +284,7 @@ func (c *defaultClient) Invoke(req InvokeRequest) ([]byte, error) {
 	invokeOpts.ForceInvoke = req.ForceInvoke
 	objID, err := c.clientLibruntime.InvokeByInstanceId(funcMeta, req.InstanceID, funcArgs, invokeOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to invoke by instance id request, req: %#v, err: %s", req, err.Error())
+		return nil, fmt.Errorf("failed to invoke by instance id request, req: %#v, err: %w", req, err)
 	}
 	return c.getRes(objID, req)
 }

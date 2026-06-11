@@ -50,6 +50,34 @@ func TestRouteUpdateHintConversion(t *testing.T) {
 	})
 }
 
+func TestDefaultClientInvokePreservesRouteUpdateError(t *testing.T) {
+	Convey("default client Invoke preserves route update hint errors", t, func() {
+		mock := &mockUtils.FakeLibruntimeSdkClient{}
+		defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "InvokeByInstanceId",
+			func(_ *mockUtils.FakeLibruntimeSdkClient, funcMeta api.FunctionMeta, instanceID string, args []api.Arg,
+				invokeOpt api.InvokeOptions) (string, error) {
+				return "", &api.RouteUpdateError{
+					InstanceID:   "inst",
+					RouteAddress: "new-route",
+					ProxyID:      "new-proxy",
+					Retryable:    true,
+					Reason:       "STALE_OWNER",
+				}
+			}).Reset()
+
+		client := newDefaultClientLibruntime(mock)
+		_, err := client.Invoke(InvokeRequest{Function: "func", InstanceID: "inst"})
+		So(err, ShouldNotBeNil)
+		hint, ok := IsRouteUpdateError(err)
+		So(ok, ShouldBeTrue)
+		So(hint.InstanceID, ShouldEqual, "inst")
+		So(hint.RouteAddress, ShouldEqual, "new-route")
+		So(hint.ProxyID, ShouldEqual, "new-proxy")
+		So(hint.Retryable, ShouldBeTrue)
+		So(hint.Reason, ShouldEqual, "STALE_OWNER")
+	})
+}
+
 func TestNewClientLibruntime(t *testing.T) {
 	mock := &mockUtils.FakeLibruntimeSdkClient{}
 	Convey("TestNewClientLibruntime", t, func() {

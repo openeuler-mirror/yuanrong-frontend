@@ -611,6 +611,8 @@ func TestKernelInvokePropagatesRouteUpdateHintWithoutRetry(t *testing.T) {
 		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"routeUpdateHint"`)
 		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"routeAddress":"new-route"`)
 		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"proxyID":"new-proxy"`)
+		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"retryable":true`)
+		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"reason":"STALE_OWNER"`)
 	})
 }
 
