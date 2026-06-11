@@ -286,6 +286,9 @@ func (k *kernelRequestHandler) handleInvokeError(snError snerror.SNError, instan
 		logger.Warnf("all schedulers are unavailable")
 		k.downgrade = true // 这里要处理的情况是，当无可用scheduler时，该请求后续都不走租约机制，直接选择实例调用
 		return true, nil
+	} else if hint, ok := util.IsRouteUpdateError(snError); ok {
+		responsehandler.SetErrorInContext(k.ctx, snError.Code(), util.RouteUpdateHintMessage(hint))
+		return false, snError
 	} else if needRetryCode(snError.Code()) {
 		logger.Warnf("do invokeByInstanceId failed, retry, code: %d, message: %s",
 			snError.Code(), snError.Error())
@@ -374,6 +377,11 @@ func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.
 	logger.Debugf("get response %s, err: %v", string(notifyMsg), err)
 
 	if err != nil {
+		if hint, ok := util.IsRouteUpdateError(err); ok {
+			logger.Errorf("invoke request needs direct-route update, instanceID: %s, routeAddress: %s, totalTime: %v",
+				hint.InstanceID, hint.RouteAddress, invokeTotalTime.Seconds())
+			return util.NewRouteUpdateSNError(statuscode.ErrInnerCommunication, "stale direct route", hint)
+		}
 		if rtErr, ok := err.(api.ErrorInfo); ok {
 			logger.Errorf("invoke request, errCode: %d, error: %s, totalTime: %v",
 				rtErr.Code, rtErr.Error(), invokeTotalTime.Seconds())
@@ -414,21 +422,21 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 		return nil, err
 	}
 	req := &util.InvokeRequest{
-		Function:        ctx.FuncKey,
-		TraceID:         ctx.TraceID,
-		TraceParent:     util.PeekIgnoreCase(ctx.ReqHeader, constant.HeaderTraceParent),
-		RequestID:       ctx.RequestID,
-		ReturnObjectIDs: []string{},
-		ResourceSpecs:   resourceSpecs,
-		PoolLabel:       util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderPoolLabel),
-		InvokeTag:       convertInvokeTag(ctx),
-		InstanceLabel:   util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceLabel),
-		AcquireTimeout:  getTimeout(util.GetAcquireTimeout(funcSpec), ctx.AcquireTimeout),
-		InvokeTimeout:   ctx.InvokeTimeout,
-		FuncSig:         funcSpec.FuncMetaSignature,
-		TrafficLimited:  ctx.TrafficLimited,
-		BusinessType:    funcSpec.FuncMetaData.BusinessType,
-		TenantID:        funcSpec.FuncMetaData.TenantID,
+		Function:         ctx.FuncKey,
+		TraceID:          ctx.TraceID,
+		TraceParent:      util.PeekIgnoreCase(ctx.ReqHeader, constant.HeaderTraceParent),
+		RequestID:        ctx.RequestID,
+		ReturnObjectIDs:  []string{},
+		ResourceSpecs:    resourceSpecs,
+		PoolLabel:        util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderPoolLabel),
+		InvokeTag:        convertInvokeTag(ctx),
+		InstanceLabel:    util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceLabel),
+		AcquireTimeout:   getTimeout(util.GetAcquireTimeout(funcSpec), ctx.AcquireTimeout),
+		InvokeTimeout:    ctx.InvokeTimeout,
+		FuncSig:          funcSpec.FuncMetaSignature,
+		TrafficLimited:   ctx.TrafficLimited,
+		BusinessType:     funcSpec.FuncMetaData.BusinessType,
+		TenantID:         funcSpec.FuncMetaData.TenantID,
 		InstanceID:       instanceId,
 		ForceInvoke:      forceInvoke,
 		BypassDataSystem: strings.EqualFold(util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderBypassDataSystem), "true"),

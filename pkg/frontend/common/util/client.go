@@ -20,11 +20,13 @@ package util
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/httpconstant"
@@ -34,6 +36,73 @@ const (
 	maxInvokeRetries        = 5
 	traceParentExtensionKey = "traceparent"
 )
+
+// RouteUpdateHint carries direct-routing repair metadata through frontend without adding a frontend retry loop.
+type RouteUpdateHint struct {
+	InstanceID   string `json:"instanceID"`
+	RouteAddress string `json:"routeAddress"`
+	ProxyID      string `json:"proxyID"`
+	Retryable    bool   `json:"retryable"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type routeUpdateHintCarrier interface {
+	RouteUpdateHint() RouteUpdateHint
+}
+
+type routeUpdateSNError struct {
+	code    int
+	message string
+	hint    RouteUpdateHint
+}
+
+func (e *routeUpdateSNError) Code() int {
+	return e.code
+}
+
+func (e *routeUpdateSNError) Error() string {
+	return e.message
+}
+
+func (e *routeUpdateSNError) RouteUpdateHint() RouteUpdateHint {
+	return e.hint
+}
+
+// NewRouteUpdateSNError wraps route-update metadata in the existing frontend SNError contract.
+func NewRouteUpdateSNError(code int, message string, hint RouteUpdateHint) snerror.SNError {
+	return &routeUpdateSNError{code: code, message: message, hint: hint}
+}
+
+// IsRouteUpdateError extracts route-update metadata from libruntime errors or frontend SNErrors.
+func IsRouteUpdateError(err error) (RouteUpdateHint, bool) {
+	var carrier routeUpdateHintCarrier
+	if errors.As(err, &carrier) {
+		hint := carrier.RouteUpdateHint()
+		return hint, hint.RouteAddress != ""
+	}
+	rtErr, ok := api.AsRouteUpdateError(err)
+	if !ok {
+		return RouteUpdateHint{}, false
+	}
+	return RouteUpdateHint{
+		InstanceID:   rtErr.InstanceID,
+		RouteAddress: rtErr.RouteAddress,
+		ProxyID:      rtErr.ProxyID,
+		Retryable:    rtErr.Retryable,
+		Reason:       rtErr.Reason,
+	}, true
+}
+
+// RouteUpdateHintMessage serializes route metadata as a JSON error extension for cloud-external callers.
+func RouteUpdateHintMessage(hint RouteUpdateHint) json.RawMessage {
+	body, err := json.Marshal(struct {
+		RouteUpdateHint RouteUpdateHint `json:"routeUpdateHint"`
+	}{RouteUpdateHint: hint})
+	if err != nil {
+		return json.RawMessage(`{"routeUpdateHint":{}}`)
+	}
+	return json.RawMessage(body)
+}
 
 type invokerLibruntime interface {
 	CreateInstance(funcMeta api.FunctionMeta, args []api.Arg,

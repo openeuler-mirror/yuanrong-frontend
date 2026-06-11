@@ -222,13 +222,13 @@ func (f *fakeClient) Invoke(req util.InvokeRequest) ([]byte, error) {
 	panic("implement me")
 }
 
-func (f *fakeClient) CreateInstanceRaw(createReq []byte, option util.RawRequestOption) ([]byte, error) {
+func (f *fakeClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte, option util.RawRequestOption) ([]byte, error) {
+func (f *fakeClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeClient) KillRaw(killReq []byte, option util.RawRequestOption) ([]byte, error) {
+func (f *fakeClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
@@ -570,6 +570,47 @@ func Test_functionInvokeForKernel_retry_legacy(t *testing.T) {
 		convey.So(strings.Contains(err.Error(), "do invoke failed, timeout"), convey.ShouldBeTrue)
 		convey.So(times, convey.ShouldEqual, 1)
 		p.Reset()
+	})
+}
+
+func TestKernelInvokePropagatesRouteUpdateHintWithoutRetry(t *testing.T) {
+	convey.Convey("Route update hint should propagate without frontend retry", t, func() {
+		responsehandler.Handler = (&FGAdapter{}).MakeResponseHandler()
+		ctx := &types2.InvokeProcessContext{
+			InvokeTimeout: 10,
+			RespHeader:    make(map[string]string),
+		}
+		funcSpec := &types.FuncSpec{}
+		funcSpec.ResourceMetaData.CPU = 500
+		funcSpec.ResourceMetaData.Memory = 500
+		funcSpec.FunctionKey = "8d86c63b22e24d9ab650878b75408ea6/0@default@func6ac6741a01334320809dfb7dc1e98049/latest"
+		ctx.InvokeWithoutScheduler = true
+
+		clearSchedulerProxy()
+		mockFunctionInstanceAdd("inst-route")
+		defer mockFunctionInstanceRemove("inst-route")
+		defer clearSchedulerProxy()
+
+		calls := 0
+		patch := gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest, _ api.FormatLogger) snerror.SNError {
+			calls++
+			return util.NewRouteUpdateSNError(statuscode.ErrInnerCommunication, "stale direct route", util.RouteUpdateHint{
+				InstanceID:   req.InstanceID,
+				RouteAddress: "new-route",
+				ProxyID:      "new-proxy",
+				Retryable:    true,
+				Reason:       "STALE_OWNER",
+			})
+		})
+		defer patch.Reset()
+
+		err := newKernelRequestHandler(ctx, funcSpec).invoke()
+		convey.So(err, convey.ShouldNotBeNil)
+		convey.So(calls, convey.ShouldEqual, 1)
+		convey.So(ctx.RespHeader[constant.HeaderInnerCode], convey.ShouldEqual, strconv.Itoa(statuscode.ErrInnerCommunication))
+		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"routeUpdateHint"`)
+		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"routeAddress":"new-route"`)
+		convey.So(string(ctx.RespBody), convey.ShouldContainSubstring, `"proxyID":"new-proxy"`)
 	})
 }
 

@@ -34,6 +34,21 @@ import (
 	"frontend/pkg/frontend/types"
 )
 
+type innerCode int
+
+func (c innerCode) String() string {
+	switch {
+	case c < 0:
+		return "invalidCode"
+	case c == 0:
+		return "sysOK"
+	case c < 10000:
+		return "usrErr"
+	default:
+		return "sysErr"
+	}
+}
+
 func Test_doInnerCodeString(t *testing.T) {
 	msg := innerCode(-1).String()
 	assert.Equal(t, msg, "invalidCode")

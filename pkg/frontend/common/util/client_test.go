@@ -32,6 +32,24 @@ import (
 	"frontend/pkg/frontend/common/httpconstant"
 )
 
+func TestRouteUpdateHintConversion(t *testing.T) {
+	Convey("Test route update hint conversion", t, func() {
+		err := api.NewRouteUpdateError("inst", "new-route", "new-proxy")
+		hint, ok := IsRouteUpdateError(err)
+		So(ok, ShouldBeTrue)
+		So(hint.InstanceID, ShouldEqual, "inst")
+		So(hint.RouteAddress, ShouldEqual, "new-route")
+		So(hint.ProxyID, ShouldEqual, "new-proxy")
+		So(hint.Retryable, ShouldBeTrue)
+
+		body := RouteUpdateHintMessage(hint)
+		So(string(body), ShouldContainSubstring, `"routeUpdateHint"`)
+		So(string(body), ShouldContainSubstring, `"instanceID":"inst"`)
+		So(string(body), ShouldContainSubstring, `"routeAddress":"new-route"`)
+		So(string(body), ShouldContainSubstring, `"proxyID":"new-proxy"`)
+	})
+}
+
 func TestNewClientLibruntime(t *testing.T) {
 	mock := &mockUtils.FakeLibruntimeSdkClient{}
 	Convey("TestNewClientLibruntime", t, func() {
