@@ -21,6 +21,11 @@ OUTPUT_DIR="${BASE_DIR}/output/pattern/pattern_faas"
 TAR_OUT_DIR="${PROJECT_DIR}/build/_output"
 TAR_OUT_FILE="faasfunctions.tar.gz"
 EXECUTOR_DIR="${PROJECT_DIR}/build/faas/executor-meta"
+if [ -z "${GOROOT:-}" ] && [ -d /opt/buildtools/golang_go-1.24.1 ]; then
+    export GOROOT=/opt/buildtools/golang_go-1.24.1
+fi
+export PATH=${GOROOT:+${GOROOT}/bin:}${PATH}
+export GOWORK=off
 TEST_CERT_PATH="${GOROOT}/src/net/http/internal/testcert.go"
 BUILD_TAG_FUNCTION="function"
 echo LD_LIBRARY_PATH=$LD_LIBRARY_PATH
@@ -30,6 +35,7 @@ BUILD_VERSION=v0.5.0
 export GO111MODULE=on
 export GONOSUMDB=*
 export CGO_ENABLED=1
+go version
 export GOPROXY=https://goproxy.cn,direct
 export GOWORK=off
 mkdir -p ${OUTPUT_DIR}
