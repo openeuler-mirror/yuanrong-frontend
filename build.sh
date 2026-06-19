@@ -26,6 +26,11 @@ if [ -d /opt/buildtools/golang_go-1.24.1 ]; then
 fi
 export PATH=${GOROOT:+${GOROOT}/bin:}${PATH}
 export GOWORK=off
+export GOCACHE=/tmp/yr-go-plugin-cache
+mkdir -p "${GOCACHE}"
+# CI agents keep Go build caches across jobs. The Go plugin ABI embeds package
+# hashes, so force a clean cache before producing system-function plugins.
+go clean -cache
 TEST_CERT_PATH="${GOROOT}/src/net/http/internal/testcert.go"
 BUILD_TAG_FUNCTION="function"
 echo LD_LIBRARY_PATH=$LD_LIBRARY_PATH
@@ -37,7 +42,6 @@ export GONOSUMDB=*
 export CGO_ENABLED=1
 go version
 echo "plugin GOROOT=${GOROOT:-}"
-GOWORK=off go list -m go.uber.org/multierr go.uber.org/zap golang.org/x/sys golang.org/x/sync google.golang.org/protobuf || true
 export GOPROXY=https://goproxy.cn,direct
 export GOWORK=off
 mkdir -p ${OUTPUT_DIR}
@@ -79,6 +83,7 @@ main $@
 bash "${BASE_DIR}"/build/clean.sh
 
 cd "${PROJECT_DIR}"
+GOWORK=off go list -m go.uber.org/multierr go.uber.org/zap golang.org/x/sys golang.org/x/sync google.golang.org/protobuf || true
 . "${BASE_DIR}"/build/compile_functions.sh
 
 # zip function file
