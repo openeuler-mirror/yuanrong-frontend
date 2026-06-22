@@ -8,7 +8,107 @@ import (
 	"testing"
 
 	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/sandboxrouter/execendpoint"
 )
+
+func TestGetExecAddrUsesLocalCache(t *testing.T) {
+	oldLookup := lookupLocalExecEndpoint
+	oldQueryMaster := queryMasterFunc
+	defer func() {
+		lookupLocalExecEndpoint = oldLookup
+		queryMasterFunc = oldQueryMaster
+	}()
+
+	lookupLocalExecEndpoint = func(instanceID string) (execendpoint.Endpoint, bool) {
+		if instanceID != "inst-1" {
+			t.Fatalf("unexpected instanceID %q", instanceID)
+		}
+		return execendpoint.Endpoint{
+			InstanceID:       "inst-1",
+			ProxyGrpcAddress: "10.0.0.5:22774",
+			ContainerID:      "sbox-xyz",
+		}, true
+	}
+	queryMasterFunc = func(string, map[string]string, interface{}) error {
+		t.Fatal("master must not be queried on local cache hit")
+		return nil
+	}
+
+	info, err := getExecAddr("inst-1", "default")
+	if err != nil {
+		t.Fatalf("getExecAddr returned error: %v", err)
+	}
+	if info.ProxyGrpcAddress != "10.0.0.5:22774" {
+		t.Errorf("ProxyGrpcAddress = %q, want 10.0.0.5:22774", info.ProxyGrpcAddress)
+	}
+	if info.ContainerID != "sbox-xyz" {
+		t.Errorf("ContainerID = %q, want sbox-xyz", info.ContainerID)
+	}
+	if info.InstanceID != "inst-1" {
+		t.Errorf("InstanceID = %q, want inst-1", info.InstanceID)
+	}
+}
+
+func TestGetExecAddrFallsBackToMaster(t *testing.T) {
+	oldLookup := lookupLocalExecEndpoint
+	oldQueryMaster := queryMasterFunc
+	defer func() {
+		lookupLocalExecEndpoint = oldLookup
+		queryMasterFunc = oldQueryMaster
+	}()
+
+	// Local cache miss.
+	lookupLocalExecEndpoint = func(string) (execendpoint.Endpoint, bool) {
+		return execendpoint.Endpoint{}, false
+	}
+	called := false
+	queryMasterFunc = func(apiPath string, params map[string]string, result interface{}) error {
+		called = true
+		resp := result.(*InstanceListResponse)
+		resp.Instances = []InstanceInfo{{
+			InstanceID:       "inst-2",
+			ProxyGrpcAddress: "10.0.0.6:22774",
+			ContainerID:      "sbox-from-master",
+		}}
+		return nil
+	}
+
+	info, err := getExecAddr("inst-2", "default")
+	if err != nil {
+		t.Fatalf("getExecAddr returned error: %v", err)
+	}
+	if !called {
+		t.Error("master query should be invoked on local cache miss")
+	}
+	if info.ProxyGrpcAddress != "10.0.0.6:22774" || info.ContainerID != "sbox-from-master" {
+		t.Errorf("unexpected fallback result: %+v", info)
+	}
+}
+
+func TestGetExecAddrLocalHitWithEmptyProxyFallsBack(t *testing.T) {
+	oldLookup := lookupLocalExecEndpoint
+	oldQueryMaster := queryMasterFunc
+	defer func() {
+		lookupLocalExecEndpoint = oldLookup
+		queryMasterFunc = oldQueryMaster
+	}()
+
+	// Cache hit but with no usable proxy address must not short-circuit; it
+	// should fall through to the master query.
+	lookupLocalExecEndpoint = func(string) (execendpoint.Endpoint, bool) {
+		return execendpoint.Endpoint{InstanceID: "inst-3", ProxyGrpcAddress: ""}, true
+	}
+	called := false
+	queryMasterFunc = func(string, map[string]string, interface{}) error {
+		called = true
+		return nil
+	}
+
+	_, _ = getExecAddr("inst-3", "default")
+	if !called {
+		t.Error("empty-proxy local hit should fall back to master query")
+	}
+}
 
 func TestParseCommandSplitsArguments(t *testing.T) {
 	got := parseCommand("python3 -m yr.cli --version")

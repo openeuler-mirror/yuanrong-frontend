@@ -24,6 +24,7 @@ import (
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/etcd3"
 	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/sandboxrouter/execendpoint"
 	"frontend/pkg/sandboxrouter/route"
 )
 
@@ -70,12 +71,17 @@ func (r *InstanceInfoWatchResolver) Resolve(_ context.Context, key route.RouteKe
 
 // applyEvent maps an etcd watch event onto the route cache. PUT/DELETE are
 // translated to the etcd-free route.ApplyInstanceEvent; SYNCED/ERROR are ignored.
+// The same event also feeds the exec endpoint cache (execendpoint), so the web
+// terminal / file-copy exec path can resolve an instance's proxyGrpcAddress
+// locally instead of querying the master, reusing this one watch.
 func (r *InstanceInfoWatchResolver) applyEvent(event *etcd3.Event) {
 	switch event.Type {
 	case etcd3.PUT:
 		route.ApplyInstanceEvent(r.cache, route.EventPut, event.Key, event.Value)
+		execendpoint.ApplyInstanceEvent(execendpoint.Default(), execendpoint.EventPut, event.Key, event.Value)
 	case etcd3.DELETE:
 		route.ApplyInstanceEvent(r.cache, route.EventDelete, event.Key, event.PrevValue)
+		execendpoint.ApplyInstanceEvent(execendpoint.Default(), execendpoint.EventDelete, event.Key, event.PrevValue)
 	}
 }
 

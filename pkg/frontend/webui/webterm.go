@@ -43,6 +43,7 @@ import (
 	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
+	"frontend/pkg/sandboxrouter/execendpoint"
 )
 
 //go:embed static/*
@@ -195,6 +196,14 @@ type paginatedInstanceListResponse struct {
 
 var queryMasterFunc = queryMaster
 
+// lookupLocalExecEndpoint resolves an instance's exec backend from the sandbox
+// router's in-memory cache (populated by the /sn/instance watch). It is a
+// package-level seam so tests can stub it. A hit lets getExecAddr skip the
+// master query entirely.
+var lookupLocalExecEndpoint = func(instanceID string) (execendpoint.Endpoint, bool) {
+	return execendpoint.Default().Get(instanceID)
+}
+
 type masterQueryError struct {
 	statusCode int
 	body       string
@@ -334,7 +343,22 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 		tenantID = "default"
 	}
 
-	// Query all instances and find the matching one
+	// Fast path: resolve from the sandbox router's local instance-info cache,
+	// fed by the same /sn/instance etcd watch the frontend already runs. This
+	// avoids a full query-tenant-instances HTTP round trip to the master (which
+	// serializes every instance of the tenant) on every exec.
+	if ep, ok := lookupLocalExecEndpoint(instance); ok && ep.ProxyGrpcAddress != "" {
+		log.GetLogger().Infof("Instance %s resolved from local cache (proxy: %s)",
+			instance, ep.ProxyGrpcAddress)
+		return InstanceInfo{
+			InstanceID:       instance,
+			ContainerID:      ep.ContainerID,
+			ProxyGrpcAddress: ep.ProxyGrpcAddress,
+		}, nil
+	}
+
+	// Fallback: query the master. Used when the sandbox router is disabled or the
+	// instance was created so recently that the watch event has not arrived yet.
 	apiPath := "/instance-manager/query-tenant-instances"
 	queryParams := map[string]string{
 		"tenant_id": tenantID,

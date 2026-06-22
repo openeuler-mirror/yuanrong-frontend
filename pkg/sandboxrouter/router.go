@@ -44,13 +44,15 @@ type Router struct {
 	httpServer *http.Server
 }
 
-// StartIfEnabled builds and starts the sandbox router in a background goroutine
-// when cfg is non-nil and enabled; otherwise it is a no-op. It is called from
-// each frontend entrypoint (which are compiled as separate mains), so the
-// shared start logic lives here rather than in a cmd-local helper. The router
-// etcd client must already be initialised by InitEtcd before this is called.
+// StartIfEnabled builds and starts the sandbox router in a background goroutine.
+// A nil config means "use the default enabled sandbox router"; an explicit
+// config with Enabled=false remains a no-op. It is called from each frontend
+// entrypoint (which are compiled as separate mains), so the shared start logic
+// lives here rather than in a cmd-local helper. The router etcd client must
+// already be initialised by InitEtcd before this is called.
 func StartIfEnabled(cfg *config.SandboxRouterConfig, stopCh <-chan struct{}) error {
-	if cfg == nil || !cfg.Enabled {
+	cfg = effectiveConfig(cfg)
+	if !cfg.Enabled {
 		return nil
 	}
 	router, err := New(cfg)
@@ -63,6 +65,13 @@ func StartIfEnabled(cfg *config.SandboxRouterConfig, stopCh <-chan struct{}) err
 		}
 	}()
 	return nil
+}
+
+func effectiveConfig(cfg *config.SandboxRouterConfig) *config.SandboxRouterConfig {
+	if cfg == nil {
+		return &config.SandboxRouterConfig{Enabled: true}
+	}
+	return cfg
 }
 
 // New builds a Router from cfg, applying defaults. It does not start anything.
