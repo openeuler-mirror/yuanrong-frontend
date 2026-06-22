@@ -1,0 +1,92 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Package execendpoint maintains an in-memory instanceID -> exec endpoint cache
+// fed from the same /sn/instance watch the sandbox router already runs. It lets
+// the web terminal / file-copy exec path resolve an instance's backend
+// (proxyGrpcAddress + containerID) locally instead of issuing a full
+// query-tenant-instances HTTP call to the master on every exec.
+//
+// Unlike route.RouteCache (keyed by {SafeInstanceID, port} and limited to
+// instances that publish a portForward extension), this cache keys on the raw
+// instanceID and holds every RUNNING instance, because exec only needs the
+// proxy gRPC endpoint and does not depend on port forwarding.
+package execendpoint
+
+import "sync"
+
+// Endpoint is the minimal backend coordinate the exec path needs for one
+// instance: where to dial (ProxyGrpcAddress) and which container to exec into
+// (ContainerID).
+type Endpoint struct {
+	InstanceID       string
+	ProxyGrpcAddress string
+	ContainerID      string
+}
+
+// Store is a concurrency-safe instanceID -> Endpoint map. The zero value is not
+// usable; obtain one via NewStore or the package-level Default singleton.
+type Store struct {
+	mu sync.RWMutex
+	m  map[string]Endpoint
+}
+
+// NewStore returns an empty Store.
+func NewStore() *Store {
+	return &Store{m: make(map[string]Endpoint)}
+}
+
+// Get returns the endpoint for instanceID and whether it was present.
+func (s *Store) Get(instanceID string) (Endpoint, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.m[instanceID]
+	return e, ok
+}
+
+// Put inserts or replaces the endpoint for ep.InstanceID. A Put with an empty
+// InstanceID is ignored (there would be no key to look it up by).
+func (s *Store) Put(ep Endpoint) {
+	if ep.InstanceID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[ep.InstanceID] = ep
+}
+
+// Delete removes the endpoint for instanceID (no-op if absent).
+func (s *Store) Delete(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, instanceID)
+}
+
+// Size returns the number of cached endpoints.
+func (s *Store) Size() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.m)
+}
+
+// defaultStore is the process-wide exec endpoint cache, fed by the sandbox
+// router's instance-info watch and read by the web terminal exec path.
+var defaultStore = NewStore()
+
+// Default returns the package-level Store singleton.
+func Default() *Store {
+	return defaultStore
+}

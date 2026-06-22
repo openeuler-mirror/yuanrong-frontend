@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"frontend/pkg/common/faas_common/etcd3"
+	"frontend/pkg/sandboxrouter/execendpoint"
 	"frontend/pkg/sandboxrouter/route"
 )
 
@@ -66,5 +67,26 @@ func TestSandboxInstanceFilter(t *testing.T) {
 	// Shallower keys are skipped (filter returns true).
 	if !sandboxInstanceFilter(&etcd3.Event{Key: "/sn/instance/business/yrk"}) {
 		t.Error("shallow key should be skipped (filter true)")
+	}
+}
+
+// The same watch event must also populate the exec endpoint cache so the web
+// terminal exec path can resolve proxyGrpcAddress locally; DELETE clears it.
+func TestApplyEventFeedsExecEndpointCache(t *testing.T) {
+	r := NewInstanceInfoWatchResolver()
+	execendpoint.Default().Delete("inst-abc") // isolate from other tests' singleton state
+
+	r.applyEvent(&etcd3.Event{Type: etcd3.PUT, Key: instanceKey, Value: []byte(runningJSON)})
+	ep, ok := execendpoint.Default().Get("inst-abc")
+	if !ok {
+		t.Fatal("exec endpoint should be cached after PUT(running)")
+	}
+	if ep.ProxyGrpcAddress != "10.0.0.1:22772" {
+		t.Errorf("ProxyGrpcAddress = %q, want 10.0.0.1:22772", ep.ProxyGrpcAddress)
+	}
+
+	r.applyEvent(&etcd3.Event{Type: etcd3.DELETE, Key: instanceKey})
+	if _, ok := execendpoint.Default().Get("inst-abc"); ok {
+		t.Error("exec endpoint should be gone after DELETE")
 	}
 }
