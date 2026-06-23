@@ -32,6 +32,7 @@ import (
 	"frontend/pkg/common/faas_common/statuscode"
 	commontype "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/urnutils"
+	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/functionmeta"
@@ -180,7 +181,8 @@ func buildSessionDataKey(functionName, sessionID string) string {
 func resolveSessionFunctionName(funcKey string) string {
 	funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
 	if !ok || funcSpec == nil || funcSpec.FuncMetaData.Name == "" {
-		return ""
+		_, funcName, _ := utils.ParseFuncKey(funcKey)
+		return funcName
 	}
 	return funcSpec.FuncMetaData.Name
 }
