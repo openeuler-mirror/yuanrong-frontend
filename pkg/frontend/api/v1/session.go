@@ -179,12 +179,22 @@ func buildSessionDataKey(functionName, sessionID string) string {
 }
 
 func resolveSessionFunctionName(funcKey string) string {
-	funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
+	_, funcName, _ := utils.ParseFuncKey(funcKey)
+	funcSpec, ok := loadFuncSpecSafely(funcKey)
 	if !ok || funcSpec == nil || funcSpec.FuncMetaData.Name == "" {
-		_, funcName, _ := utils.ParseFuncKey(funcKey)
 		return funcName
 	}
 	return funcSpec.FuncMetaData.Name
+}
+
+func loadFuncSpecSafely(funcKey string) (funcSpec *commontype.FuncSpec, ok bool) {
+	defer func() {
+		if recover() != nil {
+			funcSpec = nil
+			ok = false
+		}
+	}()
+	return functionmeta.LoadFuncSpec(funcKey)
 }
 
 func writeSessionError(ctx *gin.Context, httpCode int, innerCode int, err error) {
