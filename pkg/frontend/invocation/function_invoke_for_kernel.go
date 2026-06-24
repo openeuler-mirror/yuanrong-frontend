@@ -460,7 +460,7 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
 		return req, err
 	}
 	req.Args = newArgList([]byte(ctx.TraceID), body)
-	req.AcceptHeader = ctx.ReqHeader["Accept"]
+	req.AcceptHeader = util.PeekIgnoreCase(ctx.ReqHeader, "Accept")
 	req.ResponseWriter = ctx.ResponseWriter
 	return req, nil
 }

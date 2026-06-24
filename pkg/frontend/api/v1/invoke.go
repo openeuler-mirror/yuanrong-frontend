@@ -38,6 +38,7 @@ import (
 	"frontend/pkg/frontend/common"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
+	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	frontendlog "frontend/pkg/frontend/log"
 	"frontend/pkg/frontend/metrics"
@@ -295,6 +296,9 @@ func buildShortProcessContext(ctx *gin.Context, traceID string) (processCtx *typ
 	processCtx = types.CreateInvokeProcessContext()
 	processCtx.TraceID = traceID
 	processCtx.RequestID = traceID
+	processCtx.ResponseWriter = &GinWriter{
+		Context: ctx,
+	}
 
 	var (
 		funcUrn  urnutils.FunctionURN
@@ -359,8 +363,10 @@ func writeHTTPResponse(ctx *gin.Context, processCtx *types.InvokeProcessContext)
 	// It has to be in this order. 1. set header 2.writeHeader 3.write
 	writeHeadersToResponse(processCtx.RespHeader, ctx.Writer.Header())
 	ctx.Writer.WriteHeader(processCtx.StatusCode)
-	sseHeader, ok := processCtx.ReqHeader["Accept"]
-	if ok && sseHeader == constant.HeaderAcceptEventStream {
+	if util.PeekIgnoreCase(processCtx.ReqHeader, "Accept") == constant.HeaderAcceptEventStream {
+		if processCtx.ResponseWriter == nil {
+			processCtx.ResponseWriter = &GinWriter{Context: ctx}
+		}
 		_, err := processCtx.ResponseWriter.SSEWrite(processCtx.RespBody)
 		if err != nil {
 			log.GetLogger().Errorf("failed to write response body error %s", err.Error())
