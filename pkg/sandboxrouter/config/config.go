@@ -18,7 +18,7 @@
 package config
 
 // SandboxRouterConfig configures the sandbox router. It is an optional section
-// of the frontend config; when absent or Enabled=false the router does not start.
+// of the frontend config; when absent the router starts with default settings; set Enabled=false to disable it explicitly.
 type SandboxRouterConfig struct {
 	Enabled          bool   `json:"enabled" valid:"optional"`
 	ListenIP         string `json:"listenIP" valid:"optional"`
