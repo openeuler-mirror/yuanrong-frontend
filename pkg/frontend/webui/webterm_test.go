@@ -125,8 +125,13 @@ func TestParseCommandSplitsArguments(t *testing.T) {
 
 func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	info := InstanceInfo{
-		InstanceID: "instance-1",
-		TenantID:   "tenant-1",
+		InstanceID:     "instance-1",
+		TenantID:       "tenant-1",
+		RequiredCPU:    500,
+		RequiredMem:    1024,
+		RequiredGPU:    1,
+		RequiredNPU:    2,
+		RuntimeSeconds: 125,
 	}
 	oldQueryMasterFunc := queryMasterFunc
 	queryMasterFunc = func(apiPath string, queryParams map[string]string, result interface{}) error {
@@ -146,6 +151,23 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"tenantID":"tenant-1"`) {
 		t.Fatalf("expected tenantID in response body, got %s", recorder.Body.String())
+	}
+
+	var body []map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["required_cpu"] != float64(500) ||
+		body[0]["required_mem"] != float64(1024) ||
+		body[0]["required_gpu"] != float64(1) ||
+		body[0]["required_npu"] != float64(2) {
+		t.Fatalf("expected resource quota fields, got %+v", body[0])
+	}
+	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds != 125 {
+		t.Fatalf("expected runtime_seconds=125, got %+v", body[0]["runtime_seconds"])
 	}
 }
 
@@ -209,6 +231,7 @@ func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
 			"instance_id": "instance-2",
 			"page":        "2",
 			"page_size":   "1",
+			"fields":      "summary",
 		}
 		for key, expected := range expectedParams {
 			if queryParams[key] != expected {

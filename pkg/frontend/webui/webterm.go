@@ -151,10 +151,17 @@ type InstanceStatus struct {
 	ErrCode  int    `json:"errCode"`  // Error code
 }
 
-// Resources defines resource configuration
+// Resources defines resource configuration.
 type Resources struct {
-	CPU    string `json:"cpu"`    // CPU quota, e.g. "2000m"
-	Memory string `json:"memory"` // Memory quota, e.g. "4Gi"
+	Resources map[string]Resource `json:"resources"`
+}
+
+type Resource struct {
+	Scalar ValueScalar `json:"scalar"`
+}
+
+type ValueScalar struct {
+	Value float64 `json:"value"`
 }
 
 // InstanceInfo defines instance information structure (corresponding to instance returned by master API)
@@ -169,6 +176,11 @@ type InstanceInfo struct {
 	RuntimeID        string         `json:"runtimeID"`        // Runtime ID
 	InstanceStatus   InstanceStatus `json:"instanceStatus"`   // Instance status
 	Resources        Resources      `json:"resources"`        // Resource configuration
+	RequiredCPU      float64        `json:"required_cpu"`     // Requested CPU quota
+	RequiredMem      float64        `json:"required_mem"`     // Requested memory quota
+	RequiredGPU      float64        `json:"required_gpu"`     // Requested GPU quota
+	RequiredNPU      float64        `json:"required_npu"`     // Requested NPU quota
+	RuntimeSeconds   int64          `json:"runtime_seconds"`  // Runtime duration in seconds
 	StartTime        string         `json:"startTime"`        // Start time
 	RequestID        string         `json:"requestID"`        // Request ID
 	ParentID         string         `json:"parentID"`         // Parent ID
@@ -323,15 +335,66 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 			statusText = inst.InstanceStatus.Msg
 		}
 		instance := map[string]interface{}{
-			"id":       inst.InstanceID,
-			"tenantID": inst.TenantID,
-			"function": inst.Function,
-			"status":   statusText,
-			"error":    errorDetail,
+			"id":              inst.InstanceID,
+			"tenantID":        inst.TenantID,
+			"function":        inst.Function,
+			"status":          statusText,
+			"error":           errorDetail,
+			"required_cpu":    getResourceValueOrDefault("CPU", inst.Resources.Resources, inst.RequiredCPU),
+			"required_mem":    getResourceValueOrDefault("Memory", inst.Resources.Resources, inst.RequiredMem),
+			"required_gpu":    getResourceValueOrDefault("GPU", inst.Resources.Resources, inst.RequiredGPU),
+			"required_npu":    getResourceValueOrDefault("NPU/.+/count", inst.Resources.Resources, inst.RequiredNPU),
+			"runtime_seconds": getRuntimeSeconds(inst),
 		}
 		instances = append(instances, instance)
 	}
 	return instances
+}
+
+func getResourceValueOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
+	if resource, ok := resources[resourceName]; ok {
+		return resource.Scalar.Value
+	}
+	return fallback
+}
+
+func getRuntimeSeconds(inst InstanceInfo) int64 {
+	if inst.RuntimeSeconds > 0 {
+		return inst.RuntimeSeconds
+	}
+	return runtimeSecondsSince(inst.StartTime, time.Now())
+}
+
+func runtimeSecondsSince(startTime string, now time.Time) int64 {
+	startTime = strings.TrimSpace(startTime)
+	if startTime == "" {
+		return 0
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999999 -0700",
+		"2006-01-02 15:04:05",
+	} {
+		if parsed, err := time.Parse(layout, startTime); err == nil {
+			if now.Before(parsed) {
+				return 0
+			}
+			return int64(now.Sub(parsed).Seconds())
+		}
+	}
+	if unix, err := strconv.ParseInt(startTime, 10, 64); err == nil {
+		if unix > 1_000_000_000_000 {
+			unix /= 1000
+		}
+		parsed := time.Unix(unix, 0)
+		if now.Before(parsed) {
+			return 0
+		}
+		return int64(now.Sub(parsed).Seconds())
+	}
+	return 0
 }
 
 func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
@@ -770,6 +833,7 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	if instanceID := r.URL.Query().Get("instance_id"); instanceID != "" {
 		queryParams["instance_id"] = instanceID
 	}
+	queryParams["fields"] = "summary"
 	paginationParams, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
