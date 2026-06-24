@@ -124,17 +124,35 @@ func TestParseCommandSplitsArguments(t *testing.T) {
 }
 
 func TestHandleInstancesIncludesTenantID(t *testing.T) {
-	info := InstanceInfo{
+	info := execendpoint.Summary{
 		InstanceID: "instance-1",
 		TenantID:   "tenant-1",
+		StatusCode: int32(constant.KernelInstanceStatusRunning),
+		StatusMsg:  "running",
+		StartTime:  "1700000000",
+		Resources: map[string]execendpoint.Resource{
+			"CPU":          localResource(500),
+			"Memory":       localResource(1024),
+			"GPU":          localResource(1),
+			"NPU/.+/count": localResource(2),
+		},
 	}
+	oldLookupSummaries := lookupLocalInstanceSummaries
 	oldQueryMasterFunc := queryMasterFunc
-	queryMasterFunc = func(apiPath string, queryParams map[string]string, result interface{}) error {
-		response := result.(*InstanceListResponse)
-		response.Instances = []InstanceInfo{info}
+	lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+		if tenantID != "tenant-1" || instanceID != "" {
+			t.Fatalf("unexpected local filters tenant=%q instance=%q", tenantID, instanceID)
+		}
+		return []execendpoint.Summary{info}
+	}
+	queryMasterFunc = func(string, map[string]string, interface{}) error {
+		t.Fatal("master must not be queried for local running instance list")
 		return nil
 	}
-	defer func() { queryMasterFunc = oldQueryMasterFunc }()
+	defer func() {
+		lookupLocalInstanceSummaries = oldLookupSummaries
+		queryMasterFunc = oldQueryMasterFunc
+	}()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=tenant-1", nil)
 	recorder := httptest.NewRecorder()
@@ -146,6 +164,23 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"tenantID":"tenant-1"`) {
 		t.Fatalf("expected tenantID in response body, got %s", recorder.Body.String())
+	}
+
+	var body []map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["required_cpu"] != float64(500) ||
+		body[0]["required_mem"] != float64(1024) ||
+		body[0]["required_gpu"] != float64(1) ||
+		body[0]["required_npu"] != float64(2) {
+		t.Fatalf("expected resource quota fields, got %+v", body[0])
+	}
+	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds <= 0 {
+		t.Fatalf("expected positive runtime_seconds, got %+v", body[0]["runtime_seconds"])
 	}
 }
 
@@ -194,55 +229,32 @@ func TestHandleIndexDoesNotPrefixSandboxAPIWithTerminalPath(t *testing.T) {
 	}
 }
 
-func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
+func TestHandleInstancesUsesLocalCacheWithPagination(t *testing.T) {
+	originalLookupSummaries := lookupLocalInstanceSummaries
 	originalQueryMaster := queryMasterFunc
 	defer func() {
+		lookupLocalInstanceSummaries = originalLookupSummaries
 		queryMasterFunc = originalQueryMaster
 	}()
 
-	queryMasterFunc = func(apiPath string, queryParams map[string]string, result interface{}) error {
-		if apiPath != "/instance-manager/query-tenant-instances" {
-			t.Fatalf("unexpected api path: %s", apiPath)
+	lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+		if tenantID != "tenant-a" || instanceID != "" {
+			t.Fatalf("unexpected local filters tenant=%q instance=%q", tenantID, instanceID)
 		}
-		expectedParams := map[string]string{
-			"tenant_id":   "tenant-a",
-			"instance_id": "instance-2",
-			"page":        "2",
-			"page_size":   "1",
+		return []execendpoint.Summary{
+			{InstanceID: "instance-1", TenantID: "tenant-a", StatusCode: int32(constant.KernelInstanceStatusRunning)},
+			{InstanceID: "instance-2", TenantID: "tenant-a", Function: "func-a", StatusCode: int32(constant.KernelInstanceStatusRunning)},
+			{InstanceID: "instance-3", TenantID: "tenant-a", StatusCode: int32(constant.KernelInstanceStatusRunning)},
 		}
-		for key, expected := range expectedParams {
-			if queryParams[key] != expected {
-				t.Fatalf("expected query param %s=%s, got %q", key, expected, queryParams[key])
-			}
-		}
-
-		response, ok := result.(*InstanceListResponse)
-		if !ok {
-			t.Fatalf("unexpected result type: %T", result)
-		}
-		*response = InstanceListResponse{
-			Instances: []InstanceInfo{
-				{
-					InstanceID: "instance-2",
-					TenantID:   "tenant-a",
-					Function:   "func-a",
-					InstanceStatus: InstanceStatus{
-						Code: int(constant.KernelInstanceStatusRunning),
-						Msg:  "running",
-					},
-				},
-			},
-			Count:    3,
-			Page:     2,
-			PageSize: 1,
-			TenantID: "tenant-a",
-		}
+	}
+	queryMasterFunc = func(string, map[string]string, interface{}) error {
+		t.Fatal("master must not be queried for local running instance list")
 		return nil
 	}
 
 	req := httptest.NewRequest(
 		http.MethodGet,
-		"/api/instances?tenant_id=tenant-a&instance_id=instance-2&page=2&page_size=1",
+		"/api/instances?tenant_id=tenant-a&page=2&page_size=1",
 		nil,
 	)
 	recorder := httptest.NewRecorder()
@@ -271,26 +283,17 @@ func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
 	}
 }
 
-func TestHandleInstancesPropagatesPaginatedMasterErrors(t *testing.T) {
-	originalQueryMaster := queryMasterFunc
+func TestHandleInstancesRejectsInvalidPaginationBeforeLocalLookup(t *testing.T) {
+	originalLookupSummaries := lookupLocalInstanceSummaries
 	defer func() {
-		queryMasterFunc = originalQueryMaster
+		lookupLocalInstanceSummaries = originalLookupSummaries
 	}()
-
-	queryMasterFunc = func(apiPath string, queryParams map[string]string, result interface{}) error {
-		if apiPath != "/instance-manager/query-tenant-instances" {
-			t.Fatalf("unexpected api path: %s", apiPath)
-		}
-		if queryParams["page_size"] != "1001" {
-			t.Fatalf("expected page_size=1001, got %q", queryParams["page_size"])
-		}
-		return masterQueryError{
-			statusCode: http.StatusBadRequest,
-			body:       "{\"error\":\"page_size exceeds maximum limit\"}",
-		}
+	lookupLocalInstanceSummaries = func(string, string) []execendpoint.Summary {
+		t.Fatal("local cache must not be queried for invalid pagination")
+		return nil
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=tenant-a&page=1&page_size=1001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=tenant-a&page=0&page_size=10", nil)
 	recorder := httptest.NewRecorder()
 
 	HandleInstances(recorder, req)
@@ -298,7 +301,13 @@ func TestHandleInstancesPropagatesPaginatedMasterErrors(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "page_size exceeds maximum limit") {
-		t.Fatalf("expected master error body, got %q", recorder.Body.String())
+	if !strings.Contains(recorder.Body.String(), "page must be a positive integer") {
+		t.Fatalf("expected pagination error body, got %q", recorder.Body.String())
 	}
+}
+
+func localResource(value float64) execendpoint.Resource {
+	var resource execendpoint.Resource
+	resource.Scalar.Value = value
+	return resource
 }

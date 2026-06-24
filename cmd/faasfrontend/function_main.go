@@ -202,6 +202,11 @@ func SignalHandlerLibruntime(signal int, payload []byte) error {
 	return nil
 }
 
+// HealthCheckHandlerLibruntime reports the frontend control-plane function health to libruntime.
+func HealthCheckHandlerLibruntime() (api.HealthType, error) {
+	return api.Healthy, nil
+}
+
 func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct{}) error {
 	util.SetAPIClientLibruntime(rt)
 	schedulerproxy.Proxy.RTAPI = rt

@@ -26,7 +26,10 @@
 // proxy gRPC endpoint and does not depend on port forwarding.
 package execendpoint
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 // Endpoint is the minimal backend coordinate the exec path needs for one
 // instance: where to dial (ProxyGrpcAddress) and which container to exec into
@@ -37,16 +40,41 @@ type Endpoint struct {
 	ContainerID      string
 }
 
+// Resource is the minimal scalar resource shape carried by InstanceInfo JSON.
+type Resource struct {
+	Scalar struct {
+		Value float64 `json:"value"`
+	} `json:"scalar"`
+}
+
+// Summary is the minimal RUNNING instance view needed by frontend list APIs.
+type Summary struct {
+	InstanceID     string
+	TenantID       string
+	Function       string
+	StatusCode     int32
+	StatusMsg      string
+	StatusType     int32
+	StatusExitCode int32
+	StatusErrCode  int32
+	StartTime      string
+	Resources      map[string]Resource
+}
+
 // Store is a concurrency-safe instanceID -> Endpoint map. The zero value is not
 // usable; obtain one via NewStore or the package-level Default singleton.
 type Store struct {
-	mu sync.RWMutex
-	m  map[string]Endpoint
+	mu        sync.RWMutex
+	m         map[string]Endpoint
+	summaries map[string]Summary
 }
 
 // NewStore returns an empty Store.
 func NewStore() *Store {
-	return &Store{m: make(map[string]Endpoint)}
+	return &Store{
+		m:         make(map[string]Endpoint),
+		summaries: make(map[string]Summary),
+	}
 }
 
 // Get returns the endpoint for instanceID and whether it was present.
@@ -68,8 +96,26 @@ func (s *Store) Put(ep Endpoint) {
 	s.m[ep.InstanceID] = ep
 }
 
+// PutSummary inserts or replaces the list summary for summary.InstanceID.
+func (s *Store) PutSummary(summary Summary) {
+	if summary.InstanceID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.summaries[summary.InstanceID] = summary
+}
+
 // Delete removes the endpoint for instanceID (no-op if absent).
 func (s *Store) Delete(instanceID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, instanceID)
+	delete(s.summaries, instanceID)
+}
+
+// DeleteEndpoint removes only the exec endpoint, keeping the list summary intact.
+func (s *Store) DeleteEndpoint(instanceID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, instanceID)
@@ -80,6 +126,26 @@ func (s *Store) Size() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.m)
+}
+
+// ListSummaries returns RUNNING instance summaries matching the optional tenant and instance filters.
+func (s *Store) ListSummaries(tenantID, instanceID string) []Summary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Summary, 0, len(s.summaries))
+	for _, summary := range s.summaries {
+		if tenantID != "" && summary.TenantID != tenantID {
+			continue
+		}
+		if instanceID != "" && summary.InstanceID != instanceID {
+			continue
+		}
+		out = append(out, summary)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].InstanceID < out[j].InstanceID
+	})
+	return out
 }
 
 // defaultStore is the process-wide exec endpoint cache, fed by the sandbox

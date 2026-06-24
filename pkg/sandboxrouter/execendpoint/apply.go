@@ -45,22 +45,31 @@ const (
 // frontend's existing InstanceSpecification struct, which is why we parse our own.
 type instanceExecInfo struct {
 	InstanceID       string `json:"instanceID"`
+	TenantID         string `json:"tenantID"`
 	ProxyGrpcAddress string `json:"proxyGrpcAddress"`
 	ContainerID      string `json:"containerID"`
-	InstanceStatus   struct {
-		Code int32 `json:"code"`
+	Function         string `json:"function"`
+	StartTime        string `json:"startTime"`
+	Resources        struct {
+		Resources map[string]Resource `json:"resources"`
+	} `json:"resources"`
+	InstanceStatus struct {
+		Code     int32  `json:"code"`
+		ExitCode int32  `json:"exitCode"`
+		Msg      string `json:"msg"`
+		Type     int32  `json:"type"`
+		ErrCode  int32  `json:"errCode"`
 	} `json:"instanceStatus"`
 }
 
 // ApplyInstanceEvent updates the cache for one /sn/instance watch event:
-//   - DELETE removes the instance's endpoint (instanceID recovered from the key).
-//   - PUT of a RUNNING instance with a non-empty proxyGrpcAddress adds/replaces
-//     its endpoint; any other state, missing proxyGrpcAddress, or unparseable
-//     value removes it.
+//   - DELETE removes the instance's endpoint and summary (instanceID recovered from the key).
+//   - PUT of a RUNNING instance adds/replaces its summary. If it also has a
+//     non-empty proxyGrpcAddress, it adds/replaces its exec endpoint.
+//   - PUT of any other state or unparseable value removes cached data.
 //
 // It never panics on bad input; malformed data results in the instance having
-// no cached endpoint, which the exec path treats as a miss (falling back to the
-// master query).
+// no cached data.
 func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 	if kind == EventDelete {
 		s.Delete(instanceIDFromKey(key))
@@ -78,8 +87,30 @@ func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 		id = instanceIDFromKey(key)
 	}
 
-	if info.InstanceStatus.Code != kernelStatusRunning || info.ProxyGrpcAddress == "" {
+	if info.InstanceStatus.Code != kernelStatusRunning {
 		s.Delete(id)
+		return
+	}
+
+	tenantID := info.TenantID
+	if tenantID == "" {
+		tenantID = tenantIDFromKey(key)
+	}
+	s.PutSummary(Summary{
+		InstanceID:     id,
+		TenantID:       tenantID,
+		Function:       info.Function,
+		StatusCode:     info.InstanceStatus.Code,
+		StatusMsg:      info.InstanceStatus.Msg,
+		StatusType:     info.InstanceStatus.Type,
+		StatusExitCode: info.InstanceStatus.ExitCode,
+		StatusErrCode:  info.InstanceStatus.ErrCode,
+		StartTime:      info.StartTime,
+		Resources:      info.Resources.Resources,
+	})
+
+	if info.ProxyGrpcAddress == "" {
+		s.DeleteEndpoint(id)
 		return
 	}
 
@@ -98,4 +129,14 @@ func instanceIDFromKey(key string) string {
 		return key[i+1:]
 	}
 	return key
+}
+
+func tenantIDFromKey(key string) string {
+	parts := strings.Split(key, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "tenant" {
+			return parts[i+1]
+		}
+	}
+	return ""
 }
