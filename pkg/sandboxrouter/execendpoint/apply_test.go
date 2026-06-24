@@ -23,7 +23,9 @@ const instanceKey = "/sn/instance/business/yrk/tenant/default/function/0-svc/ver
 // Shape mirrors a real /sn/instance value (MessageToJsonString output) reduced
 // to the fields the exec path reads.
 const runningJSON = `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22774",` +
-	`"containerID":"sbox-4fb6aa1c","instanceStatus":{"code":3},` +
+	`"containerID":"sbox-4fb6aa1c","tenantID":"default","function":"func-a","startTime":"1700000000",` +
+	`"resources":{"resources":{"CPU":{"scalar":{"value":1000}},"Memory":{"scalar":{"value":2048}}}},` +
+	`"instanceStatus":{"code":3,"msg":"running"},` +
 	`"extensions":{"portForward":"[\"tcp:31080:8765\"]"}}`
 
 func TestApplyEventPutRunning(t *testing.T) {
@@ -40,6 +42,13 @@ func TestApplyEventPutRunning(t *testing.T) {
 	if got.ContainerID != "sbox-4fb6aa1c" {
 		t.Errorf("ContainerID = %q, want sbox-4fb6aa1c", got.ContainerID)
 	}
+	summaries := s.ListSummaries("default", "")
+	if len(summaries) != 1 {
+		t.Fatalf("expected one running summary, got %+v", summaries)
+	}
+	if summaries[0].Function != "func-a" || summaries[0].Resources["CPU"].Scalar.Value != 1000 {
+		t.Fatalf("unexpected summary: %+v", summaries[0])
+	}
 }
 
 func TestApplyEventPutThenDelete(t *testing.T) {
@@ -52,6 +61,9 @@ func TestApplyEventPutThenDelete(t *testing.T) {
 	if _, ok := s.Get("inst-abc"); ok {
 		t.Error("should be gone after DELETE")
 	}
+	if summaries := s.ListSummaries("default", ""); len(summaries) != 0 {
+		t.Errorf("summary should be gone after DELETE, got %+v", summaries)
+	}
 }
 
 func TestApplyEventNonRunningRemoved(t *testing.T) {
@@ -63,14 +75,20 @@ func TestApplyEventNonRunningRemoved(t *testing.T) {
 	if _, ok := s.Get("inst-abc"); ok {
 		t.Error("non-RUNNING instance must not stay cached")
 	}
+	if summaries := s.ListSummaries("default", ""); len(summaries) != 0 {
+		t.Errorf("non-RUNNING summary must not stay cached, got %+v", summaries)
+	}
 }
 
-func TestApplyEventEmptyProxyRemoved(t *testing.T) {
+func TestApplyEventEmptyProxyStillCachedForList(t *testing.T) {
 	s := NewStore()
-	const noProxyJSON = `{"instanceID":"inst-abc","proxyGrpcAddress":"","instanceStatus":{"code":3}}`
+	const noProxyJSON = `{"instanceID":"inst-abc","tenantID":"default","proxyGrpcAddress":"","instanceStatus":{"code":3}}`
 	ApplyInstanceEvent(s, EventPut, instanceKey, []byte(noProxyJSON))
 	if _, ok := s.Get("inst-abc"); ok {
-		t.Error("RUNNING instance with empty proxyGrpcAddress must not be cached")
+		t.Error("RUNNING instance with empty proxyGrpcAddress must not be cached as exec endpoint")
+	}
+	if summaries := s.ListSummaries("default", ""); len(summaries) != 1 {
+		t.Errorf("RUNNING instance with empty proxyGrpcAddress should still be cached for list, got %+v", summaries)
 	}
 }
 

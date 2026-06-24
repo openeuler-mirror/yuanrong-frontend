@@ -216,6 +216,10 @@ var lookupLocalExecEndpoint = func(instanceID string) (execendpoint.Endpoint, bo
 	return execendpoint.Default().Get(instanceID)
 }
 
+var lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+	return execendpoint.Default().ListSummaries(tenantID, instanceID)
+}
+
 type masterQueryError struct {
 	statusCode int
 	body       string
@@ -349,6 +353,51 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 		instances = append(instances, instance)
 	}
 	return instances
+}
+
+func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[string]interface{} {
+	instances := make([]map[string]interface{}, 0, len(summaries))
+	for _, summary := range summaries {
+		resources := convertLocalResources(summary.Resources)
+		inst := InstanceInfo{
+			InstanceID: summary.InstanceID,
+			TenantID:   summary.TenantID,
+			Function:   summary.Function,
+			StartTime:  summary.StartTime,
+			InstanceStatus: InstanceStatus{
+				Code:     int(summary.StatusCode),
+				ExitCode: int(summary.StatusExitCode),
+				Msg:      summary.StatusMsg,
+				Type:     int(summary.StatusType),
+				ErrCode:  int(summary.StatusErrCode),
+			},
+			Resources: Resources{Resources: resources},
+		}
+		instances = append(instances, summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{inst}})...)
+	}
+	return instances
+}
+
+func convertLocalResources(resources map[string]execendpoint.Resource) map[string]Resource {
+	out := make(map[string]Resource, len(resources))
+	for name, resource := range resources {
+		var converted Resource
+		converted.Scalar.Value = resource.Scalar.Value
+		out[name] = converted
+	}
+	return out
+}
+
+func paginateInstanceSummaries(summaries []execendpoint.Summary, page, pageSize int) []execendpoint.Summary {
+	start := (page - 1) * pageSize
+	if start >= len(summaries) {
+		return []execendpoint.Summary{}
+	}
+	end := start + pageSize
+	if end > len(summaries) {
+		end = len(summaries)
+	}
+	return summaries[start:end]
 }
 
 func getResourceValueOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
@@ -814,7 +863,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.GetLogger().Infof("Session %s disconnected", sessionID)
 }
 
-// HandleInstances returns instance list, queried from master
+// HandleInstances returns RUNNING instance list from the local instance watcher cache.
 func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -825,54 +874,28 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 		tenantID = "default"
 	}
 
-	// Call master's instance management API
-	apiPath := "/instance-manager/query-tenant-instances"
-	queryParams := map[string]string{
-		"tenant_id": tenantID,
-	}
-	if instanceID := r.URL.Query().Get("instance_id"); instanceID != "" {
-		queryParams["instance_id"] = instanceID
-	}
-	queryParams["fields"] = "summary"
-	paginationParams, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
+	instanceID := r.URL.Query().Get("instance_id")
+	_, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	for key, value := range paginationParams {
-		queryParams[key] = value
-	}
 
-	// Call generic query function
-	var response InstanceListResponse
-	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
-		log.GetLogger().Infof("Failed to query instances from master: %v", err)
-		if paginated {
-			writeMasterQueryError(w, err, http.StatusBadGateway)
-			return
-		}
-		// Return empty list on query failure instead of error, so frontend can continue
-		response.Instances = []InstanceInfo{}
+	summaries := lookupLocalInstanceSummaries(tenantID, instanceID)
+	total := len(summaries)
+	if paginated {
+		summaries = paginateInstanceSummaries(summaries, page, pageSize)
 	}
 
 	// Convert to frontend expected format (simplified instance info)
-	instances := summarizeInstances(response)
+	instances := summarizeLocalInstanceSummaries(summaries)
 	if paginated {
-		if response.Page == 0 {
-			response.Page = page
-		}
-		if response.PageSize == 0 {
-			response.PageSize = pageSize
-		}
-		if response.Count == 0 {
-			response.Count = len(instances)
-		}
 		err := json.NewEncoder(w).Encode(paginatedInstanceListResponse{
 			Instances: instances,
-			Count:     response.Count,
-			TenantID:  response.TenantID,
-			Page:      response.Page,
-			PageSize:  response.PageSize,
+			Count:     total,
+			TenantID:  tenantID,
+			Page:      page,
+			PageSize:  pageSize,
 		})
 		if err != nil {
 			log.GetLogger().Infof("Error encoding instances: %v", err)
