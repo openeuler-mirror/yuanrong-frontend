@@ -267,6 +267,14 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 			log.GetLogger().Errorf("notify response error, objID: %s, err: %v", objID, resErr)
 			return res, resErr
 		}
+	case <-sseChan.WaitEvent:
+		if sseChan.EventErr != nil {
+			log.GetLogger().Errorf("handler sse event failed, objID: %s, err: %v", objID, sseChan.EventErr)
+			return nil, sseChan.EventErr
+		}
+		log.GetLogger().Debugf("finish handle sse event, requestId: %s, objID: %s, instanceId: %s",
+			req.RequestID, objID, req.InstanceID)
+		return res, nil
 	}
 	<-sseChan.WaitEvent
 	if sseChan.EventErr != nil {

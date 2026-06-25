@@ -20,6 +20,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/agiledragon/gomonkey/v2"
 	. "github.com/smartystreets/goconvey/convey"
@@ -155,6 +156,41 @@ func Test_defaultClient_getRes(t *testing.T) {
 			res, err := c.getRes("obj1", req)
 			So(err, ShouldNotBeNil)
 			So(string(res), ShouldEqual, "response")
+		})
+
+		Convey("When request is SSE and event EOF arrives before async result", func() {
+			var written []byte
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {}
+			mock.getEvent = func(objectID string, cb api.GetEventCallback) {
+				go func() {
+					cb([]byte("stream-data"), nil)
+					cb([]byte("yuanrong_event_EOF"), nil)
+				}()
+			}
+			req.AcceptHeader = httpconstant.AcceptEventStream
+			req.ResponseWriter = &mockResponseWriter{
+				clientDisconnectChan: clientDisconnectChan,
+				sseWriteFunc: func(data []byte) (int, error) {
+					written = append([]byte{}, data...)
+					return len(data), nil
+				},
+			}
+
+			done := make(chan struct{})
+			var res []byte
+			var err error
+			go func() {
+				res, err = c.getRes("obj1", req)
+				close(done)
+			}()
+			select {
+			case <-done:
+				So(err, ShouldBeNil)
+				So(res, ShouldBeNil)
+				So(string(written), ShouldEqual, "stream-data")
+			case <-time.After(time.Second):
+				t.Fatal("getRes should return when SSE EOF arrives even if async result is not ready")
+			}
 		})
 	})
 }
