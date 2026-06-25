@@ -29,6 +29,7 @@ package execendpoint
 import (
 	"sort"
 	"sync"
+	"time"
 )
 
 // Endpoint is the minimal backend coordinate the exec path needs for one
@@ -58,7 +59,11 @@ type Summary struct {
 	StatusExitCode int32
 	StatusErrCode  int32
 	StartTime      string
-	Resources      map[string]Resource
+	// ObservedRunningAt is the frontend-local fallback start timestamp. It is
+	// set when the watcher first observes this instance in RUNNING state and is
+	// used only when the service-side startTime is missing or unparsable.
+	ObservedRunningAt time.Time
+	Resources         map[string]Resource
 }
 
 // Store is a concurrency-safe instanceID -> Endpoint map. The zero value is not
@@ -103,6 +108,13 @@ func (s *Store) PutSummary(summary Summary) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if summary.ObservedRunningAt.IsZero() {
+		if existing, ok := s.summaries[summary.InstanceID]; ok && !existing.ObservedRunningAt.IsZero() {
+			summary.ObservedRunningAt = existing.ObservedRunningAt
+		} else {
+			summary.ObservedRunningAt = time.Now()
+		}
+	}
 	s.summaries[summary.InstanceID] = summary
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/sandboxrouter/execendpoint"
@@ -181,6 +182,28 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	}
 	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds <= 0 {
 		t.Fatalf("expected positive runtime_seconds, got %+v", body[0]["runtime_seconds"])
+	}
+}
+
+func TestSummarizeLocalInstanceSummariesUsesObservedRunningAtFallback(t *testing.T) {
+	summaries := []execendpoint.Summary{{
+		InstanceID:        "instance-1",
+		TenantID:          "tenant-1",
+		StatusCode:        int32(constant.KernelInstanceStatusRunning),
+		StatusMsg:         "running",
+		ObservedRunningAt: time.Now().Add(-2 * time.Minute),
+	}}
+
+	body := summarizeLocalInstanceSummaries(summaries)
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	runtimeSeconds, ok := body[0]["runtime_seconds"].(int64)
+	if !ok {
+		t.Fatalf("runtime_seconds type = %T, want int64", body[0]["runtime_seconds"])
+	}
+	if runtimeSeconds < 110 || runtimeSeconds > 130 {
+		t.Fatalf("runtime_seconds = %d, want approximately 120", runtimeSeconds)
 	}
 }
 
