@@ -363,7 +363,7 @@ func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[str
 			InstanceID: summary.InstanceID,
 			TenantID:   summary.TenantID,
 			Function:   summary.Function,
-			StartTime:  summary.StartTime,
+			StartTime:  localSummaryStartTime(summary),
 			InstanceStatus: InstanceStatus{
 				Code:     int(summary.StatusCode),
 				ExitCode: int(summary.StatusExitCode),
@@ -376,6 +376,16 @@ func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[str
 		instances = append(instances, summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{inst}})...)
 	}
 	return instances
+}
+
+func localSummaryStartTime(summary execendpoint.Summary) string {
+	if strings.TrimSpace(summary.StartTime) != "" {
+		return summary.StartTime
+	}
+	if summary.ObservedRunningAt.IsZero() {
+		return ""
+	}
+	return summary.ObservedRunningAt.Format(time.RFC3339Nano)
 }
 
 func convertLocalResources(resources map[string]execendpoint.Resource) map[string]Resource {
