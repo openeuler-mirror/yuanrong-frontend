@@ -473,6 +473,10 @@ type ExtendedMetaData struct {
 	ServeDeploySchema      ServeDeploySchema      `json:"serveDeploySchema" valid:"optional"`
 	ImagePullConfig        ImagePullConfig        `json:"imagePullConfig,omitempty"`
 	UserOtelConfig         UserOtelConfig         `json:"userOtelConfig,omitempty"`
+	PriorityAZ             string                 `json:"priority_az,omitempty"`
+	EnableMetrics          bool                   `json:"enableMetrics,omitempty"`
+	EnableAgentSession     bool                   `json:"enable_agent_session,omitempty"`
+	EnableSessionCtx       bool                   `json:"enable_session_ctx,omitempty"`
 }
 
 // UserOtelConfig -

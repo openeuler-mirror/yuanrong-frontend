@@ -74,6 +74,8 @@ const (
 	SAAuthHeader = "service-account"
 	// HeaderInstanceSession -
 	HeaderInstanceSession = "X-Instance-Session"
+	// HeaderAgentSession -
+	HeaderAgentSession = "X-Agent-Session"
 )
 
 const (

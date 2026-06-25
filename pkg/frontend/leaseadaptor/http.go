@@ -92,6 +92,9 @@ func createAcquireArgs(option *types.AcquireOption, funcKey string) ([]*api.Arg,
 			instanceRequirement[constant.InstanceSessionConfig] = bytes
 		}
 	}
+	if option.EnableSessionCtx {
+		instanceRequirement[constant.SessionCtxID] = []byte(option.SessionCtxID)
+	}
 
 	insRequirementBytes, err := json.Marshal(instanceRequirement)
 	if err != nil {
