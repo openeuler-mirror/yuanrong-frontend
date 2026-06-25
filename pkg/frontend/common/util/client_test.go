@@ -205,22 +205,23 @@ func Test_defaultClient_handleEvent(t *testing.T) {
 			}).Reset()
 		Convey("When handling an event with error", func() {
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
-			sseChan.Event <- []byte(`{"key": "value"}`)
-			sseChan.EventErr = errors.New("some error")
+			eventErr := errors.New("some error")
+			sseChan.Event <- sseEvent{Data: []byte(`{"key": "value"}`), Err: eventErr}
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
+			So(sseChan.EventErr, ShouldEqual, eventErr)
 		})
 		Convey("When handling an event with yuanrong_event_EOF", func() {
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
-			sseChan.Event <- []byte(`yuanrong_event_EOF`)
+			sseChan.Event <- sseEvent{Data: []byte(`yuanrong_event_EOF`)}
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
 		})
@@ -234,18 +235,41 @@ func Test_defaultClient_handleEvent(t *testing.T) {
 				},
 			}
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
-			sseChan.Event <- []byte(`{"key": "value"}`)
+			sseChan.Event <- sseEvent{Data: []byte(`{"key": "value"}`)}
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
 			So(sseChan.EventErr, ShouldNotBeNil)
 		})
+		Convey("When handling a non-json stream event", func() {
+			var written []byte
+			req := InvokeRequest{
+				ResponseWriter: &mockResponseWriter{
+					clientDisconnectChan: clientDisconnectChan,
+					sseWriteFunc: func(data []byte) (int, error) {
+						written = append([]byte{}, data...)
+						return len(data), nil
+					},
+				},
+			}
+			sseChan := &SSEChan{
+				Event:     make(chan sseEvent, 2),
+				WaitEvent: make(chan struct{}, 1),
+			}
+			stopSSEHandle := make(chan struct{})
+			sseChan.Event <- sseEvent{Data: []byte(`plain stream data`)}
+			sseChan.Event <- sseEvent{Data: []byte(`yuanrong_event_EOF`)}
+			c.handleEvent("objID", sseChan, req, stopSSEHandle)
+			So(<-sseChan.WaitEvent, ShouldNotBeNil)
+			So(sseChan.EventErr, ShouldBeNil)
+			So(string(written), ShouldEqual, "plain stream data")
+		})
 		Convey("When early close StopSSEHandle", func() {
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
@@ -256,13 +280,25 @@ func Test_defaultClient_handleEvent(t *testing.T) {
 		Convey("When handle an event with a disconnected client", func() {
 			close(clientDisconnectChan)
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
 			So(sseChan.EventErr, ShouldNotBeNil)
+		})
+		Convey("When GetEvent callback returns an error with non-json payload", func() {
+			sseChan := &SSEChan{
+				Event:     make(chan sseEvent, 1),
+				WaitEvent: make(chan struct{}, 1),
+			}
+			stopSSEHandle := make(chan struct{})
+			eventErr := errors.New("instance has already exited")
+			sseChan.Event <- sseEvent{Data: []byte(`instance has already exited`), Err: eventErr}
+			c.handleEvent("objID", sseChan, req, stopSSEHandle)
+			So(<-sseChan.WaitEvent, ShouldNotBeNil)
+			So(sseChan.EventErr, ShouldEqual, eventErr)
 		})
 	})
 }

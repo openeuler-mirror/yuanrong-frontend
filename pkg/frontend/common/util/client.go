@@ -19,7 +19,6 @@ package util
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
@@ -122,10 +121,15 @@ type InvokeRequest struct {
 
 // SSEChan -
 type SSEChan struct {
-	Event    chan []byte
+	Event    chan sseEvent
 	EventErr error
 	// WaitEvent 用于通知sse消息处理结束，防止主流程和getEvent回调阻塞等待
 	WaitEvent chan struct{}
+}
+
+type sseEvent struct {
+	Data []byte
+	Err  error
 }
 
 // Client is used to invoke an instance and wait for its response
@@ -242,13 +246,12 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		return res, resErr
 	}
 	sseChan := &SSEChan{
-		Event:     make(chan []byte, 100), // 使用100大小缓冲区，防止libruntime侧回写event消息阻塞
+		Event:     make(chan sseEvent, 100), // 使用100大小缓冲区，防止libruntime侧回写event消息阻塞
 		WaitEvent: make(chan struct{}, 1),
 	}
 	c.clientLibruntime.GetEvent(objID, func(result []byte, err error) {
 		select {
-		case sseChan.Event <- result:
-			sseChan.EventErr = err
+		case sseChan.Event <- sseEvent{Data: result, Err: err}:
 		case <-sseChan.WaitEvent:
 			return
 		}
@@ -290,21 +293,18 @@ func (c *defaultClient) handleEvent(objID string, sseChan *SSEChan, req InvokeRe
 			return
 		case <-stopSSEHandle:
 			return
-		case data, ok := <-sseChan.Event:
+		case event, ok := <-sseChan.Event:
 			if !ok {
 				log.GetLogger().Debugf("event channel closed, objID: %s", objID)
 				return
 			}
+			if event.Err != nil {
+				sseChan.EventErr = event.Err
+				return
+			}
+			data := event.Data
 			if bytes.Equal(data, []byte("yuanrong_event_EOF")) {
 				log.GetLogger().Debugf("event recive EOF, objID: %s", objID)
-				return
-			}
-			if sseChan.EventErr != nil {
-				return
-			}
-			var v interface{}
-			sseChan.EventErr = json.Unmarshal(data, &v)
-			if sseChan.EventErr != nil {
 				return
 			}
 			_, sseChan.EventErr = req.ResponseWriter.SSEWrite(data)
