@@ -66,6 +66,15 @@ func TestGetExecAddrFallsBackToMaster(t *testing.T) {
 	called := false
 	queryMasterFunc = func(apiPath string, params map[string]string, result interface{}) error {
 		called = true
+		if apiPath != "/instance-manager/query-tenant-instances" {
+			t.Fatalf("apiPath = %q, want /instance-manager/query-tenant-instances", apiPath)
+		}
+		if params["tenant_id"] != "default" {
+			t.Fatalf("tenant_id param = %q, want default", params["tenant_id"])
+		}
+		if params["instance_id"] != "inst-2" {
+			t.Fatalf("instance_id param = %q, want inst-2", params["instance_id"])
+		}
 		resp := result.(*InstanceListResponse)
 		resp.Instances = []InstanceInfo{{
 			InstanceID:       "inst-2",

@@ -483,7 +483,8 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 	// instance was created so recently that the watch event has not arrived yet.
 	apiPath := "/instance-manager/query-tenant-instances"
 	queryParams := map[string]string{
-		"tenant_id": tenantID,
+		"tenant_id":   tenantID,
+		"instance_id": instance,
 	}
 
 	// Call generic query function
