@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -333,4 +334,32 @@ func localResource(value float64) execendpoint.Resource {
 	var resource execendpoint.Resource
 	resource.Scalar.Value = value
 	return resource
+}
+
+func TestHandleWebSocketResolveFailureReturnsHTTPError(t *testing.T) {
+	oldLookup := lookupLocalExecEndpoint
+	oldQueryMaster := queryMasterFunc
+	defer func() {
+		lookupLocalExecEndpoint = oldLookup
+		queryMasterFunc = oldQueryMaster
+	}()
+
+	lookupLocalExecEndpoint = func(string) (execendpoint.Endpoint, bool) {
+		return execendpoint.Endpoint{}, false
+	}
+	queryMasterFunc = func(string, map[string]string, interface{}) error {
+		return errors.New("master query timeout")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/terminal/ws?instance=inst-miss&tenant_id=default", nil)
+	w := httptest.NewRecorder()
+
+	HandleWebSocket(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusBadGateway, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "failed to resolve executor address") {
+		t.Fatalf("expected resolver error in body, got %q", w.Body.String())
+	}
 }
