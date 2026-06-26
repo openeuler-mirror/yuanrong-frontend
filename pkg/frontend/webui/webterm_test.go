@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,6 +66,15 @@ func TestGetExecAddrFallsBackToMaster(t *testing.T) {
 	called := false
 	queryMasterFunc = func(apiPath string, params map[string]string, result interface{}) error {
 		called = true
+		if apiPath != "/instance-manager/query-tenant-instances" {
+			t.Fatalf("apiPath = %q, want /instance-manager/query-tenant-instances", apiPath)
+		}
+		if params["tenant_id"] != "default" {
+			t.Fatalf("tenant_id param = %q, want default", params["tenant_id"])
+		}
+		if params["instance_id"] != "inst-2" {
+			t.Fatalf("instance_id param = %q, want inst-2", params["instance_id"])
+		}
 		resp := result.(*InstanceListResponse)
 		resp.Instances = []InstanceInfo{{
 			InstanceID:       "inst-2",
@@ -333,4 +343,32 @@ func localResource(value float64) execendpoint.Resource {
 	var resource execendpoint.Resource
 	resource.Scalar.Value = value
 	return resource
+}
+
+func TestHandleWebSocketResolveFailureReturnsHTTPError(t *testing.T) {
+	oldLookup := lookupLocalExecEndpoint
+	oldQueryMaster := queryMasterFunc
+	defer func() {
+		lookupLocalExecEndpoint = oldLookup
+		queryMasterFunc = oldQueryMaster
+	}()
+
+	lookupLocalExecEndpoint = func(string) (execendpoint.Endpoint, bool) {
+		return execendpoint.Endpoint{}, false
+	}
+	queryMasterFunc = func(string, map[string]string, interface{}) error {
+		return errors.New("master query timeout")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/terminal/ws?instance=inst-miss&tenant_id=default", nil)
+	w := httptest.NewRecorder()
+
+	HandleWebSocket(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%q", w.Code, http.StatusBadGateway, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "failed to resolve executor address") {
+		t.Fatalf("expected resolver error in body, got %q", w.Body.String())
+	}
 }

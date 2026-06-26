@@ -483,7 +483,8 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 	// instance was created so recently that the watch event has not arrived yet.
 	apiPath := "/instance-manager/query-tenant-instances"
 	queryParams := map[string]string{
-		"tenant_id": tenantID,
+		"tenant_id":   tenantID,
+		"instance_id": instance,
 	}
 
 	// Call generic query function
@@ -569,6 +570,38 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			clientCert.Subject.String(), clientCert.Issuer.String())
 	}
 
+	// Read configuration from URL parameters before WebSocket upgrade so route
+	// resolution failures are reported as non-2xx HTTP responses. Otherwise the
+	// copy/exec client can observe a successfully upgraded connection that closes
+	// without running anything and treat the operation as a success.
+	query := r.URL.Query()
+	instance := query.Get("instance")
+
+	// Resolve and connect to executor backend before upgrading. This turns cache
+	// miss + master fallback timeout into an explicit client-visible failure.
+	info, err := getExecAddr(instance, tenantID)
+	if err != nil {
+		log.GetLogger().Infof("Failed to get executor address: %v", err)
+		http.Error(w, fmt.Sprintf("failed to resolve executor address: %v", err), http.StatusBadGateway)
+		return
+	}
+	grpcConn, err := acquireGrpcConn(info.ProxyGrpcAddress)
+	if err != nil {
+		log.GetLogger().Infof("Failed to connect to executor: %v", err)
+		http.Error(w, fmt.Sprintf("failed to connect to executor: %v", err), http.StatusBadGateway)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	client := exec_service.NewExecServiceClient(grpcConn)
+	stream, err := client.ExecStream(ctx)
+	if err != nil {
+		cancel()
+		releaseGrpcConn(info.ProxyGrpcAddress)
+		log.GetLogger().Infof("Failed to create ExecStream: %v", err)
+		http.Error(w, fmt.Sprintf("failed to create exec stream: %v", err), http.StatusBadGateway)
+		return
+	}
+
 	// Echo back the subprotocol so the browser accepts the upgrade.
 	// If token was sent via Sec-WebSocket-Protocol we must mirror it in the response.
 	var upgradeHeader http.Header
@@ -577,17 +610,17 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	conn, err := upgrader.Upgrade(w, r, upgradeHeader)
 	if err != nil {
+		cancel()
+		releaseGrpcConn(info.ProxyGrpcAddress)
 		log.GetLogger().Infof("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
+	defer cancel()
+	defer releaseGrpcConn(info.ProxyGrpcAddress)
 
 	sessionID := uuid.New().String()
 	log.GetLogger().Infof("WebSocket client connected, session: %s", sessionID)
-
-	// Read configuration from URL parameters
-	query := r.URL.Query()
-	instance := query.Get("instance")
 
 	// Support multi-value command= params (new format: each argv element is a separate param)
 	// and legacy single-value format (space-separated string, e.g. "echo hello").
@@ -617,29 +650,6 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if val, err := fmt.Sscanf(c, "%d", &cols); err == nil && val == 1 {
 			// cols updated
 		}
-	}
-
-	// Connect to executor backend
-	info, err := getExecAddr(instance, tenantID)
-	if err != nil {
-		log.GetLogger().Infof("Failed to get executor address: %v", err)
-		return
-	}
-	grpcConn, err := acquireGrpcConn(info.ProxyGrpcAddress)
-	if err != nil {
-		log.GetLogger().Infof("Failed to connect to executor: %v", err)
-		return
-	}
-	defer releaseGrpcConn(info.ProxyGrpcAddress)
-
-	client := exec_service.NewExecServiceClient(grpcConn)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	stream, err := client.ExecStream(ctx)
-	if err != nil {
-		log.GetLogger().Infof("Failed to create ExecStream: %v", err)
-		return
 	}
 
 	session := &wsSession{
