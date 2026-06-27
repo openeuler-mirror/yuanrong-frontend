@@ -83,17 +83,17 @@ func makeAcquireOption(ctx *types.InvokeProcessContext, funcSpec *commontypes.Fu
 		}
 		acquireOption.InstanceSession = session
 	}
-	agentSession := util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderAgentSession)
-	if agentSession != "" {
-		agentSessionConfig := struct {
+	sessionCtxHeader := util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderAgentSession)
+	if sessionCtxHeader != "" {
+		sessionCtxConfig := struct {
 			SessionCtx string `json:"sessionCtx"`
 		}{}
-		err = json.Unmarshal([]byte(agentSession), &agentSessionConfig)
+		err = json.Unmarshal([]byte(sessionCtxHeader), &sessionCtxConfig)
 		if err != nil {
 			return nil, snerror.NewWithError(statuscode.FrontendStatusInternalError,
-				fmt.Errorf("unmarshal agent session request header, header: %s, err: %s", agentSession, err.Error()))
+				fmt.Errorf("unmarshal session ctx request header, header: %s, err: %s", sessionCtxHeader, err.Error()))
 		}
-		acquireOption.SessionCtxID = agentSessionConfig.SessionCtx
+		acquireOption.SessionCtxID = sessionCtxConfig.SessionCtx
 	}
 	return acquireOption, nil
 }
