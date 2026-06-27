@@ -115,6 +115,7 @@ type InvokeRequest struct {
 	AcceptHeader     string
 	ForceInvoke      bool
 	IsInterrupted    bool
+	SessionCtxID     string
 	types.ResponseWriter
 }
 
@@ -241,6 +242,7 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		WaitEvent: make(chan struct{}, 1),
 	}
 	c.clientLibruntime.GetEvent(objID, func(result []byte, err error) {
+		log.GetLogger().Debugf("event msg: %s, size: %d, objID: %s", string(result), len(result), objID)
 		select {
 		case sseChan.Event <- result:
 			sseChan.EventErr = err
@@ -298,6 +300,7 @@ func (c *defaultClient) handleEvent(objID string, sseChan *SSEChan, req InvokeRe
 				return
 			}
 			var v interface{}
+			log.GetLogger().Debugf("event msg: %s, size: %d, objID: %s", string(data), len(data), objID)
 			sseChan.EventErr = json.Unmarshal(data, &v)
 			if sseChan.EventErr != nil {
 				return
@@ -354,6 +357,7 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 		}
 	}
 	invokeOpt.IsInterrupted = req.IsInterrupted
+	invokeOpt.SessionCtxID = req.SessionCtxID
 	return invokeOpt
 }
 
@@ -375,6 +379,7 @@ func convertAcquireOption(req types.AcquireOption) api.InvokeOptions {
 		Timeout:              int(req.Timeout),
 		AcquireTimeout:       int(req.Timeout),
 		TrafficLimited:       req.TrafficLimited,
+		SessionCtxID:         req.SessionCtxID,
 	}
 	return invokeOpt
 }

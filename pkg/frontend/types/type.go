@@ -287,6 +287,7 @@ type InvokeProcessContext struct {
 	InvokeTimeout          int64
 	InvokeWithoutScheduler bool
 	IsInterrupted          bool
+	SessionCtxID           string
 
 	// request info
 	ReqHeader map[string]string

@@ -357,6 +357,9 @@ func assembleBatchRetainLeaseInfo(funcKey string, pool *LeasePool, lease *Instan
 			}
 		}
 		extraReacquireDataInfo["poolLabel"] = []byte(pool.poolLabel)
+		if pool.enableSessionCtx {
+			extraReacquireDataInfo[constant.SessionCtxID] = []byte(pool.sessionCtxID)
+		}
 		bytes, err := json.Marshal(extraReacquireDataInfo)
 		if err != nil {
 			logger.Warnf("marshal extraReacquireDataInfo failed, err: %s", err.Error())
@@ -566,6 +569,8 @@ type LeasePool struct {
 	poolLabel     string
 	invokeTag     map[string]string
 	session       *commontypes.InstanceSessionConfig
+	sessionCtxID  string
+	enableSessionCtx bool
 	idleLeaseList *queue.FifoQueue
 	leaseMap      map[string]*InstanceLease
 	resSpecStr    string
@@ -591,6 +596,8 @@ func newInstanceLeasePool(funcKey string, option *commontypes.AcquireOption) *Le
 		poolLabel:     option.PoolLabel,
 		invokeTag:     option.InvokeTag,
 		session:       option.InstanceSession,
+		sessionCtxID:  option.SessionCtxID,
+		enableSessionCtx: option.EnableSessionCtx,
 		idleLeaseList: queue.NewFifoQueue(identityFunc),
 		leaseMap:      make(map[string]*InstanceLease, defaultMapSize),
 		stopCh:        make(chan struct{}),
@@ -614,8 +621,16 @@ func (ip *LeasePool) acquireHandler(funcKey string, option *commontypes.AcquireO
 	var acquireResponse *commontypes.InstanceResponse
 	var acquireResponseErr error
 	acquireDependOnHash := func() error {
-		schedulerNodeInfo, getSchedulerNodeInfoErr := schedulerproxy.Proxy.GetWithoutUnexpectedSchedulerInfos(
-			funcKey, unavailableSchedulerNodeInfos, logger)
+		var schedulerNodeInfo *schedulerproxy.SchedulerNodeInfo
+		var getSchedulerNodeInfoErr error
+		if option.EnableSessionCtx {
+			logger.Debugf("acquire with sessionCtx routing, funcKey=%s, sessionCtxID=%q", funcKey, option.SessionCtxID)
+			schedulerNodeInfo, getSchedulerNodeInfoErr = schedulerproxy.Proxy.GetWithoutUnexpectedSchedulerInfosWithCtx(
+				funcKey, option.SessionCtxID, unavailableSchedulerNodeInfos, logger)
+		} else {
+			schedulerNodeInfo, getSchedulerNodeInfoErr = schedulerproxy.Proxy.GetWithoutUnexpectedSchedulerInfos(
+				funcKey, unavailableSchedulerNodeInfos, logger)
+		}
 		if getSchedulerNodeInfoErr != nil {
 			hashRetry = false
 			return getSchedulerNodeInfoErr

@@ -120,7 +120,13 @@ func (k *kernelRequestHandler) legacyMakeReq(logger api.FormatLogger) (*util.Inv
 	k.legacyCurrentSchedulerInfo = nil
 	if !k.downgrade {
 		var schedulerNodeInfo *schedulerproxy.SchedulerNodeInfo
-		schedulerNodeInfo, err := schedulerproxy.Proxy.Get(k.funcKey, logger)
+		var err error
+		if k.funcSpec.ExtendedMetaData.EnableSessionCtx {
+			logger.Debugf("acquire with sessionCtx routing, funcKey=%s, sessionCtxID=%q", k.funcKey, k.ctx.SessionCtxID)
+			schedulerNodeInfo, err = schedulerproxy.Proxy.GetWithSessionCtx(k.funcKey, k.ctx.SessionCtxID, logger)
+		} else {
+			schedulerNodeInfo, err = schedulerproxy.Proxy.Get(k.funcKey, logger)
+		}
 		if err != nil {
 			logger.Warnf("failed to get scheduler, err: %s", err.Error())
 		} else if schedulerNodeInfo != nil {
@@ -426,7 +432,10 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec, ins
 		TenantID:        funcSpec.FuncMetaData.TenantID,
 		InstanceID:      instanceId,
 		ForceInvoke:     forceInvoke,
-		IsInterrupted:   ctx.IsInterrupted,
+		IsInterrupted:  ctx.IsInterrupted,
+	}
+	if funcSpec.ExtendedMetaData.EnableSessionCtx {
+		req.SessionCtxID = ctx.SessionCtxID
 	}
 
 	// legacy
