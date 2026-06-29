@@ -116,6 +116,7 @@ type InvokeRequest struct {
 	BypassDataSystem bool
 	ForceInvoke      bool
 	IsInterrupted    bool
+	SessionCtxID     string
 	types.ResponseWriter
 }
 
@@ -250,6 +251,7 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		WaitEvent: make(chan struct{}, 1),
 	}
 	c.clientLibruntime.GetEvent(objID, func(result []byte, err error) {
+		log.GetLogger().Debugf("event msg: %s, size: %d, objID: %s", string(result), len(result), objID)
 		select {
 		case sseChan.Event <- sseEvent{Data: result, Err: err}:
 		case <-sseChan.WaitEvent:
@@ -371,6 +373,7 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 	}
 	invokeOpt.BypassDataSystem = req.BypassDataSystem
 	invokeOpt.IsInterrupted = req.IsInterrupted
+	invokeOpt.SessionCtxID = req.SessionCtxID
 	return invokeOpt
 }
 
@@ -392,6 +395,7 @@ func convertAcquireOption(req types.AcquireOption) api.InvokeOptions {
 		Timeout:              int(req.Timeout),
 		AcquireTimeout:       int(req.Timeout),
 		TrafficLimited:       req.TrafficLimited,
+		SessionCtxID:         req.SessionCtxID,
 	}
 	return invokeOpt
 }

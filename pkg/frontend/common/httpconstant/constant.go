@@ -76,6 +76,8 @@ const (
 	HeaderInstanceSession = "X-Instance-Session"
 	// HeaderBypassDataSystem - bypass datasystem for invoke return path
 	HeaderBypassDataSystem = "X-Bypass-Datasystem"
+	// HeaderAgentSession -
+	HeaderAgentSession = "X-Agent-Session"
 )
 
 const (

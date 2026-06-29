@@ -18,6 +18,7 @@
 package v1
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -225,6 +226,14 @@ func buildProcessContext(ctx *gin.Context, traceID string) (processCtx *types.In
 	processCtx.ReqPath = ctx.Request.URL.Path
 	processCtx.ReqMethod = ctx.Request.Method
 	processCtx.ReqQuery = ctx.Request.URL.RawQuery
+	if agentSession := util.PeekIgnoreCase(processCtx.ReqHeader, httpconstant.HeaderAgentSession); agentSession != "" {
+		agentSessionConfig := struct {
+			SessionCtx string `json:"sessionCtx"`
+		}{}
+		if jsonErr := json.Unmarshal([]byte(agentSession), &agentSessionConfig); jsonErr == nil {
+			processCtx.SessionCtxID = agentSessionConfig.SessionCtx
+		}
+	}
 	funcUrn, plainURN, err = extractFunctionURN(ctx, processCtx.ReqHeader)
 	if err != nil {
 		return

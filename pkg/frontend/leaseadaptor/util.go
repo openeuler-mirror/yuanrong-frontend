@@ -65,6 +65,7 @@ func makeAcquireOption(ctx *types.InvokeProcessContext, funcSpec *commontypes.Fu
 		PoolLabel:           util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderPoolLabel),
 		InvokeTag:           convertInvokeTag(ctx),
 		InstanceLabel:       util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceLabel),
+		EnableSessionCtx:    funcSpec.ExtendedMetaData.EnableSessionCtx,
 	}
 
 	var err error
@@ -81,6 +82,18 @@ func makeAcquireOption(ctx *types.InvokeProcessContext, funcSpec *commontypes.Fu
 				fmt.Errorf("unmarshal session request header, header: %s, err: %s", instanceSession, err.Error()))
 		}
 		acquireOption.InstanceSession = session
+	}
+	agentSession := util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderAgentSession)
+	if agentSession != "" {
+		agentSessionConfig := struct {
+			SessionCtx string `json:"sessionCtx"`
+		}{}
+		err = json.Unmarshal([]byte(agentSession), &agentSessionConfig)
+		if err != nil {
+			return nil, snerror.NewWithError(statuscode.FrontendStatusInternalError,
+				fmt.Errorf("unmarshal agent session request header, header: %s, err: %s", agentSession, err.Error()))
+		}
+		acquireOption.SessionCtxID = agentSessionConfig.SessionCtx
 	}
 	return acquireOption, nil
 }

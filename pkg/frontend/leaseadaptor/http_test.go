@@ -68,6 +68,65 @@ func TestCreateAcquireArgs(t *testing.T) {
 		So(string(args[1].Data), ShouldEqual, "{\"instanceCallerPodName\":\"cG9kbmFtZTE=\",\"instanceInvokeLabel\":\"eyJYLUluc3RhbmNlLUxhYmVsIjoiMTIzIn0=\",\"instanceSessionConfig\":\"eyJzZXNzaW9uSUQiOiJzMSIsInNlc3Npb25UVEwiOjQsImNvbmN1cnJlbmN5Ijo1fQ==\",\"poolLabel\":\"cG9vbC10ZXN0\",\"resourcesData\":\"eyJDUFUiOjEsIm1lbW9yeSI6NX0=\"}")
 		So(string(args[2].Data), ShouldEqual, "trace-123")
 	})
+
+	Convey("Test createAcquireArgs with enableSessionCtx", t, func() {
+		defer gomonkey.ApplyFunc(getPodName, func() string {
+			return "podname1"
+		}).Reset()
+
+		Convey("enableSessionCtx=true writes sessionCtxID to extraData", func() {
+			option := &commontypes.AcquireOption{
+				TraceID:         "trace-123",
+				ResourceSpecs:   map[string]int64{"CPU": 1, "memory": 5},
+				EnableSessionCtx: true,
+				SessionCtxID:    "useraaa",
+			}
+
+			args, err := createAcquireArgs(option, "test-func")
+			So(err, ShouldBeNil)
+
+			var extraData map[string][]byte
+			err = json.Unmarshal(args[1].Data, &extraData)
+			So(err, ShouldBeNil)
+			So(extraData, ShouldContainKey, commonconstant.SessionCtxID)
+			So(string(extraData[commonconstant.SessionCtxID]), ShouldEqual, "useraaa")
+		})
+
+		Convey("enableSessionCtx=false does not write sessionCtxID", func() {
+			option := &commontypes.AcquireOption{
+				TraceID:         "trace-123",
+				ResourceSpecs:   map[string]int64{"CPU": 1, "memory": 5},
+				EnableSessionCtx: false,
+				SessionCtxID:    "useraaa",
+			}
+
+			args, err := createAcquireArgs(option, "test-func")
+			So(err, ShouldBeNil)
+
+			var extraData map[string][]byte
+			err = json.Unmarshal(args[1].Data, &extraData)
+			So(err, ShouldBeNil)
+			So(extraData, ShouldNotContainKey, commonconstant.SessionCtxID)
+		})
+
+		Convey("enableSessionCtx=true with empty sessionCtxID writes empty string", func() {
+			option := &commontypes.AcquireOption{
+				TraceID:         "trace-123",
+				ResourceSpecs:   map[string]int64{"CPU": 1, "memory": 5},
+				EnableSessionCtx: true,
+				SessionCtxID:    "",
+			}
+
+			args, err := createAcquireArgs(option, "test-func")
+			So(err, ShouldBeNil)
+
+			var extraData map[string][]byte
+			err = json.Unmarshal(args[1].Data, &extraData)
+			So(err, ShouldBeNil)
+			So(extraData, ShouldContainKey, commonconstant.SessionCtxID)
+			So(string(extraData[commonconstant.SessionCtxID]), ShouldEqual, "")
+		})
+	})
 }
 
 func TestCreateBatchRetainArgs(t *testing.T) {

@@ -140,8 +140,32 @@ func (im *ProxyManager) Remove(schedulerInfo *types.InstanceInfo, logger api.For
 
 // Get an instance for this request
 func (im *ProxyManager) Get(funcKey string, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
-	logger.Debugf("begin to get scheduler for funcKey: %s", funcKey)
-	next, err := im.getNextScheduler(funcKey, logger)
+	return im.getSchedulerByHashKey(funcKey, logger)
+}
+
+// GetWithSessionCtx gets scheduler with session ctx for session ctx routing.
+// When sessionCtx is not empty, it uses funcKey + sessionCtx as the hash key.
+func (im *ProxyManager) GetWithSessionCtx(funcKey, sessionCtx string, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
+	hashKey := funcKey
+	if sessionCtx != "" {
+		hashKey = funcKey + "#" + sessionCtx
+	}
+	return im.getSchedulerByHashKey(hashKey, logger)
+}
+
+// GetWithoutUnexpectedSchedulerInfosWithCtx gets scheduler with session ctx, excluding unexpected schedulers.
+func (im *ProxyManager) GetWithoutUnexpectedSchedulerInfosWithCtx(funcKey, sessionCtx string,
+	unexpectedSchedulerNodeInfos []*SchedulerNodeInfo, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
+	hashKey := funcKey
+	if sessionCtx != "" {
+		hashKey = funcKey + "#" + sessionCtx
+	}
+	return im.getWithoutUnexpectedSchedulerInfosByKey(hashKey, unexpectedSchedulerNodeInfos, logger)
+}
+
+func (im *ProxyManager) getSchedulerByHashKey(hashKey string, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
+	logger.Debugf("begin to get scheduler for hashKey: %s", hashKey)
+	next, err := im.getNextScheduler(hashKey, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +180,7 @@ func (im *ProxyManager) Get(funcKey string, logger api.FormatLogger) (*Scheduler
 	if faaSScheduler == nil {
 		return nil, fmt.Errorf("failed to get the faas scheduler named %s", faasSchedulerName)
 	}
-	logger.Infof("succeed to get scheduler instanceID: %s for funcKey: %s", faasSchedulerName, funcKey)
-
+	logger.Infof("succeed to get scheduler instanceID: %s for hashKey: %s", faasSchedulerName, hashKey)
 	return faaSScheduler, nil
 }
 
@@ -198,9 +221,14 @@ func (im *ProxyManager) instanceNameToSchedulerNodeInfo(instanceName string) *Sc
 // GetWithoutUnexpectedSchedulerInfos -
 func (im *ProxyManager) GetWithoutUnexpectedSchedulerInfos(funcKey string,
 	unexpectedSchedulerNodeInfos []*SchedulerNodeInfo, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
-	logger.Debugf("begin to get scheduler for funcKey: %s", funcKey)
+	return im.getWithoutUnexpectedSchedulerInfosByKey(funcKey, unexpectedSchedulerNodeInfos, logger)
+}
+
+func (im *ProxyManager) getWithoutUnexpectedSchedulerInfosByKey(hashKey string,
+	unexpectedSchedulerNodeInfos []*SchedulerNodeInfo, logger api.FormatLogger) (*SchedulerNodeInfo, error) {
+	logger.Debugf("begin to get scheduler for hashKey: %s", hashKey)
 	if len(unexpectedSchedulerNodeInfos) == 0 {
-		return im.Get(funcKey, logger)
+		return im.getSchedulerByHashKey(hashKey, logger)
 	}
 	allSchedulers := make(map[string]*SchedulerNodeInfo, 0)
 	im.faasSchedulers.Range(func(key, value any) bool {
@@ -228,7 +256,7 @@ func (im *ProxyManager) GetWithoutUnexpectedSchedulerInfos(funcKey string,
 		}
 	}
 
-	next := tmpHash.Next(funcKey, false)
+	next := tmpHash.Next(hashKey, false)
 
 	faasSchedulerName, ok := next.(string)
 	if !ok {
