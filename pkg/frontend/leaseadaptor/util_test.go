@@ -126,10 +126,10 @@ func TestMakeAcquireOption(t *testing.T) {
 			So(option.TraceParent, ShouldEqual, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 		})
 
-		Convey("With sessionCtx header and enableSessionCtx", func() {
+		Convey("With X-Session-Context header and enableSessionCtx", func() {
 			mockFuncSpec.ExtendedMetaData.EnableSessionCtx = true
 			ctx := &types.InvokeProcessContext{
-				TraceID:   "test-trace-id",
+				TraceID: "test-trace-id",
 				ReqHeader: map[string]string{
 					httpconstant.HeaderAgentSession: `{"sessionCtx":"useraaa"}`,
 				},
@@ -141,10 +141,10 @@ func TestMakeAcquireOption(t *testing.T) {
 			So(option.SessionCtxID, ShouldEqual, "useraaa")
 		})
 
-		Convey("With sessionCtx header but enableSessionCtx false", func() {
+		Convey("With X-Session-Context header but enableSessionCtx false", func() {
 			mockFuncSpec.ExtendedMetaData.EnableSessionCtx = false
 			ctx := &types.InvokeProcessContext{
-				TraceID:   "test-trace-id",
+				TraceID: "test-trace-id",
 				ReqHeader: map[string]string{
 					httpconstant.HeaderAgentSession: `{"sessionCtx":"useraaa"}`,
 				},
@@ -156,10 +156,10 @@ func TestMakeAcquireOption(t *testing.T) {
 			So(option.SessionCtxID, ShouldEqual, "useraaa")
 		})
 
-		Convey("With empty sessionCtx in header", func() {
+		Convey("With empty sessionCtx in X-Session-Context header", func() {
 			mockFuncSpec.ExtendedMetaData.EnableSessionCtx = true
 			ctx := &types.InvokeProcessContext{
-				TraceID:   "test-trace-id",
+				TraceID: "test-trace-id",
 				ReqHeader: map[string]string{
 					httpconstant.HeaderAgentSession: `{"sessionCtx":""}`,
 				},
@@ -170,7 +170,7 @@ func TestMakeAcquireOption(t *testing.T) {
 			So(option.SessionCtxID, ShouldEqual, "")
 		})
 
-		Convey("Without sessionCtx header", func() {
+		Convey("Without X-Session-Context header", func() {
 			mockFuncSpec.ExtendedMetaData.EnableSessionCtx = true
 			ctx := &types.InvokeProcessContext{
 				TraceID:   "test-trace-id",
@@ -182,10 +182,10 @@ func TestMakeAcquireOption(t *testing.T) {
 			So(option.SessionCtxID, ShouldEqual, "")
 		})
 
-		Convey("With invalid sessionCtx header", func() {
+		Convey("With invalid X-Session-Context header", func() {
 			mockFuncSpec.ExtendedMetaData.EnableSessionCtx = true
 			ctx := &types.InvokeProcessContext{
-				TraceID:   "test-trace-id",
+				TraceID: "test-trace-id",
 				ReqHeader: map[string]string{
 					httpconstant.HeaderAgentSession: `invalid json`,
 				},

@@ -75,7 +75,7 @@ const (
 	// HeaderInstanceSession -
 	HeaderInstanceSession = "X-Instance-Session"
 	// HeaderAgentSession -
-	HeaderAgentSession = "X-Agent-Session"
+	HeaderAgentSession = "X-Session-Context"
 )
 
 const (
