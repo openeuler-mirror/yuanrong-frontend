@@ -62,15 +62,15 @@ func (r *runtimeStub) Kill(instanceID string, signal int, payload []byte, invoke
 	return nil
 }
 
-func (r *runtimeStub) CreateInstanceRaw(createReqRaw []byte) ([]byte, error) {
+func (r *runtimeStub) CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (r *runtimeStub) InvokeByInstanceIdRaw(invokeReqRaw []byte) ([]byte, error) {
+func (r *runtimeStub) InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
-func (r *runtimeStub) KillRaw(killReqRaw []byte) ([]byte, error) {
+func (r *runtimeStub) KillRaw(killReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 

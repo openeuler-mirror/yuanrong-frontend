@@ -66,17 +66,17 @@ func (f *FakeLibruntimeSdkClient) Kill(
 }
 
 // CreateInstanceRaw -
-func (f *FakeLibruntimeSdkClient) CreateInstanceRaw(createReqRaw []byte) ([]byte, error) {
+func (f *FakeLibruntimeSdkClient) CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
 // InvokeByInstanceIdRaw -
-func (f *FakeLibruntimeSdkClient) InvokeByInstanceIdRaw(invokeReqRaw []byte) ([]byte, error) {
+func (f *FakeLibruntimeSdkClient) InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
 // KillRaw -
-func (f *FakeLibruntimeSdkClient) KillRaw(killReqRaw []byte) ([]byte, error) {
+func (f *FakeLibruntimeSdkClient) KillRaw(killReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
 	return nil, nil
 }
 
@@ -279,22 +279,22 @@ func (f *FakeLibruntimeSdkClient) GetActiveMasterAddr() string {
 
 // SetGauge -
 func (f *FakeLibruntimeSdkClient) SetGauge(data api.GaugeData) error {
-	return nil
+    return nil
 }
 
 // IncreaseGauge -
 func (f *FakeLibruntimeSdkClient) IncreaseGauge(data api.GaugeData) error {
-	return nil
+    return nil
 }
 
 // DecreaseGauge -
 func (f *FakeLibruntimeSdkClient) DecreaseGauge(data api.GaugeData) error {
-	return nil
+    return nil
 }
 
 // IncreaseUInt64Counter -
 func (f *FakeLibruntimeSdkClient) IncreaseUInt64Counter(data api.UInt64CounterData) error {
-	return nil
+    return nil
 }
 
 // FakeStreamProducer -
