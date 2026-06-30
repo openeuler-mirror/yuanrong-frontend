@@ -40,8 +40,8 @@ type AcquireOption struct {
 	Timeout             int64
 	TrafficLimited      bool
 	InstanceSession     *InstanceSessionConfig
-	SessionCtxID string
-	EnableSessionCtx bool
+	SessionCtxID        string
+	EnableSessionCtx    bool
 }
 
 // InstanceAllocationSucceedInfo is the response returned by faas scheduler's CallHandler
