@@ -29,6 +29,7 @@ import (
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/smartystreets/goconvey/convey"
+	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
 	mockUtils "frontend/pkg/common/faas_common/utils"
@@ -65,7 +66,8 @@ func Test_CreateHandler(t *testing.T) {
 		convey.Convey("CreateHandler failed", func() {
 			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}),
 				"CreateInstanceRaw",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, createReqRaw []byte) (createRespRaw []byte, err error) {
+				func(_ *mockUtils.FakeLibruntimeSdkClient, createReqRaw []byte,
+					option api.RawRequestOption) (createRespRaw []byte, err error) {
 					return []byte{}, errors.New("CreateInstanceRaw error")
 				}).Reset()
 			rw := httptest.NewRecorder()
@@ -110,7 +112,8 @@ func Test_InvokeHandler(t *testing.T) {
 		convey.Convey("InvokeHandler failed", func() {
 			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}),
 				"InvokeByInstanceIdRaw",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, invokeReqRaw []byte) (resultRaw []byte, err error) {
+				func(_ *mockUtils.FakeLibruntimeSdkClient, invokeReqRaw []byte,
+					option api.RawRequestOption) (resultRaw []byte, err error) {
 					return []byte{}, errors.New("InvokeByInstanceIdRaw error")
 				}).Reset()
 			rw := httptest.NewRecorder()
@@ -155,7 +158,8 @@ func Test_KillHandler(t *testing.T) {
 		convey.Convey("KillHandler failed", func() {
 			defer gomonkey.ApplyMethod(reflect.TypeOf(&mockUtils.FakeLibruntimeSdkClient{}),
 				"KillRaw",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, killReqRaw []byte) (killRespRaw []byte, err error) {
+				func(_ *mockUtils.FakeLibruntimeSdkClient, killReqRaw []byte,
+					option api.RawRequestOption) (killRespRaw []byte, err error) {
 					return []byte{}, errors.New("KillRaw error")
 				}).Reset()
 			rw := httptest.NewRecorder()
