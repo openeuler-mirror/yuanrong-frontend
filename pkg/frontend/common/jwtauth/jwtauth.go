@@ -158,54 +158,69 @@ func ValidateWithIamServer(authHeader string, traceID string) error {
 		return nil
 	}
 
-	// 1. Check cache
-	iamCacheMu.RLock()
-	if validatedAt, ok := iamCache[authHeader]; ok && time.Since(validatedAt) < iamCacheTTL {
-		iamCacheMu.RUnlock()
+	if isIamTokenCached(authHeader) {
 		return nil
 	}
-	iamCacheMu.RUnlock()
 
-	// 2. Singleflight: if another goroutine is already validating this token, wait for it
-	iamFlightMu.Lock()
-	if f, ok := iamFlights[authHeader]; ok {
-		iamFlightMu.Unlock()
-		f.wg.Wait()
+	f, waitExisting := getOrCreateIamFlight(authHeader)
+	if waitExisting {
+		f.wait()
 		return f.err
+	}
+
+	err := iamValidator(authHeader, traceID)
+	if err == nil {
+		cacheIamToken(authHeader)
+	}
+	completeIamFlight(authHeader, f, err)
+	return err
+}
+
+func isIamTokenCached(authHeader string) bool {
+	iamCacheMu.RLock()
+	defer iamCacheMu.RUnlock()
+	validatedAt, ok := iamCache[authHeader]
+	return ok && time.Since(validatedAt) < iamCacheTTL
+}
+
+func cacheIamToken(authHeader string) {
+	iamCacheMu.Lock()
+	defer iamCacheMu.Unlock()
+	iamCache[authHeader] = time.Now()
+	if len(iamCache) <= iamCacheCleanupThreshold {
+		return
+	}
+	now := time.Now()
+	for token, validatedAt := range iamCache {
+		if now.Sub(validatedAt) >= iamCacheTTL {
+			delete(iamCache, token)
+		}
+	}
+}
+
+func getOrCreateIamFlight(authHeader string) (*iamFlight, bool) {
+	iamFlightMu.Lock()
+	defer iamFlightMu.Unlock()
+	if f, ok := iamFlights[authHeader]; ok {
+		return f, true
 	}
 	f := &iamFlight{}
 	f.wg.Add(1)
 	iamFlights[authHeader] = f
-	iamFlightMu.Unlock()
+	return f, false
+}
 
-	// 3. Call IAM server
-	err := iamValidator(authHeader, traceID)
-
-	// 4. Cache successful result
-	if err == nil {
-		iamCacheMu.Lock()
-		iamCache[authHeader] = time.Now()
-		// Lazy cleanup: if cache grows too large, remove expired entries
-		if len(iamCache) > iamCacheCleanupThreshold {
-			now := time.Now()
-			for k, v := range iamCache {
-				if now.Sub(v) >= iamCacheTTL {
-					delete(iamCache, k)
-				}
-			}
-		}
-		iamCacheMu.Unlock()
-	}
-
-	// 5. Complete singleflight
+func completeIamFlight(authHeader string, f *iamFlight, err error) {
 	f.err = err
 	f.wg.Done()
 
 	iamFlightMu.Lock()
+	defer iamFlightMu.Unlock()
 	delete(iamFlights, authHeader)
-	iamFlightMu.Unlock()
+}
 
-	return err
+func (f *iamFlight) wait() {
+	f.wg.Wait()
 }
 
 // doValidateWithIamServer performs the actual HTTP call to the IAM server.

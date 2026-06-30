@@ -886,7 +886,9 @@ func (c *invokerLibruntimeMock) ReleaseInstance(allocation api.InstanceAllocatio
 
 }
 
-func (c *invokerLibruntimeMock) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) (err error) {
+func (c *invokerLibruntimeMock) Kill(
+	instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions,
+) error {
 	return nil
 }
 

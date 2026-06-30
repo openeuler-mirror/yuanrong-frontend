@@ -59,7 +59,9 @@ func (f *FakeLibruntimeSdkClient) ReleaseInstance(allocation api.InstanceAllocat
 }
 
 // Kill -
-func (f *FakeLibruntimeSdkClient) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+func (f *FakeLibruntimeSdkClient) Kill(
+	instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions,
+) error {
 	return nil
 }
 

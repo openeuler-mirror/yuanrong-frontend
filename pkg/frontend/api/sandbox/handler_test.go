@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
-	faasconstant "frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/resspeckey"
 	"frontend/pkg/common/job"
 	"frontend/pkg/frontend/common/util"
@@ -23,26 +23,36 @@ type runtimeStub struct {
 	kill           func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error
 }
 
-func (r *runtimeStub) CreateInstance(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+func (r *runtimeStub) CreateInstance(
+	funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions,
+) (string, error) {
 	if r.createInstance != nil {
 		return r.createInstance(funcMeta, args, invokeOpt)
 	}
 	return "", nil
 }
 
-func (r *runtimeStub) InvokeByInstanceId(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+func (r *runtimeStub) InvokeByInstanceId(
+	funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions,
+) (string, error) {
 	return "", nil
 }
 
-func (r *runtimeStub) InvokeByFunctionName(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+func (r *runtimeStub) InvokeByFunctionName(
+	funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions,
+) (string, error) {
 	return "", nil
 }
 
-func (r *runtimeStub) AcquireInstance(state string, funcMeta api.FunctionMeta, acquireOpt api.InvokeOptions) (api.InstanceAllocation, error) {
+func (r *runtimeStub) AcquireInstance(
+	state string, funcMeta api.FunctionMeta, acquireOpt api.InvokeOptions,
+) (api.InstanceAllocation, error) {
 	return api.InstanceAllocation{}, nil
 }
 
-func (r *runtimeStub) ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions) {
+func (r *runtimeStub) ReleaseInstance(
+	allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions,
+) {
 }
 
 func (r *runtimeStub) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
@@ -175,16 +185,16 @@ func TestCreateHandlerPropagatesHeaderTenantID(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
-	ctx.Request.Header.Set(faasconstant.HeaderTenantID, "header-tenant")
+	ctx.Request.Header.Set(constant.HeaderTenantID, "header-tenant")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
 	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
-	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
+	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	require.Equal(t, "header-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
-	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
+	require.Empty(t, capturedInvokeOpt.CreateOpt[constant.SchedulerIDNote])
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 
 	var resp job.Response
@@ -227,9 +237,9 @@ func TestCreateHandlerFallsBackToBodyTenant(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
 	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
-	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
+	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	require.Equal(t, "body-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
-	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
+	require.Empty(t, capturedInvokeOpt.CreateOpt[constant.SchedulerIDNote])
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 }
 
@@ -255,7 +265,7 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 	util.SetAPIClientLibruntime(&runtimeStub{
 		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
 			return "instance-created-late", api.ErrorInfo{
-				Code: 3002,
+				Code: createInstanceTimeoutCode,
 				Err:  fmt.Errorf("create instance timeout"),
 			}
 		},
@@ -282,7 +292,9 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 
 	var data map[string]string
 	require.NoError(t, json.Unmarshal(resp.Data, &data))
-	require.Equal(t, "instance-created-late", data["instance_id"])
+	instanceID, ok := data["instance_id"]
+	require.True(t, ok)
+	require.Equal(t, "instance-created-late", instanceID)
 	require.True(t, waitCalled)
 }
 
@@ -365,7 +377,7 @@ func TestCreateHandlerUsesRequestedRuntime(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "default/0-defaultservice-py39/$latest", capturedFuncMeta.FuncID)
-	require.Equal(t, "default/0-defaultservice-py39/$latest", capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
+	require.Equal(t, "default/0-defaultservice-py39/$latest", capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 }
 
 func TestCreateHandlerRejectsUnsupportedRuntime(t *testing.T) {
@@ -427,7 +439,7 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
 	require.Equal(t, sandboxConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
-	require.Equal(t, "reserved", capturedInvokeOpt.CreateOpt[faasconstant.InstanceTypeNote])
+	require.Equal(t, "reserved", capturedInvokeOpt.CreateOpt[constant.InstanceTypeNote])
 	_, hasStaticOwner := capturedInvokeOpt.CreateOpt["resource.owner"]
 	require.False(t, hasStaticOwner)
 	require.Equal(t, fmt.Sprintf("%d", sandboxCreateTimeoutSeconds), capturedInvokeOpt.CreateOpt["call_timeout"])
@@ -438,9 +450,9 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.Equal(t, "1", capturedInvokeOpt.CreateOpt["ConcurrentNum"])
 
 	var resSpec resspeckey.ResourceSpecification
-	require.NoError(t, json.Unmarshal([]byte(capturedInvokeOpt.CreateOpt[faasconstant.ResourceSpecNote]), &resSpec))
-	require.EqualValues(t, 1000, resSpec.CPU)
-	require.EqualValues(t, 2048, resSpec.Memory)
+	require.NoError(t, json.Unmarshal([]byte(capturedInvokeOpt.CreateOpt[constant.ResourceSpecNote]), &resSpec))
+	require.EqualValues(t, defaultSandboxCPU, resSpec.CPU)
+	require.EqualValues(t, defaultSandboxMemory, resSpec.Memory)
 	require.Equal(t, "", resSpec.InvokeLabel)
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 }
@@ -622,11 +634,11 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	require.Equal(t, "yr.sandbox.sandbox", capturedInvokeOpt.CreateOpt["moduleName"])
 	require.Equal(t, "SandboxInstance", capturedInvokeOpt.CreateOpt["className"])
 	require.Equal(t, "contract-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
-	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
+	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	_, hasStaticOwner := capturedInvokeOpt.CreateOpt["resource.owner"]
 	require.False(t, hasStaticOwner)
-	require.Equal(t, sandboxInstanceType, capturedInvokeOpt.CreateOpt[faasconstant.InstanceTypeNote])
-	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
+	require.Equal(t, sandboxInstanceType, capturedInvokeOpt.CreateOpt[constant.InstanceTypeNote])
+	require.Empty(t, capturedInvokeOpt.CreateOpt[constant.SchedulerIDNote])
 }
 
 func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
@@ -656,7 +668,7 @@ func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "sandbox-delete-ok", capturedInstanceID)
-	require.Equal(t, faasconstant.KillSignalVal, capturedSignal)
+	require.Equal(t, constant.KillSignalVal, capturedSignal)
 	require.Equal(t, []byte("sandbox deleted"), capturedPayload)
 
 	var resp job.Response
@@ -665,7 +677,9 @@ func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 
 	var data map[string]string
 	require.NoError(t, json.Unmarshal(resp.Data, &data))
-	require.Equal(t, "deleted", data["status"])
+	status, ok := data["status"]
+	require.True(t, ok)
+	require.Equal(t, "deleted", status)
 }
 
 func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {

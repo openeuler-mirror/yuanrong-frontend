@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+// Package posixws provides WebSocket handling for POSIX sandbox sessions.
 package posixws
 
 import (
@@ -101,9 +102,7 @@ func authenticateWebSocket(r *http.Request) (string, error) {
 		token = r.URL.Query().Get("token")
 	}
 	if token == "" {
-		if cookie, err := r.Cookie("iam_token"); err == nil {
-			token = cookie.Value
-		}
+		token = tokenFromCookie(r)
 	}
 	// Fall back to Sec-WebSocket-Protocol (browser WebSocket subprotocol trick)
 	if token == "" {
@@ -138,8 +137,20 @@ func authenticateWebSocket(r *http.Request) (string, error) {
 	return tenantID, nil
 }
 
-// pongWait is the deadline for reading the next pong/message from the client.
-const pongWait = 60 * time.Second
+func tokenFromCookie(r *http.Request) string {
+	cookie, err := r.Cookie("iam_token")
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+const (
+	// pongWait is the deadline for reading the next pong/message from the client.
+	pongWait = 60 * time.Second
+
+	writeControlTimeout = 5 * time.Second
+)
 
 // run starts the message processing loop
 func (s *Session) run() {
@@ -156,7 +167,7 @@ func (s *Session) run() {
 	// read-deadline expiry under high concurrency.
 	s.conn.SetPingHandler(func(appData string) error {
 		s.conn.SetReadDeadline(time.Now().Add(pongWait))
-		return s.conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+		return s.conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(writeControlTimeout))
 	})
 
 	for {
@@ -327,7 +338,7 @@ func (s *Session) sendResponse(resp *ResponseMessage) {
 }
 
 // sendErrorResponse sends an error response
-func (s *Session) sendErrorResponse(id string, err *ErrorInfo) {
+func (s *Session) sendErrorResponse(id string, err *ResponseError) {
 	s.sendResponse(NewErrorResponse(id, err.Code, err.Message))
 }
 
@@ -347,9 +358,9 @@ func (s *Session) sendPong() {
 
 // Error definitions
 var (
-	ErrNoToken          = &ErrorInfo{Code: 1001, Message: "no authentication token provided"}
-	ErrInvalidToken     = &ErrorInfo{Code: 1002, Message: "invalid authentication token"}
-	ErrInvalidMessage   = &ErrorInfo{Code: 1003, Message: "invalid message format"}
-	ErrInvalidOperation = &ErrorInfo{Code: 1004, Message: "invalid operation type"}
-	ErrProcessFailed    = &ErrorInfo{Code: 1005, Message: "operation processing failed"}
+	ErrNoToken          = &ResponseError{Code: 1001, Message: "no authentication token provided"}
+	ErrInvalidToken     = &ResponseError{Code: 1002, Message: "invalid authentication token"}
+	ErrInvalidMessage   = &ResponseError{Code: 1003, Message: "invalid message format"}
+	ErrInvalidOperation = &ResponseError{Code: 1004, Message: "invalid operation type"}
+	ErrProcessFailed    = &ResponseError{Code: 1005, Message: "operation processing failed"}
 )

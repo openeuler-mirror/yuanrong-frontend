@@ -32,6 +32,12 @@ import (
 	"frontend/pkg/frontend/config"
 )
 
+const (
+	jwtExpirationDeltaSeconds = 60
+	extraExpiredCacheEntries  = 100
+	maxCacheSizeAfterCleanup  = 2
+)
+
 // createValidJWT 创建一个有效的JWT token用于测试
 func createValidJWT(header, payload, signature string) string {
 	return header + "." + payload + "." + signature
@@ -91,9 +97,13 @@ func TestParseJWT(t *testing.T) {
 			},
 		},
 		{
-			name:       "header base64解码失败",
-			authHeader: createValidJWT("invalid-base64!!!", encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}), "signature"),
-			wantErr:    true,
+			name: "header base64解码失败",
+			authHeader: createValidJWT(
+				"invalid-base64!!!",
+				encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}),
+				"signature",
+			),
+			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
 				assert.Error(t, err)
@@ -111,9 +121,13 @@ func TestParseJWT(t *testing.T) {
 			},
 		},
 		{
-			name:       "header JSON解析失败",
-			authHeader: createValidJWT(base64.RawURLEncoding.EncodeToString([]byte("invalid json")), encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}), "signature"),
-			wantErr:    true,
+			name: "header JSON解析失败",
+			authHeader: createValidJWT(
+				base64.RawURLEncoding.EncodeToString([]byte("invalid json")),
+				encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}),
+				"signature",
+			),
+			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
 				assert.Error(t, err)
@@ -121,9 +135,13 @@ func TestParseJWT(t *testing.T) {
 			},
 		},
 		{
-			name:       "payload JSON解析失败",
-			authHeader: createValidJWT(encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}), base64.RawURLEncoding.EncodeToString([]byte("invalid json")), "signature"),
-			wantErr:    true,
+			name: "payload JSON解析失败",
+			authHeader: createValidJWT(
+				encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}),
+				base64.RawURLEncoding.EncodeToString([]byte("invalid json")),
+				"signature",
+			),
+			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
 				assert.Error(t, err)
@@ -290,12 +308,12 @@ func TestJWTPayloadIsExpired(t *testing.T) {
 		},
 		{
 			name:    "future exp is valid",
-			payload: &JWTPayload{Exp: uint64(now.Unix() + 60)},
+			payload: &JWTPayload{Exp: uint64(now.Unix() + jwtExpirationDeltaSeconds)},
 			want:    false,
 		},
 		{
 			name:    "past exp is expired",
-			payload: &JWTPayload{Exp: uint64(now.Unix() - 60)},
+			payload: &JWTPayload{Exp: uint64(now.Unix() - jwtExpirationDeltaSeconds)},
 			want:    true,
 		},
 	}
@@ -315,7 +333,7 @@ func setupIamTest(t *testing.T) {
 	resetIamCache()
 }
 
-func TestValidateWithIamServer_CacheHit(t *testing.T) {
+func TestValidateWithIamServerCacheHit(t *testing.T) {
 	setupIamTest(t)
 	var callCount atomic.Int32
 	origValidator := iamValidator
@@ -336,7 +354,7 @@ func TestValidateWithIamServer_CacheHit(t *testing.T) {
 	assert.Equal(t, int32(1), callCount.Load(), "second call should not hit IAM")
 }
 
-func TestValidateWithIamServer_CacheExpiry(t *testing.T) {
+func TestValidateWithIamServerCacheExpiry(t *testing.T) {
 	setupIamTest(t)
 	var callCount atomic.Int32
 	origValidator := iamValidator
@@ -362,7 +380,7 @@ func TestValidateWithIamServer_CacheExpiry(t *testing.T) {
 	assert.Equal(t, int32(2), callCount.Load(), "expired cache should trigger IAM call")
 }
 
-func TestValidateWithIamServer_FailureNotCached(t *testing.T) {
+func TestValidateWithIamServerFailureNotCached(t *testing.T) {
 	setupIamTest(t)
 	var callCount atomic.Int32
 	origValidator := iamValidator
@@ -383,7 +401,7 @@ func TestValidateWithIamServer_FailureNotCached(t *testing.T) {
 	assert.Equal(t, int32(2), callCount.Load(), "failure should not be cached")
 }
 
-func TestValidateWithIamServer_Singleflight(t *testing.T) {
+func TestValidateWithIamServerSingleflight(t *testing.T) {
 	setupIamTest(t)
 	var callCount atomic.Int32
 	origValidator := iamValidator
@@ -413,7 +431,7 @@ func TestValidateWithIamServer_Singleflight(t *testing.T) {
 	assert.Equal(t, int32(1), callCount.Load(), "singleflight: IAM should be called only once")
 }
 
-func TestValidateWithIamServer_DifferentTokens(t *testing.T) {
+func TestValidateWithIamServerDifferentTokens(t *testing.T) {
 	setupIamTest(t)
 	var callCount atomic.Int32
 	origValidator := iamValidator
@@ -439,7 +457,7 @@ func TestValidateWithIamServer_DifferentTokens(t *testing.T) {
 	assert.Equal(t, int32(2), callCount.Load(), "both tokens should be cached now")
 }
 
-func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
+func TestValidateWithIamServerCacheCleanup(t *testing.T) {
 	setupIamTest(t)
 	origValidator := iamValidator
 	iamValidator = func(token, traceID string) error {
@@ -450,7 +468,7 @@ func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
 	// Fill cache with expired entries beyond cleanup threshold
 	iamCacheMu.Lock()
 	expired := time.Now().Add(-iamCacheTTL - time.Second)
-	for i := 0; i < iamCacheCleanupThreshold+100; i++ {
+	for i := 0; i < iamCacheCleanupThreshold+extraExpiredCacheEntries; i++ {
 		iamCache[fmt.Sprintf("expired-token-%d", i)] = expired
 	}
 	iamCacheMu.Unlock()
@@ -463,10 +481,10 @@ func TestValidateWithIamServer_CacheCleanup(t *testing.T) {
 	iamCacheMu.RLock()
 	size := len(iamCache)
 	iamCacheMu.RUnlock()
-	assert.LessOrEqual(t, size, 2, "cleanup should have removed expired entries")
+	assert.LessOrEqual(t, size, maxCacheSizeAfterCleanup, "cleanup should have removed expired entries")
 }
 
-func TestValidateWithIamServer_SkipWhenNoAddr(t *testing.T) {
+func TestValidateWithIamServerSkipWhenNoAddr(t *testing.T) {
 	resetIamCache()
 	var callCount atomic.Int32
 	origValidator := iamValidator
@@ -488,7 +506,7 @@ func TestValidateWithIamServer_SkipWhenNoAddr(t *testing.T) {
 }
 
 // 使用goconvey的BDD风格测试
-func TestParseJWT_Convey(t *testing.T) {
+func TestParseJWTConvey(t *testing.T) {
 	convey.Convey("测试ParseJWT函数", t, func() {
 		convey.Convey("当输入有效的JWT token时", func() {
 			header := encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"})
@@ -522,7 +540,7 @@ func TestParseJWT_Convey(t *testing.T) {
 	})
 }
 
-func TestValidateTenantID_Convey(t *testing.T) {
+func TestValidateTenantIDConvey(t *testing.T) {
 	convey.Convey("测试ValidateTenantID方法", t, func() {
 		convey.Convey("当tenant ID匹配时", func() {
 			jwt := &ParsedJWT{

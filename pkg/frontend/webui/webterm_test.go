@@ -10,6 +10,11 @@ import (
 	"frontend/pkg/common/faas_common/constant"
 )
 
+const (
+	expectedInstanceCount = 3
+	expectedPageNumber    = 2
+)
+
 func TestParseCommandSplitsArguments(t *testing.T) {
 	got := parseCommand("python3 -m yr.cli --version")
 	want := []string{"python3", "-m", "yr.cli", "--version"}
@@ -30,7 +35,10 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	}
 	oldQueryMasterFunc := queryMasterFunc
 	queryMasterFunc = func(apiPath string, queryParams map[string]string, result interface{}) error {
-		response := result.(*InstanceListResponse)
+		response, ok := result.(*InstanceListResponse)
+		if !ok {
+			t.Fatalf("unexpected result type: %T", result)
+		}
 		response.Instances = []InstanceInfo{info}
 		return nil
 	}
@@ -89,7 +97,9 @@ func TestHandleIndexDoesNotPrefixSandboxAPIWithTerminalPath(t *testing.T) {
 	if !strings.Contains(body, "fetch('/frontend/api/sandbox/' + encodeURIComponent(instanceId), fetchOptions);") {
 		t.Fatalf("expected sandbox delete API URL to target sibling /api path under forwarded prefix")
 	}
-	if !strings.Contains(body, "const response = await fetch('/frontend/api/instances?' + apiParams.toString(), fetchOptions);") {
+	expectedInstancesFetch := "const response = await fetch('/frontend/api/instances?' + " +
+		"apiParams.toString(), fetchOptions);"
+	if !strings.Contains(body, expectedInstancesFetch) {
 		t.Fatalf("expected instances API URL to target sibling /api path under forwarded prefix")
 	}
 }
@@ -132,8 +142,8 @@ func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
 					},
 				},
 			},
-			Count:    3,
-			Page:     2,
+			Count:    expectedInstanceCount,
+			Page:     expectedPageNumber,
 			PageSize: 1,
 			TenantID: "tenant-a",
 		}
@@ -163,7 +173,8 @@ func TestHandleInstancesForwardsPaginationToMaster(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if body.Count != 3 || body.Page != 2 || body.PageSize != 1 || body.TenantID != "tenant-a" {
+	if body.Count != expectedInstanceCount || body.Page != expectedPageNumber ||
+		body.PageSize != 1 || body.TenantID != "tenant-a" {
 		t.Fatalf("unexpected pagination metadata: %+v", body)
 	}
 	if len(body.Instances) != 1 || body.Instances[0]["id"] != "instance-2" {
@@ -186,7 +197,7 @@ func TestHandleInstancesPropagatesPaginatedMasterErrors(t *testing.T) {
 		}
 		return masterQueryError{
 			statusCode: http.StatusBadRequest,
-			body:       "{\"error\":\"page_size exceeds maximum limit\"}",
+			body:       `{"error":"page_size exceeds maximum limit"}`,
 		}
 	}
 

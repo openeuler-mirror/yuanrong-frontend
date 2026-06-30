@@ -26,18 +26,25 @@ import (
 type MessageType string
 
 const (
-	MessageTypeRequest  MessageType = "request"
+	// MessageTypeRequest identifies a client request frame.
+	MessageTypeRequest MessageType = "request"
+	// MessageTypeResponse identifies a server response frame.
 	MessageTypeResponse MessageType = "response"
-	MessageTypePing     MessageType = "ping"
-	MessageTypePong     MessageType = "pong"
-	MessageTypeClose    MessageType = "close"
+	// MessageTypePing identifies a ping control frame.
+	MessageTypePing MessageType = "ping"
+	// MessageTypePong identifies a pong control frame.
+	MessageTypePong MessageType = "pong"
+	// MessageTypeClose identifies a close control frame.
+	MessageTypeClose MessageType = "close"
 )
 
 // OperationType defines the type of operation
 type OperationType string
 
 const (
+	// OperationCreate creates a sandbox function instance.
 	OperationCreate OperationType = "create"
+	// OperationInvoke invokes an existing sandbox function instance.
 	OperationInvoke OperationType = "invoke"
 )
 
@@ -45,8 +52,10 @@ const (
 type StatusType string
 
 const (
+	// StatusSuccess marks a successful response.
 	StatusSuccess StatusType = "success"
-	StatusError   StatusType = "error"
+	// StatusError marks a failed response.
+	StatusError StatusType = "error"
 )
 
 // RequestMessage represents a client request message
@@ -60,20 +69,21 @@ type RequestMessage struct {
 
 // ResponseMessage represents a server response message
 type ResponseMessage struct {
-	Type    MessageType `json:"type"`
-	ID      string      `json:"id"`
-	Status  StatusType  `json:"status"`
-	Payload string      `json:"payload,omitempty"` // Base64-encoded protobuf
-	Error   *ErrorInfo  `json:"error,omitempty"`
+	Type    MessageType    `json:"type"`
+	ID      string         `json:"id"`
+	Status  StatusType     `json:"status"`
+	Payload string         `json:"payload,omitempty"` // Base64-encoded protobuf
+	Error   *ResponseError `json:"error,omitempty"`
 }
 
-// ErrorInfo represents error information in response
-type ErrorInfo struct {
+// ResponseError represents error information in response.
+type ResponseError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
 
-func (e *ErrorInfo) Error() string {
+// Error returns the response error message.
+func (e *ResponseError) Error() string {
 	return e.Message
 }
 
@@ -118,7 +128,7 @@ func NewErrorResponse(id string, code int, message string) *ResponseMessage {
 		Type:   MessageTypeResponse,
 		ID:     id,
 		Status: StatusError,
-		Error: &ErrorInfo{
+		Error: &ResponseError{
 			Code:    code,
 			Message: message,
 		},
@@ -135,11 +145,24 @@ func NewPongMessage(timestamp int64) *ControlMessage {
 
 // Binary frame protocol constants
 const (
+	// BinFrameVersion is the supported binary frame protocol version.
 	BinFrameVersion = 0x01
-	BinOpCreate     = 0x01
-	BinOpInvoke     = 0x02
-	BinStatusOK     = 0x00
-	BinStatusError  = 0x01
+	// BinOpCreate identifies a create request frame.
+	BinOpCreate = 0x01
+	// BinOpInvoke identifies an invoke request frame.
+	BinOpInvoke = 0x02
+	// BinStatusOK identifies a successful response frame.
+	BinStatusOK = 0x00
+	// BinStatusError identifies an error response frame.
+	BinStatusError = 0x01
+)
+
+const (
+	binaryVersionOffset = 0
+	binaryOpOffset      = 1
+	binaryIDLenOffset   = 2
+	binaryPayloadOffset = 4
+	binaryHeaderLen     = 4
 )
 
 // BinaryRequest represents a parsed binary frame request
@@ -151,41 +174,42 @@ type BinaryRequest struct {
 
 // ParseBinaryRequest parses a binary frame: [version][op][id_len_be][id][payload]
 func ParseBinaryRequest(data []byte) (*BinaryRequest, error) {
-	if len(data) < 4 {
+	if len(data) < binaryHeaderLen {
 		return nil, fmt.Errorf("binary frame too short: %d bytes", len(data))
 	}
-	if data[0] != BinFrameVersion {
-		return nil, fmt.Errorf("unknown binary frame version: %d", data[0])
+	if data[binaryVersionOffset] != BinFrameVersion {
+		return nil, fmt.Errorf("unknown binary frame version: %d", data[binaryVersionOffset])
 	}
-	opCode := data[1]
-	idLen := binary.BigEndian.Uint16(data[2:4])
-	if len(data) < 4+int(idLen) {
-		return nil, fmt.Errorf("binary frame truncated: need %d, got %d", 4+int(idLen), len(data))
+	opCode := data[binaryOpOffset]
+	idLen := binary.BigEndian.Uint16(data[binaryIDLenOffset:binaryPayloadOffset])
+	payloadStart := binaryHeaderLen + int(idLen)
+	if len(data) < payloadStart {
+		return nil, fmt.Errorf("binary frame truncated: need %d, got %d", payloadStart, len(data))
 	}
 	return &BinaryRequest{
 		Operation: opCode,
-		ID:        string(data[4 : 4+idLen]),
-		Payload:   data[4+idLen:],
+		ID:        string(data[binaryHeaderLen:payloadStart]),
+		Payload:   data[payloadStart:],
 	}, nil
 }
 
 // BuildBinaryResponse builds a binary response frame: [version][status][id_len_be][id][payload]
 func BuildBinaryResponse(reqID string, status byte, payload []byte) []byte {
 	idBytes := []byte(reqID)
-	buf := make([]byte, 4+len(idBytes)+len(payload))
-	buf[0] = BinFrameVersion
-	buf[1] = status
-	binary.BigEndian.PutUint16(buf[2:4], uint16(len(idBytes)))
-	copy(buf[4:], idBytes)
-	copy(buf[4+len(idBytes):], payload)
+	buf := make([]byte, binaryHeaderLen+len(idBytes)+len(payload))
+	buf[binaryVersionOffset] = BinFrameVersion
+	buf[binaryOpOffset] = status
+	binary.BigEndian.PutUint16(buf[binaryIDLenOffset:binaryPayloadOffset], uint16(len(idBytes)))
+	copy(buf[binaryHeaderLen:], idBytes)
+	copy(buf[binaryHeaderLen+len(idBytes):], payload)
 	return buf
 }
 
 // BuildBinaryErrorPayload builds the error payload: [4B error code BE][error message]
 func BuildBinaryErrorPayload(code int, message string) []byte {
 	msgBytes := []byte(message)
-	buf := make([]byte, 4+len(msgBytes))
-	binary.BigEndian.PutUint32(buf[0:4], uint32(code))
-	copy(buf[4:], msgBytes)
+	buf := make([]byte, binaryHeaderLen+len(msgBytes))
+	binary.BigEndian.PutUint32(buf[:binaryHeaderLen], uint32(code))
+	copy(buf[binaryHeaderLen:], msgBytes)
 	return buf
 }

@@ -31,17 +31,19 @@ import (
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/resspeckey"
-	appapi "frontend/pkg/frontend/api/app"
-	httputil "frontend/pkg/frontend/common/httputil"
+	"frontend/pkg/frontend/api/app"
+	"frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
 	"frontend/pkg/frontend/schedulerproxy"
-	api "yuanrong.org/kernel/runtime/libruntime/api"
+	"yuanrong.org/kernel/runtime/libruntime/api"
 )
 
 const (
 	defaultSandboxRuntime          = "python3.10"
 	defaultSandboxFunctionID       = "default/0-defaultservice-py310/$latest"
+	defaultSandboxCPU              = 1000
+	defaultSandboxMemory           = 2048
 	sandboxCreateTimeoutSeconds    = 60
 	sandboxInitTimeoutSeconds      = 305
 	sandboxGracefulShutdownSeconds = 900
@@ -53,6 +55,9 @@ const (
 	sandboxKillInstanceSignal      = constant.KillSignalVal
 	sandboxRunningPollTimeout      = 5 * time.Second
 	sandboxRunningPollInterval     = 200 * time.Millisecond
+	createInstanceTimeoutCode      = 3002
+	protocolPortPartCount          = 2
+	maxPortNumber                  = 65535
 )
 
 var selectSandboxSchedulerID = func(funcKey string) (string, error) {
@@ -95,11 +100,11 @@ type CreateRequest struct {
 func CreateHandler(ctx *gin.Context) {
 	var req CreateRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %v", err))
+		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %v", err))
 		return
 	}
 	if req.Name == "" || req.Namespace == "" {
-		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("name and namespace are required"))
+		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("name and namespace are required"))
 		return
 	}
 	rootfs := req.Rootfs
@@ -108,20 +113,34 @@ func CreateHandler(ctx *gin.Context) {
 	}
 	funcID, err := sandboxFunctionIDForRuntime(req.Runtime)
 	if err != nil {
-		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
 		return
 	}
 
-	funcMeta := api.FunctionMeta{
+	invokeOpts, err := buildSandboxInvokeOptions(ctx, req, funcID, rootfs)
+	if err != nil {
+		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+		return
+	}
+	createSandboxInstance(ctx, req, buildSandboxFunctionMeta(req, funcID), invokeOpts)
+}
+
+func buildSandboxFunctionMeta(req CreateRequest, funcID string) api.FunctionMeta {
+	return api.FunctionMeta{
 		FuncID:    funcID,
 		Language:  api.Python,
 		Api:       api.ActorApi,
 		Name:      &req.Name,
 		Namespace: &req.Namespace,
 	}
+}
+
+func buildSandboxInvokeOptions(
+	ctx *gin.Context, req CreateRequest, funcID string, rootfs string,
+) (api.InvokeOptions, error) {
 	invokeOpts := api.InvokeOptions{
-		Cpu:       1000,
-		Memory:    2048,
+		Cpu:       defaultSandboxCPU,
+		Memory:    defaultSandboxMemory,
 		Timeout:   sandboxCreateTimeoutSeconds,
 		CreateOpt: map[string]string{},
 		CustomExtensions: map[string]string{
@@ -135,8 +154,7 @@ func CreateHandler(ctx *gin.Context) {
 	if len(req.Ports) > 0 {
 		networkConfig, err := buildSandboxNetworkConfig(req.Ports)
 		if err != nil {
-			appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
-			return
+			return api.InvokeOptions{}, err
 		}
 		invokeOpts.CreateOpt["network"] = networkConfig
 	}
@@ -162,11 +180,16 @@ func CreateHandler(ctx *gin.Context) {
 	} else {
 		log.GetLogger().Warnf("failed to marshal sandbox resource spec: %v", err)
 	}
+	return invokeOpts, nil
+}
 
+func createSandboxInstance(
+	ctx *gin.Context, req CreateRequest, funcMeta api.FunctionMeta, invokeOpts api.InvokeOptions,
+) {
 	instanceID, err := util.NewClient().CreateInstanceByLibRt(funcMeta, []api.Arg{}, invokeOpts)
 	if err != nil {
 		if shouldTreatCreateTimeoutAsSuccess(instanceID, err) {
-			if waitForSandboxInstanceRunning(instanceID, funcID, invokeOpts.CreateOpt[constant.ResourceSpecNote]) {
+			if waitForSandboxInstanceRunning(instanceID, funcMeta.FuncID, invokeOpts.CreateOpt[constant.ResourceSpecNote]) {
 				log.GetLogger().Infof(
 					"sandbox instance reached running state after create timeout instanceID=%s name=%s ns=%s",
 					instanceID, req.Name, req.Namespace,
@@ -176,16 +199,16 @@ func CreateHandler(ctx *gin.Context) {
 				"sandbox create returned timeout after scheduling instanceID=%s name=%s ns=%s: %v",
 				instanceID, req.Name, req.Namespace, err,
 			)
-			appapi.SetCtxResponse(ctx, map[string]string{"instance_id": instanceID}, http.StatusOK, nil)
+			app.SetCtxResponse(ctx, map[string]string{"instance_id": instanceID}, http.StatusOK, nil)
 			return
 		}
 		log.GetLogger().Errorf("failed to create sandbox instance name=%s ns=%s: %v", req.Name, req.Namespace, err)
-		appapi.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to create sandbox: %v", err))
+		app.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to create sandbox: %v", err))
 		return
 	}
 
 	log.GetLogger().Infof("sandbox created: instanceID=%s name=%s ns=%s", instanceID, req.Name, req.Namespace)
-	appapi.SetCtxResponse(ctx, map[string]string{"instance_id": instanceID}, http.StatusOK, nil)
+	app.SetCtxResponse(ctx, map[string]string{"instance_id": instanceID}, http.StatusOK, nil)
 }
 
 func sandboxFunctionIDForRuntime(runtime string) (string, error) {
@@ -214,7 +237,7 @@ func shouldTreatCreateTimeoutAsSuccess(instanceID string, err error) bool {
 		return false
 	}
 
-	return errInfo.Code == 3002
+	return errInfo.Code == createInstanceTimeoutCode
 }
 
 func buildSandboxResourceSpecJSON(cpu, memory int) (string, error) {
@@ -244,7 +267,7 @@ func buildSandboxNetworkConfig(ports []string) (string, error) {
 		switch len(parts) {
 		case 1:
 			portString = strings.TrimSpace(parts[0])
-		case 2:
+		case protocolPortPartCount:
 			protocol = strings.ToUpper(strings.TrimSpace(parts[0]))
 			portString = strings.TrimSpace(parts[1])
 		default:
@@ -255,8 +278,8 @@ func buildSandboxNetworkConfig(ports []string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("invalid port number %q", portString)
 		}
-		if port < 1 || port > 65535 {
-			return "", fmt.Errorf("port must be in [1, 65535], got %d", port)
+		if port < 1 || port > maxPortNumber {
+			return "", fmt.Errorf("port must be in [1, %d], got %d", maxPortNumber, port)
 		}
 		if protocol != "TCP" && protocol != "UDP" {
 			return "", fmt.Errorf("protocol must be TCP or UDP, got %s", protocol)
@@ -293,15 +316,15 @@ func isSandboxInstanceRunning(instanceID, functionID, resourceSpecNote string) b
 func DeleteHandler(ctx *gin.Context) {
 	instanceID := ctx.Param("instanceId")
 	if instanceID == "" {
-		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("instanceId is required"))
+		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("instanceId is required"))
 		return
 	}
 
 	if err := util.NewClient().KillByLibRt(instanceID, sandboxKillInstanceSignal, []byte("sandbox deleted")); err != nil {
 		log.GetLogger().Errorf("failed to kill sandbox instance %s: %v", instanceID, err)
-		appapi.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to delete sandbox: %v", err))
+		app.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to delete sandbox: %v", err))
 		return
 	}
 
-	appapi.SetCtxResponse(ctx, map[string]string{"status": "deleted"}, http.StatusOK, nil)
+	app.SetCtxResponse(ctx, map[string]string{"status": "deleted"}, http.StatusOK, nil)
 }

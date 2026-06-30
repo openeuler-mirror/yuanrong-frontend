@@ -17,75 +17,57 @@
 package posixws
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
+)
+
+const (
+	testErrorCode       = 1005
+	testInvalidIDLength = 10
 )
 
 // helper: build a binary request frame
 func buildReqFrame(version byte, op byte, id string, payload []byte) []byte {
 	idBytes := []byte(id)
-	buf := make([]byte, 4+len(idBytes)+len(payload))
-	buf[0] = version
-	buf[1] = op
-	binary.BigEndian.PutUint16(buf[2:4], uint16(len(idBytes)))
-	copy(buf[4:], idBytes)
-	copy(buf[4+len(idBytes):], payload)
+	buf := make([]byte, binaryHeaderLen+len(idBytes)+len(payload))
+	buf[binaryVersionOffset] = version
+	buf[binaryOpOffset] = op
+	binary.BigEndian.PutUint16(buf[binaryIDLenOffset:binaryPayloadOffset], uint16(len(idBytes)))
+	copy(buf[binaryHeaderLen:], idBytes)
+	copy(buf[binaryHeaderLen+len(idBytes):], payload)
 	return buf
 }
 
-func TestParseBinaryRequest(t *testing.T) {
-	tests := []struct {
-		name        string
-		data        []byte
-		wantOp      byte
-		wantID      string
-		wantPayload []byte
-		wantErr     bool
-	}{
-		{
-			name:        "valid create request",
-			data:        buildReqFrame(BinFrameVersion, BinOpCreate, "req-001", []byte{0x08, 0x01, 0x12, 0x05}),
-			wantOp:      BinOpCreate,
-			wantID:      "req-001",
-			wantPayload: []byte{0x08, 0x01, 0x12, 0x05},
-		},
-		{
-			name:        "valid invoke request",
-			data:        buildReqFrame(BinFrameVersion, BinOpInvoke, "uuid-1234-5678", []byte("raw-protobuf-bytes")),
-			wantOp:      BinOpInvoke,
-			wantID:      "uuid-1234-5678",
-			wantPayload: []byte("raw-protobuf-bytes"),
-		},
-		{
-			name:        "empty payload is valid",
-			data:        buildReqFrame(BinFrameVersion, BinOpCreate, "r1", nil),
-			wantOp:      BinOpCreate,
-			wantID:      "r1",
-			wantPayload: []byte{},
-		},
-		{
-			name:    "frame too short",
-			data:    []byte{0x01, 0x01, 0x00},
-			wantErr: true,
-		},
-		{
-			name:    "wrong version",
-			data:    []byte{0x99, BinOpCreate, 0x00, 0x02, 'a', 'b'},
-			wantErr: true,
-		},
-		{
-			name:    "truncated id",
-			data:    []byte{BinFrameVersion, BinOpCreate, 0x00, 0x0A, 'a', 'b'},
-			wantErr: true,
-		},
-		{
-			name:    "empty data",
-			data:    []byte{},
-			wantErr: true,
-		},
-	}
+type parseBinaryRequestCase struct {
+	name        string
+	data        []byte
+	wantOp      byte
+	wantID      string
+	wantPayload []byte
+	wantErr     bool
+}
 
-	for _, tt := range tests {
+func parseBinaryRequestCases() []parseBinaryRequestCase {
+	protobufPayload := []byte{0x08, 0x01, 0x12, 0x05}
+	return []parseBinaryRequestCase{
+		{name: "valid create request", data: buildReqFrame(BinFrameVersion, BinOpCreate, "req-001", protobufPayload),
+			wantOp: BinOpCreate, wantID: "req-001", wantPayload: protobufPayload},
+		{name: "valid invoke request",
+			data:   buildReqFrame(BinFrameVersion, BinOpInvoke, "uuid-1234-5678", []byte("raw-protobuf-bytes")),
+			wantOp: BinOpInvoke, wantID: "uuid-1234-5678", wantPayload: []byte("raw-protobuf-bytes")},
+		{name: "empty payload is valid", data: buildReqFrame(BinFrameVersion, BinOpCreate, "r1", nil),
+			wantOp: BinOpCreate, wantID: "r1", wantPayload: []byte{}},
+		{name: "frame too short", data: []byte{BinFrameVersion, BinOpCreate, 0x00}, wantErr: true},
+		{name: "wrong version", data: []byte{0x99, BinOpCreate, 0x00, 0x02, 'a', 'b'}, wantErr: true},
+		{name: "truncated id", data: []byte{BinFrameVersion, BinOpCreate, 0x00, testInvalidIDLength, 'a', 'b'},
+			wantErr: true},
+		{name: "empty data", data: []byte{}, wantErr: true},
+	}
+}
+
+func TestParseBinaryRequest(t *testing.T) {
+	for _, tt := range parseBinaryRequestCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ParseBinaryRequest(tt.data)
 			if (err != nil) != tt.wantErr {
@@ -100,86 +82,66 @@ func TestParseBinaryRequest(t *testing.T) {
 			if got.ID != tt.wantID {
 				t.Errorf("ID = %q, want %q", got.ID, tt.wantID)
 			}
-			if len(got.Payload) != len(tt.wantPayload) {
-				t.Fatalf("Payload len = %d, want %d", len(got.Payload), len(tt.wantPayload))
-			}
-			for i := range tt.wantPayload {
-				if got.Payload[i] != tt.wantPayload[i] {
-					t.Errorf("Payload[%d] = %d, want %d", i, got.Payload[i], tt.wantPayload[i])
-				}
+			if !bytes.Equal(got.Payload, tt.wantPayload) {
+				t.Errorf("Payload = %v, want %v", got.Payload, tt.wantPayload)
 			}
 		})
 	}
 }
 
-func TestBuildBinaryResponse(t *testing.T) {
-	tests := []struct {
-		name    string
-		reqID   string
-		status  byte
-		payload []byte
-	}{
-		{
-			name:    "success with payload",
-			reqID:   "req-001",
-			status:  BinStatusOK,
-			payload: []byte{0x08, 0x01},
-		},
-		{
-			name:    "error response",
-			reqID:   "req-002",
-			status:  BinStatusError,
-			payload: BuildBinaryErrorPayload(1005, "operation failed"),
-		},
-		{
-			name:    "empty payload",
-			reqID:   "r",
-			status:  BinStatusOK,
-			payload: []byte{},
-		},
-	}
+type buildBinaryResponseCase struct {
+	name    string
+	reqID   string
+	status  byte
+	payload []byte
+}
 
-	for _, tt := range tests {
+func buildBinaryResponseCases() []buildBinaryResponseCase {
+	return []buildBinaryResponseCase{
+		{name: "success with payload", reqID: "req-001", status: BinStatusOK, payload: []byte{0x08, 0x01}},
+		{name: "error response", reqID: "req-002", status: BinStatusError,
+			payload: BuildBinaryErrorPayload(testErrorCode, "operation failed")},
+		{name: "empty payload", reqID: "r", status: BinStatusOK, payload: []byte{}},
+	}
+}
+
+func TestBuildBinaryResponse(t *testing.T) {
+	for _, tt := range buildBinaryResponseCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			frame := BuildBinaryResponse(tt.reqID, tt.status, tt.payload)
 
-			if frame[0] != BinFrameVersion {
-				t.Errorf("version = %d, want %d", frame[0], BinFrameVersion)
+			if frame[binaryVersionOffset] != BinFrameVersion {
+				t.Errorf("version = %d, want %d", frame[binaryVersionOffset], BinFrameVersion)
 			}
-			if frame[1] != tt.status {
-				t.Errorf("status = %d, want %d", frame[1], tt.status)
+			if frame[binaryOpOffset] != tt.status {
+				t.Errorf("status = %d, want %d", frame[binaryOpOffset], tt.status)
 			}
-			idLen := binary.BigEndian.Uint16(frame[2:4])
+			idLen := binary.BigEndian.Uint16(frame[binaryIDLenOffset:binaryPayloadOffset])
 			if int(idLen) != len(tt.reqID) {
 				t.Errorf("id len = %d, want %d", idLen, len(tt.reqID))
 			}
-			gotID := string(frame[4 : 4+idLen])
+			payloadStart := binaryHeaderLen + int(idLen)
+			gotID := string(frame[binaryHeaderLen:payloadStart])
 			if gotID != tt.reqID {
 				t.Errorf("id = %q, want %q", gotID, tt.reqID)
 			}
-			gotPayload := frame[4+idLen:]
-			if len(gotPayload) != len(tt.payload) {
-				t.Fatalf("payload len = %d, want %d", len(gotPayload), len(tt.payload))
-			}
-			for i := range tt.payload {
-				if gotPayload[i] != tt.payload[i] {
-					t.Errorf("payload[%d] = %d, want %d", i, gotPayload[i], tt.payload[i])
-				}
+			if gotPayload := frame[payloadStart:]; !bytes.Equal(gotPayload, tt.payload) {
+				t.Errorf("payload = %v, want %v", gotPayload, tt.payload)
 			}
 		})
 	}
 }
 
 func TestBuildBinaryErrorPayload(t *testing.T) {
-	code := 1005
+	code := testErrorCode
 	msg := "timeout"
 	payload := BuildBinaryErrorPayload(code, msg)
 
-	gotCode := binary.BigEndian.Uint32(payload[0:4])
+	gotCode := binary.BigEndian.Uint32(payload[:binaryHeaderLen])
 	if int(gotCode) != code {
 		t.Errorf("error code = %d, want %d", gotCode, code)
 	}
-	gotMsg := string(payload[4:])
+	gotMsg := string(payload[binaryHeaderLen:])
 	if gotMsg != msg {
 		t.Errorf("error message = %q, want %q", gotMsg, msg)
 	}
@@ -212,17 +174,18 @@ func TestRoundTrip(t *testing.T) {
 	respPayload := []byte("response-protobuf")
 	respFrame := BuildBinaryResponse(reqID, BinStatusOK, respPayload)
 
-	if respFrame[0] != BinFrameVersion {
-		t.Errorf("response version = %d", respFrame[0])
+	if respFrame[binaryVersionOffset] != BinFrameVersion {
+		t.Errorf("response version = %d", respFrame[binaryVersionOffset])
 	}
-	if respFrame[1] != BinStatusOK {
-		t.Errorf("response status = %d", respFrame[1])
+	if respFrame[binaryOpOffset] != BinStatusOK {
+		t.Errorf("response status = %d", respFrame[binaryOpOffset])
 	}
-	respIDLen := binary.BigEndian.Uint16(respFrame[2:4])
-	if string(respFrame[4:4+respIDLen]) != reqID {
+	respIDLen := binary.BigEndian.Uint16(respFrame[binaryIDLenOffset:binaryPayloadOffset])
+	payloadStart := binaryHeaderLen + int(respIDLen)
+	if string(respFrame[binaryHeaderLen:payloadStart]) != reqID {
 		t.Errorf("response id mismatch")
 	}
-	if string(respFrame[4+respIDLen:]) != string(respPayload) {
+	if !bytes.Equal(respFrame[payloadStart:], respPayload) {
 		t.Errorf("response payload mismatch")
 	}
 }

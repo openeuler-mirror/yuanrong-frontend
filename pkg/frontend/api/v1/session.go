@@ -187,14 +187,21 @@ func resolveSessionFunctionName(funcKey string) string {
 	return funcSpec.FuncMetaData.Name
 }
 
-func loadFuncSpecSafely(funcKey string) (funcSpec *commontype.FuncSpec, ok bool) {
-	defer func() {
-		if recover() != nil {
-			funcSpec = nil
-			ok = false
-		}
+func loadFuncSpecSafely(funcKey string) (*commontype.FuncSpec, bool) {
+	var (
+		funcSpec *commontype.FuncSpec
+		ok       bool
+	)
+	func() {
+		defer func() {
+			if recover() != nil {
+				funcSpec = nil
+				ok = false
+			}
+		}()
+		funcSpec, ok = functionmeta.LoadFuncSpec(funcKey)
 	}()
-	return functionmeta.LoadFuncSpec(funcKey)
+	return funcSpec, ok
 }
 
 func writeSessionError(ctx *gin.Context, httpCode int, innerCode int, err error) {
