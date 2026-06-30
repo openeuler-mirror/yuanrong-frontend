@@ -610,8 +610,6 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
-	require.Equal(t, "yr.sandbox.sandbox", capturedFuncMeta.ModuleName)
-	require.Equal(t, "SandboxInstance", capturedFuncMeta.ClassName)
 	require.Equal(t, api.Python, capturedFuncMeta.Language)
 	require.Equal(t, api.ActorApi, capturedFuncMeta.Api)
 	require.NotNil(t, capturedFuncMeta.Name)
@@ -621,6 +619,8 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 
 	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
 	require.Equal(t, sandboxConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
+	require.Equal(t, "yr.sandbox.sandbox", capturedInvokeOpt.CreateOpt["moduleName"])
+	require.Equal(t, "SandboxInstance", capturedInvokeOpt.CreateOpt["className"])
 	require.Equal(t, "contract-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
 	_, hasStaticOwner := capturedInvokeOpt.CreateOpt["resource.owner"]

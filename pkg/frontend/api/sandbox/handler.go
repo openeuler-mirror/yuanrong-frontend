@@ -113,13 +113,11 @@ func CreateHandler(ctx *gin.Context) {
 	}
 
 	funcMeta := api.FunctionMeta{
-		FuncID:     funcID,
-		ModuleName: "yr.sandbox.sandbox",
-		ClassName:  "SandboxInstance",
-		Language:   api.Python,
-		Api:        api.ActorApi,
-		Name:       &req.Name,
-		Namespace:  &req.Namespace,
+		FuncID:    funcID,
+		Language:  api.Python,
+		Api:       api.ActorApi,
+		Name:      &req.Name,
+		Namespace: &req.Namespace,
 	}
 	invokeOpts := api.InvokeOptions{
 		Cpu:       1000,
@@ -157,6 +155,8 @@ func CreateHandler(ctx *gin.Context) {
 	invokeOpts.CreateOpt["DELEGATE_DIRECTORY_INFO"] = sandboxDelegateDirectory
 	invokeOpts.CreateOpt["DELEGATE_DIRECTORY_QUOTA"] = fmt.Sprintf("%d", sandboxDirectoryQuotaMB)
 	invokeOpts.CreateOpt["ConcurrentNum"] = sandboxConcurrency
+	invokeOpts.CreateOpt["moduleName"] = "yr.sandbox.sandbox"
+	invokeOpts.CreateOpt["className"] = "SandboxInstance"
 	if resSpecJSON, err := buildSandboxResourceSpecJSON(invokeOpts.Cpu, invokeOpts.Memory); err == nil {
 		invokeOpts.CreateOpt[constant.ResourceSpecNote] = resSpecJSON
 	} else {
