@@ -362,14 +362,13 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 			So(res.IsInterrupted, ShouldBeTrue)
 		})
 
-		Convey("check route address and bypass datasystem options", func() {
+		Convey("check route address option", func() {
 			req := InvokeRequest{
 				RouteAddress:     "scheduler-proxy",
 				BypassDataSystem: true,
 			}
 			res := convertCommonInvokeOption(req)
 			So(res.CreateOpt["YR_ROUTE"], ShouldEqual, "scheduler-proxy")
-			So(res.BypassDataSystem, ShouldBeTrue)
 		})
 	})
 }

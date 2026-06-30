@@ -179,12 +179,11 @@ func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOpt
 		return nil, err
 	}
 	return &types.InstanceAllocationInfo{
-		FuncKey:         instanceAllocation.FuncKey,
-		FuncSig:         instanceAllocation.FuncSig,
-		InstanceID:      instanceAllocation.InstanceID,
-		ThreadID:        instanceAllocation.LeaseID,
-		FunctionProxyID: instanceAllocation.RouteAddress,
-		LeaseInterval:   instanceAllocation.LeaseInterval,
+		FuncKey:       instanceAllocation.FuncKey,
+		FuncSig:       instanceAllocation.FuncSig,
+		InstanceID:    instanceAllocation.InstanceID,
+		ThreadID:      instanceAllocation.LeaseID,
+		LeaseInterval: instanceAllocation.LeaseInterval,
 	}, nil
 }
 
@@ -371,7 +370,6 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 			Concurrency: req.InstanceSession.Concurrency,
 		}
 	}
-	invokeOpt.BypassDataSystem = req.BypassDataSystem
 	invokeOpt.IsInterrupted = req.IsInterrupted
 	invokeOpt.SessionCtxID = req.SessionCtxID
 	return invokeOpt
