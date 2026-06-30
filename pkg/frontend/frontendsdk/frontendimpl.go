@@ -52,7 +52,8 @@ import (
 )
 
 var (
-	stopCh = make(chan struct{})
+	stopCh            = make(chan struct{})
+	systemAuthDataKey string
 )
 
 const (
@@ -151,7 +152,6 @@ func parseRuntimeCfgAndSetEnv(configFilePath string) (*common.Configuration, err
 		FunctionName:            functionName,
 		LogLevel:                cfg.Runtime.LogConfig.Level,
 		FSAddress:               fmt.Sprintf("%s:%s", fsAddr, functionSystemPort),
-		IamAddress:              cfg.IamConfig.Addr,
 		VerifyFilePath:          cfg.VerifyFilePath,
 		EnableEvent:             cfg.EnableEvent,
 		LogPath:                 cfg.Runtime.LogConfig.FilePath,
@@ -187,14 +187,14 @@ func parseSystemAuth(cfg *types.Config, runtimeCfg *common.Configuration) error 
 	decryptedKeyConfig := sts.DecryptSystemAuthConfig(encryptedKeyConfig)
 	runtimeCfg.SystemAuthAccessKey = decryptedKeyConfig.AccessKey
 	runtimeCfg.SystemAuthSecretKey = decryptedKeyConfig.SecretKey
-	runtimeCfg.SystemAuthDataKey = decryptedKeyConfig.DataKey
+	systemAuthDataKey = decryptedKeyConfig.DataKey
 	return nil
 }
 
 func setRawStsAuthConfig(runtimeCfg *common.Configuration) {
 	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.AccessKey = runtimeCfg.SystemAuthAccessKey
 	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.SecretKey = runtimeCfg.SystemAuthSecretKey
-	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.DataKey = runtimeCfg.SystemAuthDataKey
+	config.GetConfig().RawStsConfig.SensitiveConfigs.Auth.DataKey = systemAuthDataKey
 }
 
 func parseServiceAccountJwt(cfg *types.Config) error {

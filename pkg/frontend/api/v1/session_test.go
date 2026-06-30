@@ -136,7 +136,7 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
 		convey.So(capturedTenantID, convey.ShouldEqual, "12345678901234561234567890123456")
 		convey.So(capturedKey, convey.ShouldEqual,
-			"yr:agent_session:v1:SICl-9zkITdgerEUm_FOtwGPa568P19_wo6bOtKekpE")
+			"yr:agent_session:v1:OmH5nh0gvdq9c7oXxMaE9sKEmZG0_lLjGR2jZ9kY_GQ")
 	})
 
 	convey.Convey("delete session not found", t, func() {
@@ -167,6 +167,38 @@ func TestDeleteSessionHandler(t *testing.T) {
 
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusNotFound)
 		convey.So(rw.Body.String(), convey.ShouldContainSubstring, "session not found")
+	})
+
+	convey.Convey("delete session falls back to function name when metadata is absent", t, func() {
+		etcdKey, err := initSessionDeleteFuncMeta()
+		convey.So(err, convey.ShouldBeNil)
+		convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
+
+		var capturedKey string
+		patches := gomonkey.NewPatches()
+		defer patches.Reset()
+		patches.ApplyFunc(datasystemclient.KVGetWithRetry,
+			func(key string, option *datasystemclient.Option, traceID string) ([]byte, error) {
+				return []byte(`{"sessionID":"session-1"}`), nil
+			})
+		patches.ApplyFunc(datasystemclient.KVDelWithRetry,
+			func(key string, option *datasystemclient.Option, traceID string) error {
+				capturedKey = key
+				return nil
+			})
+
+		rw := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(rw)
+		ctx.Request, _ = http.NewRequest(http.MethodDelete,
+			"/serverless/v1/functions/"+testFunctionURN+"/sessions/session-1", nil)
+		ctx.AddParam("function-urn", testFunctionURN)
+		ctx.AddParam(sessionIDParam, "session-1")
+
+		DeleteSessionHandler(ctx)
+
+		convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
+		convey.So(capturedKey, convey.ShouldEqual,
+			"yr:agent_session:v1:OmH5nh0gvdq9c7oXxMaE9sKEmZG0_lLjGR2jZ9kY_GQ")
 	})
 
 	convey.Convey("delete session failed", t, func() {

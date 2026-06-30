@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -142,7 +143,7 @@ func (k *kernelRequestHandler) legacyMakeReq(logger api.FormatLogger) (*util.Inv
 			return nil, err
 		}
 	}
-	req, err := convert(k.ctx, k.funcSpec, instanceId, false, k.legacyCurrentSchedulerInfo)
+	req, err := convert(k.ctx, k.funcSpec, instanceId, false, nil, k.legacyCurrentSchedulerInfo)
 	if err != nil {
 		logger.Errorf("failed to convert request, err: %s", err.Error())
 		return nil, err
@@ -186,7 +187,7 @@ func (k *kernelRequestHandler) makeReq(logger api.FormatLogger) (*util.InvokeReq
 		}
 	}
 
-	req, err := convert(k.ctx, k.funcSpec, instanceId, forceInvoke, nil)
+	req, err := convert(k.ctx, k.funcSpec, instanceId, forceInvoke, k.instanceAllocationInfo, nil)
 	if err != nil {
 		logger.Errorf("failed to convert request, err: %s", err.Error())
 		return nil, err
@@ -407,32 +408,37 @@ func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.
 	return nil
 }
 
-// Convert an http request to a POSIX invoke request
-func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec, instanceId string, forceInvoke bool,
-	legacySchedulerInfo *commontype.InstanceInfo) (*util.InvokeRequest, error) {
+func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec,
+	instanceId string, forceInvoke bool, leaseInfo *commontype.InstanceAllocationInfo,
+	legacySchedulerInfo *commontype.InstanceInfo,
+) (*util.InvokeRequest, error) {
 	resourceSpecs, err := util.ConvertResourceSpecs(ctx, funcSpec)
 	if err != nil {
 		return nil, err
 	}
 	req := &util.InvokeRequest{
-		Function:        ctx.FuncKey,
-		TraceID:         ctx.TraceID,
-		TraceParent:     util.PeekIgnoreCase(ctx.ReqHeader, constant.HeaderTraceParent),
-		RequestID:       ctx.RequestID,
-		ReturnObjectIDs: []string{},
-		ResourceSpecs:   resourceSpecs,
-		PoolLabel:       util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderPoolLabel),
-		InvokeTag:       convertInvokeTag(ctx),
-		InstanceLabel:   util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceLabel),
-		AcquireTimeout:  getTimeout(util.GetAcquireTimeout(funcSpec), ctx.AcquireTimeout),
-		InvokeTimeout:   ctx.InvokeTimeout,
-		FuncSig:         funcSpec.FuncMetaSignature,
-		TrafficLimited:  ctx.TrafficLimited,
-		BusinessType:    funcSpec.FuncMetaData.BusinessType,
-		TenantID:        funcSpec.FuncMetaData.TenantID,
-		InstanceID:      instanceId,
-		ForceInvoke:     forceInvoke,
-		IsInterrupted:  ctx.IsInterrupted,
+		Function:         ctx.FuncKey,
+		TraceID:          ctx.TraceID,
+		TraceParent:      util.PeekIgnoreCase(ctx.ReqHeader, constant.HeaderTraceParent),
+		RequestID:        ctx.RequestID,
+		ReturnObjectIDs:  []string{},
+		ResourceSpecs:    resourceSpecs,
+		PoolLabel:        util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderPoolLabel),
+		InvokeTag:        convertInvokeTag(ctx),
+		InstanceLabel:    util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceLabel),
+		AcquireTimeout:   getTimeout(util.GetAcquireTimeout(funcSpec), ctx.AcquireTimeout),
+		InvokeTimeout:    ctx.InvokeTimeout,
+		FuncSig:          funcSpec.FuncMetaSignature,
+		TrafficLimited:   ctx.TrafficLimited,
+		BusinessType:     funcSpec.FuncMetaData.BusinessType,
+		TenantID:         funcSpec.FuncMetaData.TenantID,
+		InstanceID:       instanceId,
+		ForceInvoke:      forceInvoke,
+		IsInterrupted:    ctx.IsInterrupted,
+		BypassDataSystem: strings.EqualFold(util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderBypassDataSystem), "true"),
+	}
+	if leaseInfo != nil && leaseInfo.FunctionProxyID != "" {
+		req.RouteAddress = leaseInfo.FunctionProxyID
 	}
 	if funcSpec.ExtendedMetaData.EnableSessionCtx {
 		req.SessionCtxID = ctx.SessionCtxID
@@ -463,7 +469,7 @@ func convert(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec, ins
 		return req, err
 	}
 	req.Args = newArgList([]byte(ctx.TraceID), body)
-	req.AcceptHeader = ctx.ReqHeader["Accept"]
+	req.AcceptHeader = util.PeekIgnoreCase(ctx.ReqHeader, "Accept")
 	req.ResponseWriter = ctx.ResponseWriter
 	return req, nil
 }

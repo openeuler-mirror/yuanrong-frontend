@@ -20,6 +20,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/agiledragon/gomonkey/v2"
 	. "github.com/smartystreets/goconvey/convey"
@@ -80,11 +81,11 @@ func TestNewClientLibruntime(t *testing.T) {
 					return returnObjID, nil
 				}),
 		}
-		defer func() {
+		Reset(func() {
 			for _, patch := range patches {
 				patch.Reset()
 			}
-		}()
+		})
 
 		client := newDefaultClientLibruntime(mock)
 		So(client, ShouldNotBeNil)
@@ -121,7 +122,7 @@ func Test_defaultClient_AcquireInstance(t *testing.T) {
 
 func Test_defaultClient_getRes(t *testing.T) {
 	Convey("Test (c *defaultClient) getRes", t, func() {
-		mock := &mockUtils.FakeLibruntimeSdkClient{}
+		mock := &getResRuntime{}
 		c := newDefaultClientLibruntime(mock)
 		clientDisconnectChan := make(chan struct{})
 		req := InvokeRequest{
@@ -133,18 +134,14 @@ func Test_defaultClient_getRes(t *testing.T) {
 			},
 		}
 		result := []byte("response")
-		defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "GetEvent",
-			func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetEventCallback) {
-				cb(result, nil)
-				return
-			}).Reset()
+		mock.getEvent = func(objectID string, cb api.GetEventCallback) {
+			cb([]byte("{}"), nil)
+		}
 
 		Convey("When request is not SSE", func() {
-			defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "GetAsync",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
-					cb(result, nil)
-					return
-				}).Reset()
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {
+				cb(result, nil)
+			}
 			req.AcceptHeader = "application/json"
 			res, err := c.getRes("obj1", req)
 			So(err, ShouldBeNil)
@@ -152,17 +149,64 @@ func Test_defaultClient_getRes(t *testing.T) {
 		})
 
 		Convey("When request is SSE", func() {
-			defer gomonkey.ApplyMethod(reflect.TypeOf(mock), "GetAsync",
-				func(_ *mockUtils.FakeLibruntimeSdkClient, objectID string, cb api.GetAsyncCallback) {
-					cb(result, errors.New("test error"))
-					return
-				}).Reset()
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {
+				cb(result, errors.New("test error"))
+			}
 			req.AcceptHeader = httpconstant.AcceptEventStream
 			res, err := c.getRes("obj1", req)
 			So(err, ShouldNotBeNil)
 			So(string(res), ShouldEqual, "response")
 		})
+
+		Convey("When request is SSE and event EOF arrives before async result", func() {
+			var written []byte
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {}
+			mock.getEvent = func(objectID string, cb api.GetEventCallback) {
+				go func() {
+					cb([]byte("stream-data"), nil)
+					cb([]byte("yuanrong_event_EOF"), nil)
+				}()
+			}
+			req.AcceptHeader = httpconstant.AcceptEventStream
+			req.ResponseWriter = &mockResponseWriter{
+				clientDisconnectChan: clientDisconnectChan,
+				sseWriteFunc: func(data []byte) (int, error) {
+					written = append([]byte{}, data...)
+					return len(data), nil
+				},
+			}
+
+			done := make(chan struct{})
+			var res []byte
+			var err error
+			go func() {
+				res, err = c.getRes("obj1", req)
+				close(done)
+			}()
+			select {
+			case <-done:
+				So(err, ShouldBeNil)
+				So(res, ShouldBeNil)
+				So(string(written), ShouldEqual, "stream-data")
+			case <-time.After(time.Second):
+				t.Fatal("getRes should return when SSE EOF arrives even if async result is not ready")
+			}
+		})
 	})
+}
+
+type getResRuntime struct {
+	mockUtils.FakeLibruntimeSdkClient
+	getAsync func(objectID string, cb api.GetAsyncCallback)
+	getEvent func(objectID string, cb api.GetEventCallback)
+}
+
+func (g *getResRuntime) GetAsync(objectID string, cb api.GetAsyncCallback) {
+	g.getAsync(objectID, cb)
+}
+
+func (g *getResRuntime) GetEvent(objectID string, cb api.GetEventCallback) {
+	g.getEvent(objectID, cb)
 }
 
 type mockResponseWriter struct {
@@ -197,22 +241,23 @@ func Test_defaultClient_handleEvent(t *testing.T) {
 			}).Reset()
 		Convey("When handling an event with error", func() {
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
-			sseChan.Event <- []byte(`{"key": "value"}`)
-			sseChan.EventErr = errors.New("some error")
+			eventErr := errors.New("some error")
+			sseChan.Event <- sseEvent{Data: []byte(`{"key": "value"}`), Err: eventErr}
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
+			So(sseChan.EventErr, ShouldEqual, eventErr)
 		})
 		Convey("When handling an event with yuanrong_event_EOF", func() {
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
-			sseChan.Event <- []byte(`yuanrong_event_EOF`)
+			sseChan.Event <- sseEvent{Data: []byte(`yuanrong_event_EOF`)}
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
 		})
@@ -226,18 +271,41 @@ func Test_defaultClient_handleEvent(t *testing.T) {
 				},
 			}
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
-			sseChan.Event <- []byte(`{"key": "value"}`)
+			sseChan.Event <- sseEvent{Data: []byte(`{"key": "value"}`)}
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
 			So(sseChan.EventErr, ShouldNotBeNil)
 		})
+		Convey("When handling a non-json stream event", func() {
+			var written []byte
+			req := InvokeRequest{
+				ResponseWriter: &mockResponseWriter{
+					clientDisconnectChan: clientDisconnectChan,
+					sseWriteFunc: func(data []byte) (int, error) {
+						written = append([]byte{}, data...)
+						return len(data), nil
+					},
+				},
+			}
+			sseChan := &SSEChan{
+				Event:     make(chan sseEvent, 2),
+				WaitEvent: make(chan struct{}, 1),
+			}
+			stopSSEHandle := make(chan struct{})
+			sseChan.Event <- sseEvent{Data: []byte(`plain stream data`)}
+			sseChan.Event <- sseEvent{Data: []byte(`yuanrong_event_EOF`)}
+			c.handleEvent("objID", sseChan, req, stopSSEHandle)
+			So(<-sseChan.WaitEvent, ShouldNotBeNil)
+			So(sseChan.EventErr, ShouldBeNil)
+			So(string(written), ShouldEqual, "plain stream data")
+		})
 		Convey("When early close StopSSEHandle", func() {
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
@@ -248,13 +316,25 @@ func Test_defaultClient_handleEvent(t *testing.T) {
 		Convey("When handle an event with a disconnected client", func() {
 			close(clientDisconnectChan)
 			sseChan := &SSEChan{
-				Event:     make(chan []byte, 1),
+				Event:     make(chan sseEvent, 1),
 				WaitEvent: make(chan struct{}, 1),
 			}
 			stopSSEHandle := make(chan struct{})
 			c.handleEvent("objID", sseChan, req, stopSSEHandle)
 			So(<-sseChan.WaitEvent, ShouldNotBeNil)
 			So(sseChan.EventErr, ShouldNotBeNil)
+		})
+		Convey("When GetEvent callback returns an error with non-json payload", func() {
+			sseChan := &SSEChan{
+				Event:     make(chan sseEvent, 1),
+				WaitEvent: make(chan struct{}, 1),
+			}
+			stopSSEHandle := make(chan struct{})
+			eventErr := errors.New("instance has already exited")
+			sseChan.Event <- sseEvent{Data: []byte(`instance has already exited`), Err: eventErr}
+			c.handleEvent("objID", sseChan, req, stopSSEHandle)
+			So(<-sseChan.WaitEvent, ShouldNotBeNil)
+			So(sseChan.EventErr, ShouldEqual, eventErr)
 		})
 	})
 }
@@ -267,6 +347,7 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 					"tagKey": "tagValue",
 				},
 				TraceID:       "id2",
+				TraceParent:   "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01",
 				InvokeTimeout: 60,
 				AcceptHeader:  httpconstant.AcceptEventStream,
 				IsInterrupted: true,
@@ -276,7 +357,18 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 			So(res.Timeout, ShouldNotEqual, 0)
 			So(res.InvokeLabels, ShouldNotBeNil)
 			So(res.InvokeLabels["accept"], ShouldNotBeNil)
+			So(res.CustomExtensions["tagKey"], ShouldEqual, "tagValue")
+			So(res.CustomExtensions[traceParentExtensionKey], ShouldEqual, req.TraceParent)
 			So(res.IsInterrupted, ShouldBeTrue)
+		})
+
+		Convey("check route address option", func() {
+			req := InvokeRequest{
+				RouteAddress:     "scheduler-proxy",
+				BypassDataSystem: true,
+			}
+			res := convertCommonInvokeOption(req)
+			So(res.CreateOpt["YR_ROUTE"], ShouldEqual, "scheduler-proxy")
 		})
 	})
 }

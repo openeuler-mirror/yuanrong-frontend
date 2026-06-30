@@ -93,6 +93,7 @@ func newClient(tlsConf *tls.Config) Client {
 			TLSConfig:                 tlsConf,
 			MaxIdemponentCallAttempts: defaultMaxRetryTimes,
 			ReadBufferSize:            http.DefaultMaxHeaderBytes,
+			MaxConnsPerHost:           MaxClientConcurrency,
 			Dial:                      adminDial,
 		}}
 	return cli

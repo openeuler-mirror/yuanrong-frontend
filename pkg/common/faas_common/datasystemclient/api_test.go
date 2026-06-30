@@ -886,7 +886,9 @@ func (c *invokerLibruntimeMock) ReleaseInstance(allocation api.InstanceAllocatio
 
 }
 
-func (c *invokerLibruntimeMock) Kill(instanceID string, signal int, payload []byte) (err error) {
+func (c *invokerLibruntimeMock) Kill(
+	instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions,
+) error {
 	return nil
 }
 
@@ -1058,19 +1060,19 @@ func (f *invokerLibruntimeMock) GetActiveMasterAddr() string {
 }
 
 func (f *invokerLibruntimeMock) SetGauge(data api.GaugeData) error {
-    return nil
+	return nil
 }
 
 func (f *invokerLibruntimeMock) IncreaseGauge(data api.GaugeData) error {
-    return nil
+	return nil
 }
 
 func (f *invokerLibruntimeMock) DecreaseGauge(data api.GaugeData) error {
-    return nil
+	return nil
 }
 
 func (f *invokerLibruntimeMock) IncreaseUInt64Counter(data api.UInt64CounterData) error {
-    return nil
+	return nil
 }
 
 func TestKVGet(t *testing.T) {

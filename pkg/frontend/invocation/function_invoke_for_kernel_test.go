@@ -671,7 +671,8 @@ func TestKernelRequestHandler_legacyMakeReq(t *testing.T) {
 			})
 
 			// Mock convert 函数
-			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, _ *types.FuncSpec, instanceId string, forceInvoke bool, legacySchedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, _ *types.FuncSpec, instanceId string,
+				forceInvoke bool, _ *types.InstanceAllocationInfo, legacySchedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 				return &util.InvokeRequest{InstanceID: instanceId}, nil
 			})
 
@@ -746,7 +747,8 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 			})
 
 			// Mock convert 函数
-			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string, forceInvoke bool, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+			patches.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string,
+				forceInvoke bool, _ *types.InstanceAllocationInfo, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 				return &util.InvokeRequest{InstanceID: instanceId}, nil
 			})
 
@@ -798,7 +800,8 @@ func TestKernelRequestHandler_makeReq(t *testing.T) {
 		}).Reset()
 
 		// Mock convert 函数
-		defer gomonkey.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string, forceInvoke bool, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
+		defer gomonkey.ApplyFunc(convert, func(_ *types2.InvokeProcessContext, funcSpec *types.FuncSpec, instanceId string,
+			forceInvoke bool, _ *types.InstanceAllocationInfo, schedulerInfo *types.InstanceInfo) (*util.InvokeRequest, error) {
 			return &util.InvokeRequest{InstanceID: instanceId}, nil
 		}).Reset()
 

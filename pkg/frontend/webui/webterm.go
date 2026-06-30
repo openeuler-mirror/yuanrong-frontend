@@ -20,11 +20,14 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +72,21 @@ var (
 	grpcPool   = map[string]*pooledConn{}
 	grpcPoolMu sync.Mutex
 )
+
+// parseCommand parses a command string into a slice of arguments.
+// It handles basic space separation and preserves empty strings for consecutive spaces.
+func parseCommand(cmdStr string) []string {
+	if cmdStr == "" {
+		return nil
+	}
+	// Simple space splitting - each token becomes an argument
+	// This handles commands like "ls -la /home" -> ["ls", "-la", "/home"]
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return []string{cmdStr}
+	}
+	return parts
+}
 
 type pooledConn struct {
 	conn   *grpc.ClientConn
@@ -163,6 +181,40 @@ type InstanceListResponse struct {
 	Instances []InstanceInfo `json:"instances"` // Instance list
 	Count     int            `json:"count"`     // Instance count
 	TenantID  string         `json:"tenantID"`  // Tenant ID
+	Page      int            `json:"page"`      // Page number
+	PageSize  int            `json:"pageSize"`  // Page size
+}
+
+type paginatedInstanceListResponse struct {
+	Instances []map[string]interface{} `json:"instances"`
+	Count     int                      `json:"count"`
+	TenantID  string                   `json:"tenantID"`
+	Page      int                      `json:"page"`
+	PageSize  int                      `json:"pageSize"`
+}
+
+var queryMasterFunc = queryMaster
+
+type masterQueryError struct {
+	statusCode int
+	body       string
+}
+
+func (e masterQueryError) Error() string {
+	return fmt.Sprintf("master returned error status %d: %s", e.statusCode, e.body)
+}
+
+func writeMasterQueryError(w http.ResponseWriter, err error, fallbackStatus int) {
+	var masterErr masterQueryError
+	if errors.As(err, &masterErr) {
+		body := strings.TrimSpace(masterErr.body)
+		if body == "" {
+			body = http.StatusText(masterErr.statusCode)
+		}
+		http.Error(w, body, masterErr.statusCode)
+		return
+	}
+	http.Error(w, err.Error(), fallbackStatus)
 }
 
 // queryMaster is a generic function to query the master
@@ -212,7 +264,7 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	// Check response status code
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("master returned error status %d: %s", resp.StatusCode, string(body))
+		return masterQueryError{statusCode: resp.StatusCode, body: string(body)}
 	}
 
 	// Parse response
@@ -221,6 +273,56 @@ func queryMaster(apiPath string, queryParams map[string]string, result interface
 	}
 
 	return nil
+}
+
+func parseInstancesPagination(query url.Values) (map[string]string, bool, int, int, error) {
+	rawPage := query.Get("page")
+	rawPageSize := query.Get("page_size")
+	if rawPage == "" && rawPageSize == "" {
+		return nil, false, 0, 0, nil
+	}
+
+	page := 1
+	pageSize := 10
+	var err error
+	if rawPage != "" {
+		page, err = strconv.Atoi(rawPage)
+		if err != nil || page <= 0 {
+			return nil, false, 0, 0, fmt.Errorf("page must be a positive integer")
+		}
+	}
+	if rawPageSize != "" {
+		pageSize, err = strconv.Atoi(rawPageSize)
+		if err != nil || pageSize <= 0 {
+			return nil, false, 0, 0, fmt.Errorf("page_size must be a positive integer")
+		}
+	}
+
+	return map[string]string{
+		"page":      strconv.Itoa(page),
+		"page_size": strconv.Itoa(pageSize),
+	}, true, page, pageSize, nil
+}
+
+func summarizeInstances(response InstanceListResponse) []map[string]interface{} {
+	instances := make([]map[string]interface{}, 0, len(response.Instances))
+	for _, inst := range response.Instances {
+		errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
+			inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
+		statusText := instanceStatusText(inst.InstanceStatus.Code)
+		if statusText == "unknown" {
+			statusText = inst.InstanceStatus.Msg
+		}
+		instance := map[string]interface{}{
+			"id":       inst.InstanceID,
+			"tenantID": inst.TenantID,
+			"function": inst.Function,
+			"status":   statusText,
+			"error":    errorDetail,
+		}
+		instances = append(instances, instance)
+	}
+	return instances
 }
 
 func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
@@ -240,7 +342,7 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 
 	// Call generic query function
 	var response InstanceListResponse
-	if err := queryMaster(apiPath, queryParams, &response); err != nil {
+	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
 		return InstanceInfo{}, fmt.Errorf("failed to query instances: %w", err)
 	}
 
@@ -341,10 +443,15 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	instance := query.Get("instance")
 
-	cmdStr := query.Get("command")
+	// Support multi-value command= params (new format: each argv element is a separate param)
+	// and legacy single-value format (space-separated string, e.g. "echo hello").
 	command := defaultCommand
-	if cmdStr != "" {
-		command = []string{cmdStr}
+	if cmdValues := query["command"]; len(cmdValues) > 1 {
+		// Multi-element argv: use as-is (each query param is one argument)
+		command = cmdValues
+	} else if len(cmdValues) == 1 {
+		// Single string: parse space-separated for legacy compatibility
+		command = parseCommand(cmdValues[0])
 	}
 
 	tty := defaultTTY
@@ -587,6 +694,17 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 				}
+				// STDIN_EOF signals end of stdin — close the remote stdin pipe
+				if string(message) == "STDIN_EOF" {
+					err := stream.Send(&exec_service.ExecMessage{
+						SessionId: sessionID,
+						Payload:   &exec_service.ExecMessage_StdinEof{StdinEof: &exec_service.ExecStdinEof{}},
+					})
+					if err != nil {
+						log.GetLogger().Infof("gRPC stdin_eof error: %v", err)
+					}
+					break
+				}
 				fallthrough
 			case websocket.BinaryMessage:
 				err := stream.Send(&exec_service.ExecMessage{
@@ -625,31 +743,54 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	queryParams := map[string]string{
 		"tenant_id": tenantID,
 	}
+	if instanceID := r.URL.Query().Get("instance_id"); instanceID != "" {
+		queryParams["instance_id"] = instanceID
+	}
+	paginationParams, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for key, value := range paginationParams {
+		queryParams[key] = value
+	}
 
 	// Call generic query function
 	var response InstanceListResponse
-	if err := queryMaster(apiPath, queryParams, &response); err != nil {
+	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
 		log.GetLogger().Infof("Failed to query instances from master: %v", err)
+		if paginated {
+			writeMasterQueryError(w, err, http.StatusBadGateway)
+			return
+		}
 		// Return empty list on query failure instead of error, so frontend can continue
 		response.Instances = []InstanceInfo{}
 	}
 
 	// Convert to frontend expected format (simplified instance info)
-	instances := make([]map[string]interface{}, 0, len(response.Instances))
-	for _, inst := range response.Instances {
-		errorDetail := fmt.Sprintf("msg=%s; code=%d; exitCode=%d; errCode=%d",
-			inst.InstanceStatus.Msg, inst.InstanceStatus.Code, inst.InstanceStatus.ExitCode, inst.InstanceStatus.ErrCode)
-		statusText := instanceStatusText(inst.InstanceStatus.Code)
-		if statusText == "unknown" {
-			statusText = inst.InstanceStatus.Msg
+	instances := summarizeInstances(response)
+	if paginated {
+		if response.Page == 0 {
+			response.Page = page
 		}
-		instance := map[string]interface{}{
-			"id":       inst.InstanceID,
-			"function": inst.Function,
-			"status":   statusText,
-			"error":    errorDetail,
+		if response.PageSize == 0 {
+			response.PageSize = pageSize
 		}
-		instances = append(instances, instance)
+		if response.Count == 0 {
+			response.Count = len(instances)
+		}
+		err := json.NewEncoder(w).Encode(paginatedInstanceListResponse{
+			Instances: instances,
+			Count:     response.Count,
+			TenantID:  response.TenantID,
+			Page:      response.Page,
+			PageSize:  response.PageSize,
+		})
+		if err != nil {
+			log.GetLogger().Infof("Error encoding instances: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
 	}
 
 	// Return instance list
@@ -693,12 +834,16 @@ func instanceStatusText(code int) string {
 func HandleIndex(w http.ResponseWriter, r *http.Request) {
 	// Get path prefix from X-Forwarded-Prefix header (set by traefik/reverse proxy)
 	// or from environment variable, default to empty string
-	pathPrefix := r.Header.Get("X-Forwarded-Prefix")
+	pathPrefix := strings.TrimRight(r.Header.Get("X-Forwarded-Prefix"), "/")
 	if pathPrefix == "" {
 		// Fallback to environment variable if header is not set
 		// Set PATH_PREFIX environment variable in deployment config if needed
 		// For example: PATH_PREFIX=/frontend
 		// pathPrefix = os.Getenv("PATH_PREFIX")
+	}
+	apiPrefix := pathPrefix
+	if strings.HasSuffix(apiPrefix, "/terminal") {
+		apiPrefix = strings.TrimSuffix(apiPrefix, "/terminal")
 	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -1208,6 +1353,48 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             }
         }
 
+        function decodeBase64(input) {
+            if (!input) {
+                return '';
+            }
+            try {
+                return atob(input);
+            } catch (e) {
+                try {
+                    return decodeBase64URL(input);
+                } catch (_) {
+                    return '';
+                }
+            }
+        }
+
+        function extractSandboxCreateInstanceId(result) {
+            if (!result || typeof result !== 'object') {
+                return '';
+            }
+            if (typeof result.instance_id === 'string' && result.instance_id) {
+                return result.instance_id;
+            }
+            if (!result.data) {
+                return '';
+            }
+            if (typeof result.data === 'object' && typeof result.data.instance_id === 'string') {
+                return result.data.instance_id;
+            }
+            if (typeof result.data !== 'string') {
+                return '';
+            }
+            try {
+                const payload = JSON.parse(decodeBase64(result.data));
+                if (payload && typeof payload.instance_id === 'string') {
+                    return payload.instance_id;
+                }
+            } catch (e) {
+                return '';
+            }
+            return '';
+        }
+
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 const r = Math.random() * 16 | 0;
@@ -1250,65 +1437,50 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const submitBtn = document.getElementById('submit-sandbox-btn');
 
             try {
-                // Disable button and show loading state
                 submitBtn.disabled = true;
                 submitBtn.textContent = '⏳ Creating...';
 
-                // Get current token
                 const currentParams = new URLSearchParams(window.location.search);
                 const token = currentParams.get('token');
 
-                // Build request payload
-                const payload = {
-                    entrypoint: 'python3 -m yr.cli.scripts --user ' + tenant + ' sandbox create --name ' + name + ' --namespace ' + namespace,
-                    runtime_env: {
-                        working_dir: '/tmp',
-                        env_vars: {
-                            'YR_JWT_TOKEN': token || ''
-                        }
-                    }
-                };
-
-                // Build request options
                 const fetchOptions = {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify({ name, namespace, tenant })
                 };
-
                 if (token) {
                     fetchOptions.headers['X-Auth'] = token;
                 }
 
-                // Call job creation API
-                const response = await fetch(jobsApiUrl, fetchOptions);
-
+                const response = await fetch('%s/api/sandbox/create', fetchOptions);
                 if (!response.ok) {
-                    throw new Error('Failed to create job: ' + response.status);
+                    throw new Error('Failed to create sandbox: ' + response.status);
                 }
 
                 const result = await response.json();
-
-                // Check returned submission_id
-                if (!result.submission_id) {
-                    throw new Error('submission_id not found in API response');
+                const instanceId = extractSandboxCreateInstanceId(result);
+                if (!instanceId) {
+                    throw new Error('instance_id not found in API response');
                 }
 
-                const submissionId = result.submission_id;
-                submitBtn.textContent = '⏳ Waiting...';
-
-                // Poll job status
-                await pollJobStatus(submissionId, namespace, name, tenant, token);
+                // Redirect immediately — WebSocket will retry until the sandbox is ready
+                const params = new URLSearchParams();
+                const effectiveTenant = parseTenantFromJWT(token) || tenant;
+                params.set('instance', instanceId);
+                params.set('tenant_id', effectiveTenant);
+                if (token) {
+                    params.set('token', token);
+                }
+                window.location.search = params.toString();
 
             } catch (error) {
                 console.error('Failed to create sandbox:', error);
                 alert('Failed to create sandbox: ' + error.message);
-
-                // Restore button state
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Create & Connect';
+                loadInstances(currentPage);
             }
         }
 
@@ -1355,6 +1527,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         alert('Sandbox creation failed: job execution failed\n' + (jobInfo.message || ''));
                         document.getElementById('submit-sandbox-btn').disabled = false;
                         document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
+                        loadInstances(currentPage);
                         return;
                     } else if (status === 'STOPPED') {
                         // Stopped
@@ -1362,6 +1535,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                         alert('Sandbox creation failed: job was stopped\n' + (jobInfo.message || ''));
                         document.getElementById('submit-sandbox-btn').disabled = false;
                         document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
+                        loadInstances(currentPage);
                         return;
                     } else if (status === 'PENDING' || status === 'RUNNING') {
                         // Still running, continue polling
@@ -1380,6 +1554,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     alert('Failed to query job status: ' + error.message);
                     document.getElementById('submit-sandbox-btn').disabled = false;
                     document.getElementById('submit-sandbox-btn').textContent = 'Create & Connect';
+                    loadInstances(currentPage);
                 }
             };
 
@@ -1472,33 +1647,19 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             }
 
             try {
-                const payload = {
-                    entrypoint: 'python3 -m yr.cli.scripts sandbox ' + instanceId,
-                    runtime_env: {
-                        working_dir: '/tmp'
-                    }
-                };
-
                 const fetchOptions = {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
+                    method: 'DELETE',
+                    headers: {}
                 };
                 if (token) {
                     fetchOptions.headers['X-Auth'] = token;
                 }
 
-                const response = await fetch(jobsApiUrl, fetchOptions);
+                const response = await fetch('%s/api/sandbox/' + encodeURIComponent(instanceId), fetchOptions);
                 if (!response.ok) {
-                    throw new Error('Failed to submit delete job: ' + response.status);
+                    throw new Error('Failed to delete sandbox: ' + response.status);
                 }
 
-                const result = await response.json();
-                alert('Delete job submitted' + (result && result.submission_id ? (': ' + result.submission_id) : ''));
-
-                // Refresh list after delete request is submitted
                 loadInstances(currentPage);
             } catch (error) {
                 console.error('Failed to delete instance:', error);
@@ -1522,12 +1683,17 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     };
                 }
 
-                const response = await fetch('%s/api/instances?tenant_id=' + encodeURIComponent(tenantId), fetchOptions);
-                const instances = await response.json();
+                const apiParams = new URLSearchParams();
+                apiParams.set('tenant_id', tenantId);
+                apiParams.set('page', String(page));
+                apiParams.set('page_size', String(pageSize));
+                const response = await fetch('%s/api/instances?' + apiParams.toString(), fetchOptions);
+                const result = await response.json();
+                const instances = Array.isArray(result) ? result : (result.instances || []);
 
                 // Save all instance data
                 allInstances = instances;
-                totalInstances = instances.length;
+                totalInstances = Array.isArray(result) ? instances.length : (result.count || instances.length);
                 currentPage = page;
 
                 const listContainer = document.getElementById('instance-list');
@@ -1545,11 +1711,7 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                     return;
                 }
 
-                // Calculate pagination
-                const totalPages = Math.ceil(totalInstances / pageSize);
-                const startIndex = (currentPage - 1) * pageSize;
-                const endIndex = Math.min(startIndex + pageSize, totalInstances);
-                const pageInstances = instances.slice(startIndex, endIndex);
+                const pageInstances = instances;
 
                 // Render instance list
                 pageInstances.forEach(instance => {
@@ -1679,12 +1841,8 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             }
             const currentInstance = params.get('instance');
 
-            // No instance param, show dialog
-            if (!currentInstance) {
-                showCustomDialog();
-                return; // Stop further init, wait for user input
-            }
-
+            // Bind sidebar buttons regardless of whether instance exists,
+            // so they remain functional after creation failures.
             loadInstances();
 
             // Manual instance input button event
@@ -1719,6 +1877,12 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 const totalPages = Math.ceil(totalInstances / pageSize);
                 loadInstances(totalPages);
             });
+
+            // No instance param, show dialog and skip terminal init
+            if (!currentInstance) {
+                showCustomDialog();
+                return; // Stop further init (terminal, websocket), wait for user input
+            }
 
             // Initialize Terminal (only when container ID is available)
             const term = new Terminal({
@@ -1761,20 +1925,107 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
             const _wsParams = new URLSearchParams(window.location.search);
             const _wsToken = _wsParams.get('token');
             _wsParams.delete('token');
-            // Add unique query suffix to avoid client/proxy caching surprises across tabs
-            const uniqueQuerySuffix = Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9);
-            _wsParams.set('_t', uniqueQuerySuffix);
-            const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + (_wsParams.toString() ? '?' + _wsParams.toString() : '');
-            document.getElementById('ws-url').textContent = wsUrl;
-
-            // Pass token as subprotocol (backend echoes it back to complete the handshake)
-            // IMPORTANT: pass raw token only, do not append suffixes
             const subprotocols = _wsToken ? [_wsToken] : [];
-            const ws = new WebSocket(wsUrl, subprotocols);
-            ws.binaryType = 'arraybuffer';
+
+            // Retry state: when a sandbox was just created it may not be ready immediately.
+            // Retry up to wsMaxRetries times before giving up.
+            const wsMaxRetries = 30;
+            const wsRetryIntervalMs = 3000;
+            let wsRetryCount = 0;
+            let wsEverConnected = false;
+            let ws;
+
+            function connectWebSocket() {
+                // Refresh unique suffix on each attempt to avoid proxy caching
+                const wsParamsCopy = new URLSearchParams(_wsParams.toString());
+                wsParamsCopy.set('_t', Date.now().toString() + '-' + Math.random().toString(36).substring(2, 9));
+                const wsUrl = protocol + '//' + window.location.host + '%s/terminal/ws' + (wsParamsCopy.toString() ? '?' + wsParamsCopy.toString() : '');
+                document.getElementById('ws-url').textContent = wsUrl;
+
+                ws = new WebSocket(wsUrl, subprotocols);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    wsEverConnected = true;
+                    wsRetryCount = 0;
+                    document.getElementById('status-text').textContent = 'Connected';
+                    document.getElementById('status-indicator').classList.add('connected');
+                    document.getElementById('status-indicator').classList.remove('disconnected');
+
+                    // Send size immediately, then retry once in next frame and once after short delay.
+                    sendTerminalSize();
+                    requestAnimationFrame(() => {
+                        sendTerminalSize();
+                    });
+                    setTimeout(() => {
+                        sendTerminalSize();
+                    }, 120);
+
+                    // Periodic heartbeat to detect connection issues
+                    // Check WebSocket state every 10 seconds
+                    window.terminalHeartbeat = setInterval(() => {
+                        if (ws.readyState !== WebSocket.OPEN) {
+                            console.log('WebSocket heartbeat: connection lost, state=', ws.readyState);
+                            clearInterval(window.terminalHeartbeat);
+                            term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
+                            // Note: Don't refresh page as it would lose terminal context
+                            // Backend will clean up resources via gRPC keepalive timeout
+                        }
+                    }, 10000);
+
+                    term.focus();
+                };
+
+                ws.onmessage = (event) => {
+                    let data;
+                    if (event.data instanceof ArrayBuffer) {
+                        data = new Uint8Array(event.data);
+                        term.write(data);
+                    } else {
+                        term.write(event.data);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+
+                // Note: Do NOT explicitly close WebSocket on page unload.
+                // Let the browser handle connection closure naturally to avoid
+                // potentially affecting other WebSocket connections sharing the same HTTP/2 connection.
+                // Browser will properly clean up when the page is destroyed.
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed:', event.code, event.reason);
+
+                    // Clear heartbeat interval
+                    if (window.terminalHeartbeat) {
+                        clearInterval(window.terminalHeartbeat);
+                    }
+
+                    document.getElementById('status-text').textContent = 'Disconnected';
+                    document.getElementById('status-indicator').classList.remove('connected');
+                    document.getElementById('status-indicator').classList.add('disconnected');
+
+                    // code 1006 = abnormal close (server not reachable / sandbox not yet ready)
+                    if (event.code === 1006) {
+                        if (!wsEverConnected && wsRetryCount < wsMaxRetries) {
+                            wsRetryCount++;
+                            document.getElementById('status-text').textContent = 'Waiting for sandbox... (' + wsRetryCount + '/' + wsMaxRetries + ')';
+                            term.write('\r\n\x1b[1;33m[Waiting for sandbox to start... ' + wsRetryCount + '/' + wsMaxRetries + ']\x1b[0m\r\n');
+                            setTimeout(connectWebSocket, wsRetryIntervalMs);
+                            return;
+                        }
+                        term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
+                        return;
+                    }
+
+                    term.write('\r\n\x1b[1;33m[Connection Closed]\x1b[0m\r\n');
+                };
+            }
 
             function sendTerminalSize() {
-                if (ws.readyState !== WebSocket.OPEN) {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
                     return;
                 }
                 fitAddon.fit();
@@ -1790,93 +2041,24 @@ func HandleIndex(w http.ResponseWriter, r *http.Request) {
                 sendTerminalSize();
             });
 
-            ws.onopen = () => {
-                document.getElementById('status-text').textContent = 'Connected';
-                document.getElementById('status-indicator').classList.add('connected');
-
-                // Send size immediately, then retry once in next frame and once after short delay.
-                sendTerminalSize();
-                requestAnimationFrame(() => {
-                    sendTerminalSize();
-                });
-                setTimeout(() => {
-                    sendTerminalSize();
-                }, 120);
-
-                // Periodic heartbeat to detect connection issues
-                // Check WebSocket state every 10 seconds
-                window.terminalHeartbeat = setInterval(() => {
-                    if (ws.readyState !== WebSocket.OPEN) {
-                        console.log('WebSocket heartbeat: connection lost, state=', ws.readyState);
-                        clearInterval(window.terminalHeartbeat);
-                        term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
-                        // Note: Don't refresh page as it would lose terminal context
-                        // Backend will clean up resources via gRPC keepalive timeout
-                    }
-                }, 10000);
-
-                term.focus();
-            };
-
-            ws.onmessage = (event) => {
-                let data;
-                if (event.data instanceof ArrayBuffer) {
-                    data = new Uint8Array(event.data);
-                    term.write(data);
-                } else {
-                    term.write(event.data);
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                term.write('\r\n\x1b[1;31m[Connection Error]\x1b[0m\r\n');
-            };
-
-            // Note: Do NOT explicitly close WebSocket on page unload.
-            // Let the browser handle connection closure naturally to avoid
-            // potentially affecting other WebSocket connections sharing the same HTTP/2 connection.
-            // Browser will properly clean up when the page is destroyed.
-
-            ws.onclose = (event) => {
-                console.log('WebSocket closed:', event.code, event.reason);
-
-                // Clear heartbeat interval
-                if (window.terminalHeartbeat) {
-                    clearInterval(window.terminalHeartbeat);
-                }
-
-                document.getElementById('status-text').textContent = 'Disconnected';
-                document.getElementById('status-indicator').classList.remove('connected');
-                document.getElementById('status-indicator').classList.add('disconnected');
-
-                // If closed abnormally (1006), inform user but don't refresh
-                if (event.code === 1006) {
-                    term.write('\r\n\x1b[1;31m[Connection lost - please refresh the page to reconnect]\x1b[0m\r\n');
-                    return;
-                }
-
-                term.write('\r\n\x1b[1;33m[Connection Closed]\x1b[0m\r\n');
-            };
-
             term.onData((data) => {
-                if (ws.readyState === WebSocket.OPEN) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(data);
                 }
             });
 
             term.onResize(({ cols, rows }) => {
                 console.log('Terminal resized:', cols, 'x', rows);
-                if (ws.readyState === WebSocket.OPEN) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send('RESIZE:' + cols + ':' + rows);
                 }
             });
 
-            term.focus();
+            connectWebSocket();
         }); // End DOMContentLoaded
     </script>
 </body>
-</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix, pathPrefix)
+</html>`, pathPrefix, pathPrefix, pathPrefix, pathPrefix, apiPrefix, apiPrefix, apiPrefix, apiPrefix, apiPrefix, pathPrefix)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
 }

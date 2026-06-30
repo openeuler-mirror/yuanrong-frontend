@@ -19,7 +19,6 @@ package util
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
@@ -46,7 +45,7 @@ type invokerLibruntime interface {
 		acquireOpt api.InvokeOptions) (api.InstanceAllocation, error)
 
 	ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions)
-	Kill(instanceID string, signal int, payload []byte) (err error)
+	Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) (err error)
 
 	CreateInstanceRaw(createReqRaw []byte) (createRespRaw []byte, err error)
 	InvokeByInstanceIdRaw(invokeReqRaw []byte) (resultRaw []byte, err error)
@@ -113,6 +112,8 @@ type InvokeRequest struct {
 	BusinessType     string
 	TenantID         string
 	AcceptHeader     string
+	RouteAddress     string
+	BypassDataSystem bool
 	ForceInvoke      bool
 	IsInterrupted    bool
 	SessionCtxID     string
@@ -121,10 +122,15 @@ type InvokeRequest struct {
 
 // SSEChan -
 type SSEChan struct {
-	Event    chan []byte
+	Event    chan sseEvent
 	EventErr error
 	// WaitEvent 用于通知sse消息处理结束，防止主流程和getEvent回调阻塞等待
 	WaitEvent chan struct{}
+}
+
+type sseEvent struct {
+	Data []byte
+	Err  error
 }
 
 // Client is used to invoke an instance and wait for its response
@@ -227,8 +233,10 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		res = result
 		resErr = err
 		wait <- struct{}{}
-		if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
-			fmt.Printf("failed to decrease object ref,err: %s", err.Error())
+		if !req.BypassDataSystem {
+			if _, err := c.clientLibruntime.GDecreaseRef([]string{objID}); err != nil {
+				fmt.Printf("failed to decrease object ref,err: %s", err.Error())
+			}
 		}
 	})
 	log.GetLogger().Debugf("invoke AcceptHeader: %s, requestId: %s, objID: %s, instanceId: %s",
@@ -238,14 +246,13 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		return res, resErr
 	}
 	sseChan := &SSEChan{
-		Event:     make(chan []byte, 100), // 使用100大小缓冲区，防止libruntime侧回写event消息阻塞
+		Event:     make(chan sseEvent, 100), // 使用100大小缓冲区，防止libruntime侧回写event消息阻塞
 		WaitEvent: make(chan struct{}, 1),
 	}
 	c.clientLibruntime.GetEvent(objID, func(result []byte, err error) {
 		log.GetLogger().Debugf("event msg: %s, size: %d, objID: %s", string(result), len(result), objID)
 		select {
-		case sseChan.Event <- result:
-			sseChan.EventErr = err
+		case sseChan.Event <- sseEvent{Data: result, Err: err}:
 		case <-sseChan.WaitEvent:
 			return
 		}
@@ -261,6 +268,14 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 			log.GetLogger().Errorf("notify response error, objID: %s, err: %v", objID, resErr)
 			return res, resErr
 		}
+	case <-sseChan.WaitEvent:
+		if sseChan.EventErr != nil {
+			log.GetLogger().Errorf("handler sse event failed, objID: %s, err: %v", objID, sseChan.EventErr)
+			return nil, sseChan.EventErr
+		}
+		log.GetLogger().Debugf("finish handle sse event, requestId: %s, objID: %s, instanceId: %s",
+			req.RequestID, objID, req.InstanceID)
+		return res, nil
 	}
 	<-sseChan.WaitEvent
 	if sseChan.EventErr != nil {
@@ -287,22 +302,18 @@ func (c *defaultClient) handleEvent(objID string, sseChan *SSEChan, req InvokeRe
 			return
 		case <-stopSSEHandle:
 			return
-		case data, ok := <-sseChan.Event:
+		case event, ok := <-sseChan.Event:
 			if !ok {
 				log.GetLogger().Debugf("event channel closed, objID: %s", objID)
 				return
 			}
+			if event.Err != nil {
+				sseChan.EventErr = event.Err
+				return
+			}
+			data := event.Data
 			if bytes.Equal(data, []byte("yuanrong_event_EOF")) {
 				log.GetLogger().Debugf("event recive EOF, objID: %s", objID)
-				return
-			}
-			if sseChan.EventErr != nil {
-				return
-			}
-			var v interface{}
-			log.GetLogger().Debugf("event msg: %s, size: %d, objID: %s", string(data), len(data), objID)
-			sseChan.EventErr = json.Unmarshal(data, &v)
-			if sseChan.EventErr != nil {
 				return
 			}
 			_, sseChan.EventErr = req.ResponseWriter.SSEWrite(data)
@@ -345,6 +356,9 @@ func convertCommonInvokeOption(req InvokeRequest) api.InvokeOptions {
 		Timeout:          int(req.InvokeTimeout),
 		CustomExtensions: customExtensions,
 		InvokeLabels:     map[string]string{},
+	}
+	if req.RouteAddress != "" {
+		invokeOpt.CreateOpt = map[string]string{"YR_ROUTE": req.RouteAddress}
 	}
 	if req.AcceptHeader == httpconstant.AcceptEventStream {
 		invokeOpt.InvokeLabels["accept"] = httpconstant.AcceptEventStream
@@ -413,7 +427,7 @@ func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte) ([]byte, error) {
 }
 
 func (c *defaultClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
-	return c.clientLibruntime.Kill(instanceID, signal, payload)
+	return c.clientLibruntime.Kill(instanceID, signal, payload, api.InvokeOptions{})
 }
 
 func (c *defaultClient) CreateInstanceByLibRt(

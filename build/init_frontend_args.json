@@ -57,6 +57,7 @@
     "businessType": 0,
     "diskMonitorEnable": false,
     "authenticationEnable": false,
+    "leaseBypass": {frontend_lease_bypass},
     "trafficLimitDisable": true,
     "functionCapability": 1,
     "retry": {

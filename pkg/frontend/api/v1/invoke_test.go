@@ -627,6 +627,22 @@ func TestWriteHTTPResponse(t *testing.T) {
 			convey.So(ctx.Writer.Status(), convey.ShouldEqual, http.StatusOK)
 		})
 
+		convey.Convey("When writing an SSE response without a response writer", func() {
+			rw := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rw)
+			processCtx := &types.InvokeProcessContext{
+				StatusCode: http.StatusOK,
+				RespHeader: map[string]string{},
+				RespBody:   []byte("test response"),
+				ReqHeader:  map[string]string{"accept": "text/event-stream"},
+			}
+
+			writeHTTPResponse(ctx, processCtx)
+			convey.So(ctx.Writer.Status(), convey.ShouldEqual, http.StatusOK)
+			convey.So(rw.Body.String(), convey.ShouldContainSubstring, "data: test response\n\n")
+			convey.So(rw.Body.String(), convey.ShouldContainSubstring, "data: [DONE]\n\n")
+		})
+
 		convey.Convey("When writing an SSE response with an error", func() {
 			processCtx.ReqHeader["Accept"] = "text/event-stream"
 			processCtx.ResponseWriter = &mockResponseWriter{

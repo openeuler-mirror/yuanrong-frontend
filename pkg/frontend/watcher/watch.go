@@ -27,7 +27,11 @@ import (
 func StartWatch(stopCh <-chan struct{}) error {
 	log.GetLogger().Infof("FaaS-Frontend etcd watcher starting...")
 	go startWatchScheduler(stopCh)
-	go startWatchRemoteClientLease(stopCh)
+	if !config.GetConfig().LeaseBypass {
+		go startWatchRemoteClientLease(stopCh)
+	} else {
+		log.GetLogger().Infof("lease bypass enabled, skip starting remoteClientLease watcher")
+	}
 	go startWatchFunctionMeta(stopCh)
 	go startWatchFunctionCR(stopCh)
 	if config.GetConfig().BusinessType == constant.BusinessTypeFG {

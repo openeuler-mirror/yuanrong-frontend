@@ -108,6 +108,14 @@ func DeleteFaasManager(in *types.InstanceInfo) {
 }
 
 func invokeFaasManager(traceID, remoteClientID, op string) *lease.LeaseResponse {
+	if config.GetConfig().LeaseBypass {
+		log.GetLogger().Infof("lease bypass enabled, skip op=%s remoteClientID=%s traceID=%s",
+			op, remoteClientID, traceID)
+		return &lease.LeaseResponse{
+			Code:    commonargs.ErrorCode_ERR_NONE,
+			Message: "lease bypassed",
+		}
+	}
 	args := []*api.Arg{
 		{
 			Type: api.Value,

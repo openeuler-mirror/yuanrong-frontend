@@ -147,6 +147,7 @@ type Config struct {
 	EnableEvent             bool             `json:"enableEvent" valid:"optional"`
 	WatchedConfigFilePath   string           `json:"watchedConfigFilePath" valid:"optional"`
 	AccessFaaSSchedulerType string           `json:"accessFaaSSchedulerType" valid:"optional"`
+	LeaseBypass             bool             `json:"leaseBypass" valid:"optional"`
 	// Async invocation config
 	AsyncInvocation *AsyncInvocationConfig `json:"asyncInvocation" valid:"optional"`
 }
