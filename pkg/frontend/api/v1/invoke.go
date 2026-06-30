@@ -185,12 +185,13 @@ func writeInterfaceLog(invokeCtx *types.InvokeProcessContext) {
 	if len(message) > 100 { // 仅保留前100个字符
 		message = message[:100] // 仅保留前100个字符
 	}
-	// tenantId | funcName | version | traceId | instanceLabel | sessionId | statusCode | code | totalCost |
-	logContent := fmt.Sprintf("invocation |%s | %s | %s | %s | %s | %s | %d | %s | %.2f | %s",
+	// tenantId | funcName | version | traceId | instanceLabel | sessionId | sessionCtxID | statusCode | code | totalCost |
+	logContent := fmt.Sprintf("invocation |%s | %s | %s | %s | %s | %s | %s | %d | %s | %.2f | %s",
 		tenantId, funcName, version,
 		invokeCtx.TraceID,
 		invokeCtx.ReqHeader[httpconstant.HeaderInstanceLabel],
 		invokeCtx.ReqHeader[httpconstant.HeaderInstanceSession],
+		invokeCtx.SessionCtxID,
 		invokeCtx.StatusCode,
 		invokeCtx.RespHeader[httpconstant.HeaderInnerCode],
 		totalTime.Seconds()*1000, // 秒转换成毫秒
