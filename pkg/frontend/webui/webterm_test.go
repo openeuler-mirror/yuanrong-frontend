@@ -141,6 +141,7 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 		StatusCode: int32(constant.KernelInstanceStatusRunning),
 		StatusMsg:  "running",
 		StartTime:  "1700000000",
+		Image:      "registry.example.com/ns/image:tag",
 		Resources: map[string]execendpoint.Resource{
 			"CPU":          localResource(500),
 			"Memory":       localResource(1024),
@@ -196,8 +197,63 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 		body[0]["limit_npu"] != float64(4) {
 		t.Fatalf("expected resource limit fields, got %+v", body[0])
 	}
+	if body[0]["image"] != "registry.example.com/ns/image:tag" {
+		t.Fatalf("expected image field, got %+v", body[0])
+	}
 	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds <= 0 {
 		t.Fatalf("expected positive runtime_seconds, got %+v", body[0]["runtime_seconds"])
+	}
+}
+
+func TestSummarizeInstancesExtractsImageFromRootfs(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		CreateOptions: map[string]string{
+			"rootfs": `{"runtime":"runsc","type":"image","readonly":false,"imageurl":"registry.example.com/ns/image:tag"}`,
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "registry.example.com/ns/image:tag" {
+		t.Fatalf("image = %q, want registry.example.com/ns/image:tag", body[0]["image"])
+	}
+}
+
+func TestSummarizeInstancesFormatsS3RootfsAsImage(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		ScheduleOption: struct {
+			Extension map[string]string `json:"extension"`
+		}{
+			Extension: map[string]string{
+				"rootfs": `{"runtime":"runsc","type":"s3","imageurl":"registry.example.com","storageInfo":{"endpoint":"cn-hangzhou.example.com","bucket":"crfs-dev","object":"rootfs.img","accessKey":"secret-ak","secretKey":"secret-sk"}}`,
+			},
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "s3://crfs-dev/rootfs.img" {
+		t.Fatalf("image = %q, want s3://crfs-dev/rootfs.img", body[0]["image"])
+	}
+}
+
+func TestSummarizeInstancesUsesPlainRootfsAsImage(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		CreateOptions: map[string]string{
+			"rootfs": "python:3.12-slim",
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "python:3.12-slim" {
+		t.Fatalf("image = %q, want python:3.12-slim", body[0]["image"])
 	}
 }
 

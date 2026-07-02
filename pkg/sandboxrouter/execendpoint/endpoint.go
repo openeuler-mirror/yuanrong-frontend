@@ -54,6 +54,7 @@ type Summary struct {
 	InstanceID     string
 	TenantID       string
 	Function       string
+	Image          string
 	StatusCode     int32
 	StatusMsg      string
 	StatusType     int32
