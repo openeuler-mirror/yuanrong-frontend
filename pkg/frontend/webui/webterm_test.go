@@ -190,6 +190,12 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 		body[0]["required_npu"] != float64(2) {
 		t.Fatalf("expected resource quota fields, got %+v", body[0])
 	}
+	if body[0]["limit_cpu"] != float64(1000) ||
+		body[0]["limit_mem"] != float64(2048) ||
+		body[0]["limit_gpu"] != float64(2) ||
+		body[0]["limit_npu"] != float64(4) {
+		t.Fatalf("expected resource limit fields, got %+v", body[0])
+	}
 	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds <= 0 {
 		t.Fatalf("expected positive runtime_seconds, got %+v", body[0]["runtime_seconds"])
 	}
@@ -342,6 +348,7 @@ func TestHandleInstancesRejectsInvalidPaginationBeforeLocalLookup(t *testing.T) 
 func localResource(value float64) execendpoint.Resource {
 	var resource execendpoint.Resource
 	resource.Scalar.Value = value
+	resource.Scalar.Limit = value * 2
 	return resource
 }
 
