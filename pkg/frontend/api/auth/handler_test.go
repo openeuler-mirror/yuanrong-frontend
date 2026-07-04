@@ -429,7 +429,7 @@ func TestUserHandlerAcceptsPermanentToken(t *testing.T) {
 
 	token := strings.Join([]string{
 		base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)),
-		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"tenant-permanent","exp":-1,"role":"developer"}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"tenant-permanent","exp":0,"role":"developer"}`)),
 		"signature",
 	}, ".")
 	c.Request.AddCookie(&http.Cookie{Name: CookieIamToken, Value: token})

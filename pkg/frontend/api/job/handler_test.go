@@ -265,7 +265,7 @@ func TestDeleteJobHandler(t *testing.T) {
 		})
 		convey.Convey("when statusCode is "+strconv.Itoa(http.StatusInternalServerError), func() {
 			defer gomonkey.ApplyMethodFunc(mock, "Kill",
-				func(instanceID string, signal int, payload []byte) error {
+				func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
 					return errors.New("failed delete app")
 				}).Reset()
 			storeDefaultApp(submissionId, 6, 1)
@@ -314,7 +314,7 @@ func TestStopJobHandler(t *testing.T) {
 		})
 		convey.Convey("when statusCode is "+strconv.Itoa(http.StatusInternalServerError), func() {
 			defer gomonkey.ApplyMethodFunc(mock, "Kill",
-				func(instanceID string, signal int, payload []byte) error {
+				func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
 					return errors.New("failed stop app")
 				}).Reset()
 			storeDefaultApp(submissionId, 3, 1)

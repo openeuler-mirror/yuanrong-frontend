@@ -33,6 +33,8 @@ import (
 	"frontend/pkg/frontend/common/httpconstant"
 )
 
+const sseEOFWaitCheckTimeout = 100 * time.Millisecond
+
 func TestNewClientLibruntime(t *testing.T) {
 	mock := &mockUtils.FakeLibruntimeSdkClient{}
 	Convey("TestNewClientLibruntime", t, func() {
@@ -160,7 +162,11 @@ func Test_defaultClient_getRes(t *testing.T) {
 
 		Convey("When request is SSE and event EOF arrives before async result", func() {
 			var written []byte
-			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {}
+			asyncDone := make(chan struct{})
+			mock.getAsync = func(objectID string, cb api.GetAsyncCallback) {
+				<-asyncDone
+				cb(result, nil)
+			}
 			mock.getEvent = func(objectID string, cb api.GetEventCallback) {
 				go func() {
 					cb([]byte("stream-data"), nil)
@@ -185,11 +191,17 @@ func Test_defaultClient_getRes(t *testing.T) {
 			}()
 			select {
 			case <-done:
+				t.Fatal("getRes should wait for async result after SSE EOF")
+			case <-time.After(sseEOFWaitCheckTimeout):
+			}
+			close(asyncDone)
+			select {
+			case <-done:
 				So(err, ShouldBeNil)
-				So(res, ShouldBeNil)
+				So(string(res), ShouldEqual, "response")
 				So(string(written), ShouldEqual, "stream-data")
 			case <-time.After(time.Second):
-				t.Fatal("getRes should return when SSE EOF arrives even if async result is not ready")
+				t.Fatal("getRes should return after async result is ready")
 			}
 		})
 	})
