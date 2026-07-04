@@ -71,6 +71,22 @@ func TestApplyEventFormatsS3RootfsAsImage(t *testing.T) {
 	}
 }
 
+func TestApplyEventFormatsOSSRootfsAsS3Image(t *testing.T) {
+	s := NewStore()
+	const ossRootfsJSON = `{"instanceID":"inst-abc","tenantID":"default","instanceStatus":{"code":3},` +
+		`"scheduleOption":{"extension":{"rootfs":"{\"runtime\":\"runsc\",\"type\":\"s3\",\"imageurl\":\"oss-cn-hangzhou.aliyuncs.com\",\"storageInfo\":{\"endpoint\":\"https://oss-cn-hangzhou.aliyuncs.com\",\"bucket\":\"yr-rootfs-prod\",\"object\":\"/images/python310/rootfs.img\",\"accessKey\":\"secret-ak\",\"secretKey\":\"secret-sk\"}}"}}}`
+
+	ApplyInstanceEvent(s, EventPut, instanceKey, []byte(ossRootfsJSON))
+
+	summaries := s.ListSummaries("default", "")
+	if len(summaries) != 1 {
+		t.Fatalf("expected one running summary, got %+v", summaries)
+	}
+	if summaries[0].Image != "s3://yr-rootfs-prod/images/python310/rootfs.img" {
+		t.Fatalf("summary image = %q, want s3://yr-rootfs-prod/images/python310/rootfs.img", summaries[0].Image)
+	}
+}
+
 func TestApplyEventUsesPlainRootfsAsImage(t *testing.T) {
 	s := NewStore()
 	const plainRootfsJSON = `{"instanceID":"inst-abc","tenantID":"default","instanceStatus":{"code":3},` +

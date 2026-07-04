@@ -241,6 +241,26 @@ func TestSummarizeInstancesFormatsS3RootfsAsImage(t *testing.T) {
 	}
 }
 
+func TestSummarizeInstancesFormatsOSSRootfsAsS3Image(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		ScheduleOption: struct {
+			Extension map[string]string `json:"extension"`
+		}{
+			Extension: map[string]string{
+				"rootfs": `{"runtime":"runsc","type":"s3","imageurl":"oss-cn-hangzhou.aliyuncs.com","storageInfo":{"endpoint":"https://oss-cn-hangzhou.aliyuncs.com","bucket":"yr-rootfs-prod","object":"/images/python310/rootfs.img","accessKey":"secret-ak","secretKey":"secret-sk"}}`,
+			},
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "s3://yr-rootfs-prod/images/python310/rootfs.img" {
+		t.Fatalf("image = %q, want s3://yr-rootfs-prod/images/python310/rootfs.img", body[0]["image"])
+	}
+}
+
 func TestSummarizeInstancesUsesPlainRootfsAsImage(t *testing.T) {
 	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
 		InstanceID: "instance-1",
