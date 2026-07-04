@@ -20,10 +20,13 @@ import "net/url"
 
 // RouteTarget is a resolved backend for a RouteKey. Scheme decides whether the
 // proxy uses the http or https (backend-TLS) transport. Source is filled by the
-// resolver (e.g. "instanceinfo-watch").
+// resolver (e.g. "instanceinfo-watch"). Tenant is the owning tenant id, taken
+// from the authoritative /sn/instance etcd key, used for router-side
+// authorization (the request's JWT tenant must match); "" when unknown.
 type RouteTarget struct {
 	Key       RouteKey
 	TargetURL *url.URL
 	Scheme    string
 	Source    string
+	Tenant    string
 }

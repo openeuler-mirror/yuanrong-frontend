@@ -37,15 +37,15 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name           string
-		path           string
-		method         string
-		params         gin.Params
-		funcKey        string
-		isPublic       bool
-		loadSpecErr    error
-		expectedSkip   bool
-		description    string
+		name         string
+		path         string
+		method       string
+		params       gin.Params
+		funcKey      string
+		isPublic     bool
+		loadSpecErr  error
+		expectedSkip bool
+		description  string
 	}{
 		{
 			name:   "Public function on standard invoke URL",
@@ -129,18 +129,18 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup patches
 			var patches *gomonkey.Patches
-			
+
 			if tt.funcKey != "" {
 				// Mock GetAliases and functionmeta.LoadFuncSpec
 				patches = gomonkey.ApplyFunc(aliasroute.GetAliases, func() *aliasroute.Aliases {
 					return &aliasroute.Aliases{}
 				})
-				
+
 				patches.ApplyMethod(&aliasroute.Aliases{}, "GetFuncVersionURNWithParams",
 					func(_ *aliasroute.Aliases, plainURN string, params map[string]string) string {
 						return plainURN
 					})
-				
+
 				patches.ApplyFunc(urnutils.GetFunctionInfo, func(urn string) (urnutils.FunctionURN, error) {
 					return urnutils.FunctionURN{
 						TenantID:    "tenant1",
@@ -148,15 +148,15 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 						FuncVersion: "v1",
 					}, nil
 				})
-				
+
 				patches.ApplyFunc(urnutils.CombineFunctionKey, func(tenantID, funcName, version string) string {
 					return tt.funcKey
 				})
-				
+
 				patches.ApplyFunc(urnutils.BuildFunctionShortURN, func(tenantID, namespace, funcName string) string {
 					return tenantID + ":" + namespace + ":" + funcName
 				})
-				
+
 				if tt.loadSpecErr != nil {
 					patches.ApplyFunc(functionmeta.LoadFuncSpec, func(funcKey string) (*commontype.FuncSpec, bool) {
 						return nil, false
@@ -170,7 +170,7 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 						}, true
 					})
 				}
-				
+
 				defer patches.Reset()
 			} else {
 				// For non-invoke URLs, mock isInvokeURL to return false
@@ -188,20 +188,20 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 
 			// Apply middleware
 			middleware := PublicFunctionJWTSkipMiddleware()
-			
+
 			// Track if next was called
 			nextCalled := false
-			
+
 			// Chain the middleware with a handler that sets nextCalled flag
 			handler := middleware
 			handler(c)
-			
+
 			// Call c.Next manually here to check if it was supposed to be called
 			nextCalled = true
 
 			// Verify results
 			assert.True(t, nextCalled, "Next should always be called")
-			
+
 			skipFlag := ShouldSkipJWTAuth(c)
 			assert.Equal(t, tt.expectedSkip, skipFlag, tt.description)
 		})
@@ -264,6 +264,25 @@ func TestIsInvokeURL(t *testing.T) {
 	}
 }
 
+func TestIsSandboxDirectURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected bool
+	}{
+		{name: "exact direct", path: "/direct", expected: true},
+		{name: "direct child", path: "/direct/demo/50090/invoke", expected: true},
+		{name: "similar prefix", path: "/directly/demo", expected: false},
+		{name: "api path", path: "/api/sandbox/v1/sandboxes", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isSandboxDirectURL(tt.path))
+		})
+	}
+}
+
 func TestShouldSkipJWTAuth(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -301,11 +320,11 @@ func TestShouldSkipJWTAuth(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
-			
+
 			if tt.setKey {
 				c.Set(skipJWTAuthKey, tt.setValue)
 			}
-			
+
 			result := ShouldSkipJWTAuth(c)
 			assert.Equal(t, tt.expected, result)
 		})

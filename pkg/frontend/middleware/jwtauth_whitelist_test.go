@@ -103,6 +103,12 @@ func TestIsInAuthWhitelist(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "tunnel alias is not a static whitelist rule",
+			path:     "/tunnel/sandbox-demo",
+			method:   "GET",
+			expected: false,
+		},
+		{
 			name:     "auth login page - should be in whitelist",
 			path:     "/auth/login-page",
 			method:   "GET",
@@ -289,8 +295,8 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 			method:             "POST",
 			enableAuth:         true,
 			authHeader:         "",
-			expectedStatusCode: http.StatusOK,
-			shouldCallNext:     true,
+			expectedStatusCode: http.StatusUnauthorized,
+			shouldCallNext:     false,
 		},
 		{
 			name:               "terminal path now requires auth",
@@ -298,7 +304,25 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 			method:             "GET",
 			enableAuth:         true,
 			authHeader:         "",
-			expectedStatusCode: http.StatusOK, // No auth header but optional auth
+			expectedStatusCode: http.StatusOK, // whitelisted endpoint handles auth in handler
+			shouldCallNext:     true,
+		},
+		{
+			name:               "plaintext tunnel path should skip auth",
+			path:               "/tunnel/sandbox-demo",
+			method:             "GET",
+			enableAuth:         true,
+			authHeader:         "",
+			expectedStatusCode: http.StatusOK,
+			shouldCallNext:     true,
+		},
+		{
+			name:               "tls tunnel path should also skip auth",
+			path:               "/tunnel/sandbox-demo",
+			method:             "GET",
+			enableAuth:         true,
+			authHeader:         "",
+			expectedStatusCode: http.StatusOK,
 			shouldCallNext:     true,
 		},
 		{
@@ -434,6 +458,9 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 
 			// Create request
 			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if tt.name == "tls tunnel path should also skip auth" {
+				req.Header.Set("X-Forwarded-Proto", "https")
+			}
 			if tt.authHeader != "" {
 				req.Header.Set(jwtauth.HeaderXAuth, tt.authHeader)
 			}

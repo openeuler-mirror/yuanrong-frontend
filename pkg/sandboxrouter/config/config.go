@@ -33,6 +33,24 @@ type SandboxRouterConfig struct {
 	TLSCertFile         string `json:"tlsCertFile" valid:"optional"`
 	TLSKeyFile          string `json:"tlsKeyFile" valid:"optional"`
 
+	// Router-side JWT auth: when EnableJWTAuth, every request must carry a valid
+	// JWT in X-Auth (authenticated, and authorized against the target sandbox's
+	// tenant). ValidateIAM adds an IAM-server round-trip per request that
+	// actually verifies the token; WITHOUT it the router only decodes the JWT
+	// locally and checks expiry — it does NOT verify the signature, so a forged
+	// token passes. Local-only mode is for clusters with token auth disabled
+	// (e.g. AIO test); production MUST set ValidateIAM=true. RRTPort is the RRT
+	// built-in atomic-ops container port: X-Auth is forwarded to it (RRT
+	// re-authenticates) but stripped for user service ports so they never see
+	// the platform token.
+	EnableJWTAuth bool `json:"enableJWTAuth" valid:"optional"`
+	ValidateIAM   bool `json:"validateIAM" valid:"optional"`
+	RRTPort       int  `json:"rrtPort" valid:"optional"`
+	// TunnelPort is the reverse-tunnel WS control port (defaults to 8765, the
+	// SDK's TUNNEL_WS_PORT). Like RRTPort it requires a token; all other
+	// (user-forwarded) ports are public.
+	TunnelPort int `json:"tunnelPort" valid:"optional"`
+
 	// Backend TLS for https-protocol sandbox ports (equivalent of FunctionMaster's
 	// serversTransport). Defaults mirror the platform's yr-backend-tls@file, which
 	// currently uses insecureSkipVerify; set BackendTLSVerify to opt into verification.
@@ -50,6 +68,7 @@ const (
 	defaultRouteBackend       = "instanceinfo-watch"
 	defaultResolveTimeoutMs   = 500
 	defaultIdleTimeoutSeconds = 610
+	defaultTunnelPort         = 8765
 )
 
 // ApplyDefaults fills zero-valued fields with their defaults, leaving any
@@ -69,5 +88,8 @@ func (c *SandboxRouterConfig) ApplyDefaults() {
 	}
 	if c.IdleTimeoutSeconds == 0 {
 		c.IdleTimeoutSeconds = defaultIdleTimeoutSeconds
+	}
+	if c.TunnelPort == 0 {
+		c.TunnelPort = defaultTunnelPort
 	}
 }

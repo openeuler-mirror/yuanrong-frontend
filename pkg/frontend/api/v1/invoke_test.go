@@ -103,6 +103,14 @@ func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api
 	return InstanceID, nil
 }
 
+func (c *fakeClient) InvokeInstanceByLibRt(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) (returnObjectID string, err error) {
+	return "", nil
+}
+
+func (c *fakeClient) InvokeInstanceByLibRtAndGet(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) ([]byte, error) {
+	return nil, nil
+}
+
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -193,24 +201,17 @@ func (c *fakeFailedClient) InvokeByName(request util.InvokeRequest) ([]byte, err
 	return res, errors.New("runtime initialization timed out after 3s")
 }
 
-func (c *fakeFailedClient) CreateInstance(req *functionsystem.CreateRequest) (*functionsystem.CreateResponse, error) {
-	// TODO implement me
-	panic("implement me")
-}
-
-func (c *fakeFailedClient) InvokeInstance(req *functionsystem.InvokeRequest) (*functionsystem.NotifyRequest, error) {
-	// TODO implement me
-	panic("implement me")
-}
-
-func (c *fakeFailedClient) Kill(req *functionsystem.KillRequest) (*functionsystem.KillResponse, error) {
-	// TODO implement me
-	panic("implement me")
-}
-
 func (c *fakeFailedClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
 	InstanceID := ""
 	return InstanceID, nil
+}
+
+func (c *fakeFailedClient) InvokeInstanceByLibRt(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) (returnObjectID string, err error) {
+	return "", errors.New("invoke failed")
+}
+
+func (c *fakeFailedClient) InvokeInstanceByLibRtAndGet(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) ([]byte, error) {
+	return nil, errors.New("invoke failed")
 }
 
 func (c *fakeFailedClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
@@ -592,7 +593,7 @@ func (m *mockResponseWriter) SSEWrite(data []byte) (int, error) {
 
 func TestWriteHTTPResponse(t *testing.T) {
 	convey.Convey("Test WriteHTTPResponse", t, func() {
-		// 初始化测试用的上下文和过程上下文
+		// Initialize test context and process context.
 		gin.SetMode(gin.TestMode)
 		rw := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(rw)

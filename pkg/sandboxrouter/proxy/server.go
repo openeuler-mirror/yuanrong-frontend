@@ -28,6 +28,9 @@ import (
 	"strconv"
 	"time"
 
+	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/logger/log"
+	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/sandboxrouter/route"
 )
 
@@ -41,13 +44,18 @@ type Resolver interface {
 // reqInfo is the per-request routing decision passed to the reverse proxy via
 // the request context.
 type reqInfo struct {
-	parsed *route.ParsedRequest
-	target *route.RouteTarget
+	parsed                *route.ParsedRequest
+	target                *route.RouteTarget
+	frontendAuthenticated bool
 }
 
 type ctxKey int
 
-const reqInfoKey ctxKey = 0
+const (
+	reqInfoKey                    ctxKey = 0
+	internalSrcHeader                    = "X-Internal-Src"
+	internalSrcAuthenticatedValue        = "1"
+)
 
 // Server parses, resolves, and reverse-proxies sandbox traffic. http and https
 // backends use separate transports so https targets can carry backend TLS
@@ -57,6 +65,50 @@ type Server struct {
 	httpTransport  *http.Transport
 	httpsTransport *http.Transport
 	proxy          *httputil.ReverseProxy
+
+	// auth (set via SetAuth): when authEnabled, only the RRT atomic-ops
+	// control port requires a valid JWT. Reverse-tunnel WS is deliberately
+	// public at the router layer: SDK tunnel defaults to plaintext ws:// and
+	// must not carry platform JWTs on that hop. User-forwarded service ports
+	// are also PUBLIC (no token). Legacy direct-to-router rrtPort traffic
+	// preserves X-Auth for compatibility; frontend-authenticated /direct traffic
+	// and all non-RRT ports strip it before reaching the backend.
+	authEnabled bool
+	validateIAM bool
+	rrtPort     uint16
+	tunnelPort  uint16
+}
+
+// SetAuth configures router-side JWT authentication. rrtPort is the RRT
+// built-in atomic-ops port and is the only router-authenticated control port
+// (0 = none). tunnelPort is retained for routing/config compatibility but is
+// intentionally public because reverse tunnel clients do not send JWT on ws://.
+// Other ports are public.
+func (s *Server) SetAuth(enabled, validateIAM bool, rrtPort, tunnelPort uint16) {
+	s.authEnabled = enabled
+	s.validateIAM = validateIAM
+	s.rrtPort = rrtPort
+	s.tunnelPort = tunnelPort
+}
+
+// isControlPort reports whether a port is a sandbox built-in control port
+// that requires router authentication. Only RRT atomic-ops is gated here;
+// reverse-tunnel WS and user-forwarded service ports are public.
+func (s *Server) isControlPort(port uint16) bool {
+	return s.rrtPort != 0 && port == s.rrtPort
+}
+
+func requestFromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func frontendAuthenticatedRequest(r *http.Request) bool {
+	return requestFromLoopback(r) && r.Header.Get(internalSrcHeader) == internalSrcAuthenticatedValue
 }
 
 // New builds a Server over the given resolver with default transports. The
@@ -114,10 +166,41 @@ func (s *Server) roundTrip(req *http.Request) (*http.Response, error) {
 // erroring (not "not found") is 503; upstream failures are mapped in
 // errorHandler to 502/504.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	targetForLog := ""
+	defer func() {
+		log.GetLogger().Infof(
+			"sandboxrouter proxy method(%s) path(%s) target(%s) durationMs(%d) traceID(%s)",
+			r.Method,
+			r.URL.Path,
+			targetForLog,
+			time.Since(started).Milliseconds(),
+			r.Header.Get(constant.HeaderTraceID),
+		)
+	}()
+
 	parsed, err := route.ParsePath(r.URL.Path)
 	if err != nil {
 		http.NotFound(w, r) // 404: no router would match this shape
 		return
+	}
+
+	// Authenticate (token validity) BEFORE resolving, so an unauthenticated
+	// caller gets 401 regardless of whether the route exists. Only RRT
+	// atomic-ops is gated; reverse-tunnel WS and user-forwarded service ports are
+	// public. Requests that came from the local frontend /direct proxy already
+	// passed frontend JWT auth, so do not require or forward the platform token
+	// here.
+	frontendAuthenticated := frontendAuthenticatedRequest(r)
+	authRequired := s.authEnabled && s.isControlPort(parsed.Key.Port) && !frontendAuthenticated
+	var jwtPayload *jwtauth.JWTPayload
+	if authRequired {
+		payload, code, msg := s.authenticateToken(r)
+		if code != 0 {
+			http.Error(w, msg, code)
+			return
+		}
+		jwtPayload = payload
 	}
 
 	target, err := s.resolver.Resolve(r.Context(), parsed.Key)
@@ -129,9 +212,67 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "route unavailable", http.StatusServiceUnavailable) // 503
 		return
 	}
+	if target.TargetURL != nil {
+		targetForLog = target.TargetURL.Redacted()
+	}
 
-	ctx := context.WithValue(r.Context(), reqInfoKey, &reqInfo{parsed: parsed, target: target})
+	// Authorize (tenant ownership) AFTER resolving, against the target's
+	// authoritative tenant. Only enforced for control ports (see above).
+	if authRequired {
+		if code, msg := authorize(jwtPayload, target); code != 0 {
+			http.Error(w, msg, code)
+			return
+		}
+	}
+
+	ctx := context.WithValue(r.Context(), reqInfoKey, &reqInfo{
+		parsed:                parsed,
+		target:                target,
+		frontendAuthenticated: frontendAuthenticated,
+	})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// authenticateToken validates the JWT carried in X-Auth (or the ?token= query
+// fallback used by WebSocket clients): presence, decodability, expiry, and —
+// when validateIAM is set — an IAM-server round-trip. It returns the decoded
+// payload plus (0, "") on success, or an HTTP status + message to reject with.
+func (s *Server) authenticateToken(r *http.Request) (*jwtauth.JWTPayload, int, string) {
+	authHeader := r.Header.Get(jwtauth.HeaderXAuth)
+	if authHeader == "" {
+		authHeader = r.URL.Query().Get("token")
+	}
+	if authHeader == "" {
+		return nil, http.StatusUnauthorized, "missing X-Auth token"
+	}
+	parsedJWT, err := jwtauth.ParseJWT(authHeader)
+	if err != nil || parsedJWT.Payload == nil {
+		return nil, http.StatusUnauthorized, "invalid token"
+	}
+	if parsedJWT.Payload.IsExpired(time.Now()) {
+		return nil, http.StatusUnauthorized, "token expired"
+	}
+	if s.validateIAM {
+		if err := jwtauth.ValidateWithIamServer(authHeader, r.Header.Get("X-Trace-ID")); err != nil {
+			return nil, http.StatusUnauthorized, "token validation failed"
+		}
+	}
+	return parsedJWT.Payload, 0, ""
+}
+
+// authorize checks that the token's tenant (Sub) owns the target sandbox, using
+// the tenant the resolver took from the authoritative /sn/instance key. It
+// fails open when the tenant is unknown (target.Tenant == "" — e.g. an older
+// instance key) so resolvable-but-unattributed routes are not hard-broken;
+// it fails closed (403) on a concrete mismatch.
+func authorize(payload *jwtauth.JWTPayload, target *route.RouteTarget) (int, string) {
+	if payload == nil || target.Tenant == "" || payload.Sub == "" {
+		return 0, ""
+	}
+	if target.Tenant != payload.Sub {
+		return http.StatusForbidden, "tenant not authorized for this sandbox"
+	}
+	return 0, ""
 }
 
 // rewrite rewrites the outbound request to the resolved target, stripping the
@@ -146,6 +287,20 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest) {
 	pr.SetXForwarded()
 	pr.Out.Header.Set("X-Instance-Id", info.parsed.Key.SafeInstanceID)
 	pr.Out.Header.Set("X-Instance-Port", strconv.Itoa(int(info.parsed.Key.Port)))
+
+	// Token handling: the frontend-authenticated /direct hop never forwards the
+	// platform token to RRT. Legacy direct-to-router RRT traffic still preserves
+	// the token for compatibility; user service ports must never see it.
+	stripToken := s.authEnabled && (info.frontendAuthenticated ||
+		!(s.rrtPort != 0 && info.parsed.Key.Port == s.rrtPort))
+	if stripToken {
+		pr.Out.Header.Del(jwtauth.HeaderXAuth)
+		if q := pr.Out.URL.Query(); q.Has("token") {
+			q.Del("token")
+			pr.Out.URL.RawQuery = q.Encode()
+		}
+	}
+	pr.Out.Header.Del(internalSrcHeader)
 }
 
 // errorHandler maps upstream transport failures to Traefik-consistent codes:
