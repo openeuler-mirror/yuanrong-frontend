@@ -275,7 +275,8 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		}
 		log.GetLogger().Debugf("finish handle sse event, requestId: %s, objID: %s, instanceId: %s",
 			req.RequestID, objID, req.InstanceID)
-		return res, nil
+		<-wait
+		return res, resErr
 	}
 	<-sseChan.WaitEvent
 	if sseChan.EventErr != nil {
