@@ -95,3 +95,29 @@ func TestInstanceIDFromKey(t *testing.T) {
 		t.Errorf("instanceIDFromKey(noslash) = %q, want noslash", got)
 	}
 }
+
+// The owning tenant is taken from the instance key and stamped on every target,
+// so the proxy can authorize by tenant.
+func TestApplyStampsTenantFromKey(t *testing.T) {
+	c := NewRouteCache()
+	ApplyInstanceEvent(c, EventPut, applyKey, []byte(applyRunningJSON))
+	tgt, err := getRoute(c)
+	if err != nil {
+		t.Fatalf("route should exist: %v", err)
+	}
+	if tgt.Tenant != "default" {
+		t.Errorf("target Tenant = %q, want default", tgt.Tenant)
+	}
+}
+
+func TestTenantFromKey(t *testing.T) {
+	if got := tenantFromKey(applyKey); got != "default" {
+		t.Errorf("tenantFromKey = %q, want default", got)
+	}
+	if got := tenantFromKey("/sn/instance/business/yrk/function/f/version/v"); got != "" {
+		t.Errorf("tenantFromKey(no tenant seg) = %q, want empty", got)
+	}
+	if got := tenantFromKey("/sn/instance/business/yrk/tenant"); got != "" {
+		t.Errorf("tenantFromKey(trailing tenant) = %q, want empty", got)
+	}
+}

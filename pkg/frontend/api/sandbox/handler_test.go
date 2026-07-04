@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/ugorji/go/codec"
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	faasconstant "frontend/pkg/common/faas_common/constant"
@@ -20,6 +21,8 @@ import (
 
 type runtimeStub struct {
 	createInstance func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error)
+	invokeInstance func(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) (string, error)
+	getAsync       func(objectID string, cb api.GetAsyncCallback)
 	kill           func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error
 }
 
@@ -31,6 +34,9 @@ func (r *runtimeStub) CreateInstance(funcMeta api.FunctionMeta, args []api.Arg, 
 }
 
 func (r *runtimeStub) InvokeByInstanceId(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+	if r.invokeInstance != nil {
+		return r.invokeInstance(funcMeta, instanceID, args, invokeOpt)
+	}
 	return "", nil
 }
 
@@ -116,7 +122,11 @@ func (r *runtimeStub) GDecreaseRef(objectIDs []string, remoteClientID ...string)
 	return nil, nil
 }
 
-func (r *runtimeStub) GetAsync(objectID string, cb api.GetAsyncCallback) {}
+func (r *runtimeStub) GetAsync(objectID string, cb api.GetAsyncCallback) {
+	if r.getAsync != nil {
+		r.getAsync(objectID, cb)
+	}
+}
 
 func (r *runtimeStub) GetEvent(objectID string, cb api.GetEventCallback) {}
 
@@ -221,6 +231,8 @@ func TestCreateHandlerFallsBackToBodyTenant(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -271,6 +283,8 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -309,9 +323,19 @@ func TestSandboxFunctionIDUsesRuntime(t *testing.T) {
 			wantFunc: "default/0-defaultservice-py310/$latest",
 		},
 		{
-			name:     "empty uses default",
+			name:     "rust",
+			runtime:  "rust",
+			wantFunc: "default/0-defaultservice-rrt/$latest",
+		},
+		{
+			name:     "rrt",
+			runtime:  "rrt",
+			wantFunc: "default/0-defaultservice-rrt/$latest",
+		},
+		{
+			name:     "empty uses default (rust)",
 			runtime:  "",
-			wantFunc: "default/0-defaultservice-py310/$latest",
+			wantFunc: "default/0-defaultservice-rrt/$latest",
 		},
 		{
 			name:      "unsupported",
@@ -334,8 +358,9 @@ func TestSandboxFunctionIDUsesRuntime(t *testing.T) {
 	}
 }
 
-func TestDefaultSandboxFunctionIDUsesBuiltInPy310Service(t *testing.T) {
-	require.Equal(t, "default/0-defaultservice-py310/$latest", defaultSandboxFunctionID)
+func TestDefaultSandboxFunctionIDUsesRustService(t *testing.T) {
+	// Default sandbox backend is the dedicated Rust (rrt) slot.
+	require.Equal(t, "default/0-defaultservice-rrt/$latest", defaultSandboxFunctionID)
 }
 
 func TestCreateHandlerUsesRequestedRuntime(t *testing.T) {
@@ -360,6 +385,8 @@ func TestCreateHandlerUsesRequestedRuntime(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -387,6 +414,8 @@ func TestCreateHandlerRejectsUnsupportedRuntime(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -421,6 +450,8 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -432,7 +463,7 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.False(t, hasStaticOwner)
 	require.Equal(t, fmt.Sprintf("%d", sandboxCreateTimeoutSeconds), capturedInvokeOpt.CreateOpt["call_timeout"])
 	require.Equal(t, "305", capturedInvokeOpt.CreateOpt["init_call_timeout"])
-	require.Equal(t, "900", capturedInvokeOpt.CreateOpt["GRACEFUL_SHUTDOWN_TIME"])
+	require.Equal(t, "5", capturedInvokeOpt.CreateOpt["GRACEFUL_SHUTDOWN_TIME"])
 	require.Equal(t, "/tmp", capturedInvokeOpt.CreateOpt["DELEGATE_DIRECTORY_INFO"])
 	require.Equal(t, "512", capturedInvokeOpt.CreateOpt["DELEGATE_DIRECTORY_QUOTA"])
 	require.Equal(t, "1", capturedInvokeOpt.CreateOpt["ConcurrentNum"])
@@ -472,6 +503,8 @@ func TestCreateHandlerPassesRootfsToSandboxCustomExtensions(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -506,6 +539,8 @@ func TestCreateHandlerAcceptsImageAliasForRootfs(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -535,18 +570,20 @@ func TestCreateHandlerPassesPortForwardingsToNetworkCreateOption(t *testing.T) {
 	body, err := json.Marshal(CreateRequest{
 		Name:      "sandbox-ports",
 		Namespace: "sandbox",
-		Ports:     []string{"8080", "udp:9090"},
+		Ports:     []string{"8080", "https:9090"},
 	})
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(
 		t,
-		`{"portForwardings":[{"port":8080,"protocol":"TCP"},{"port":9090,"protocol":"UDP"}]}`,
+		`{"portForwardings":[{"port":8080,"protocol":"http"},{"port":9090,"protocol":"https"}]}`,
 		capturedInvokeOpt.CreateOpt["network"],
 	)
 }
@@ -569,11 +606,13 @@ func TestCreateHandlerRejectsInvalidPortForwarding(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "protocol must be TCP or UDP")
+	require.Contains(t, recorder.Body.String(), "port scheme must be http or https")
 }
 
 func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
@@ -605,6 +644,8 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -621,6 +662,9 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 
 	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
 	require.Equal(t, sandboxConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
+	require.Equal(t, "trace-create", capturedInvokeOpt.TraceID)
+	require.Equal(t, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01", capturedInvokeOpt.CustomExtensions["traceparent"])
+	require.Equal(t, "trace-create", recorder.Header().Get(faasconstant.HeaderTraceID))
 	require.Equal(t, "contract-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[faasconstant.FunctionKeyNote])
 	_, hasStaticOwner := capturedInvokeOpt.CreateOpt["resource.owner"]
@@ -629,6 +673,189 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
 }
 
+func TestCreateV1HandlerDefaultsAndReturnsSandboxID(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	var capturedFuncMeta api.FunctionMeta
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInvokeOpt = invokeOpt
+			return "sandbox-v1", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Image:              "ubuntu:22.04",
+		IdleTimeoutSeconds: 123,
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
+	require.NotNil(t, capturedFuncMeta.Name)
+	require.NotEmpty(t, *capturedFuncMeta.Name)
+	require.NotNil(t, capturedFuncMeta.Namespace)
+	require.Equal(t, "default", *capturedFuncMeta.Namespace)
+	require.Equal(t, "123", capturedInvokeOpt.CustomExtensions["idle_timeout"])
+	require.JSONEq(t, `{"runtime":"runsc","type":"image","imageurl":"ubuntu:22.04"}`, capturedInvokeOpt.CustomExtensions["rootfs"])
+
+	var resp job.Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	var data map[string]string
+	require.NoError(t, json.Unmarshal(resp.Data, &data))
+	require.Equal(t, "sandbox-v1", data["sandboxId"])
+	require.Equal(t, "running", data["status"])
+}
+
+func TestCreateV1HandlerFrontendOwnsTunnelSetup(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "default/sandbox_demo.1", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Image:  "ubuntu:22.04",
+		Env:    map[string]string{"RRT_HTTP_PORT": "19000", "RRT_TUNNEL_WS_PORT": "19001", "USER_ENV": "ok"},
+		Tunnel: TunnelSpec{Enabled: true},
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(
+		t,
+		`{"portForwardings":[{"port":50090,"protocol":"http"},{"port":8765,"protocol":"http"},{"port":8766,"protocol":"http"}]}`,
+		capturedInvokeOpt.CreateOpt["network"],
+	)
+	require.JSONEq(
+		t,
+		`{"RRT_HTTP_PORT":"50090","RRT_TUNNEL_WS_PORT":"8765","RRT_TUNNEL_HTTP_PORT":"8766","USER_ENV":"ok"}`,
+		capturedInvokeOpt.CreateOpt[faasconstant.DelegateEnvVar],
+	)
+
+	var resp job.Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	var data map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Data, &data))
+	tunnel, ok := data["tunnel"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, "/tunnel/default-sandbox-demo-1", tunnel["url"])
+	require.Equal(t, "/tunnel/default-sandbox-demo-1", tunnel["path"])
+	require.Equal(t, "http://127.0.0.1:8766", tunnel["proxyUrl"])
+}
+
+func TestNormalizeJSONValuePreservesFractionalAndConvertsIntegers(t *testing.T) {
+	got := normalizeJSONValue(map[string]interface{}{
+		"pid":     float64(123),
+		"timeout": float64(0.5),
+		"nested":  []interface{}{float64(7)},
+	}).(map[string]interface{})
+	require.Equal(t, int64(123), got["pid"])
+	require.Equal(t, float64(0.5), got["timeout"])
+	require.Equal(t, int64(7), got["nested"].([]interface{})[0])
+}
+
+func TestInvokeV1HandlerRoutesEnvelopeToRRTSandboxInvoke(t *testing.T) {
+	var capturedFuncMeta api.FunctionMeta
+	var capturedInstanceID string
+	var capturedArgs []api.Arg
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		invokeInstance: func(funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInstanceID = instanceID
+			capturedArgs = append([]api.Arg(nil), args...)
+			capturedInvokeOpt = invokeOpt
+			return "object-1", nil
+		},
+		getAsync: func(objectID string, cb api.GetAsyncCallback) {
+			require.Equal(t, "object-1", objectID)
+			result, err := encodeMsgpack(map[string]interface{}{"ok": true})
+			require.NoError(t, err)
+			cb(append(make([]byte, 16), result...), nil)
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "sandboxID", Value: "sandbox-123"}}
+	body := []byte(`{"action":"process.exec","args":{"cmd":"echo hi","cwd":"/tmp"}}`)
+	var err error
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes/sandbox-123/invoke", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set(faasconstant.HeaderTraceID, "trace-invoke")
+	ctx.Request.Header.Set(faasconstant.HeaderTraceParent, "00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01")
+
+	InvokeV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "sandbox-123", capturedInstanceID)
+	require.Equal(t, "sandbox_invoke", capturedFuncMeta.FuncName)
+	require.Equal(t, api.ActorApi, capturedFuncMeta.Api)
+	require.Equal(t, "trace-invoke", capturedInvokeOpt.TraceID)
+	require.Equal(t, "00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01", capturedInvokeOpt.CustomExtensions["traceparent"])
+	require.Equal(t, "trace-invoke", recorder.Header().Get(faasconstant.HeaderTraceID))
+	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
+	require.True(t, capturedInvokeOpt.BypassDataSystem)
+	require.Len(t, capturedArgs, 4)
+	decodedArgs := make(map[string]interface{}, len(capturedArgs)/2)
+	for i := 0; i+1 < len(capturedArgs); i += 2 {
+		key, err := decodePackedArg(capturedArgs[i].Data)
+		require.NoError(t, err)
+		value, err := decodePackedArg(capturedArgs[i+1].Data)
+		require.NoError(t, err)
+		decodedArgs[fmt.Sprint(key)] = value
+	}
+	require.Equal(t, "process.exec", decodedArgs["action"])
+	require.Equal(t, map[string]interface{}{
+		"cmd": "echo hi",
+		"cwd": "/tmp",
+	}, decodedArgs["args"])
+
+	var resp job.Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.JSONEq(t, `{"ok":true}`, string(resp.Data))
+}
+
+func decodePackedArg(data []byte) (interface{}, error) {
+	if len(data) < 16 {
+		return nil, fmt.Errorf("arg too short: %d", len(data))
+	}
+	var out interface{}
+	dec := codec.NewDecoderBytes(data[16:], &msgpackHandle)
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	return normalizeMsgpack(out), nil
+}
+
+func TestInvokeV1HandlerRejectsMissingAction(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "sandboxID", Value: "sandbox-123"}}
+	var err error
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes/sandbox-123/invoke", bytes.NewReader([]byte(`{"args":{}}`)))
+	require.NoError(t, err)
+
+	InvokeV1Handler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "action is required")
+}
 func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 	var (
 		capturedInstanceID string

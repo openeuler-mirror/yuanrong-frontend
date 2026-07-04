@@ -83,6 +83,7 @@ func New(cfg *config.SandboxRouterConfig) (*Router, error) {
 
 	res := resolver.NewInstanceInfoWatchResolver()
 	server := proxy.New(res)
+	server.SetAuth(cfg.EnableJWTAuth, cfg.ValidateIAM, uint16(cfg.RRTPort), uint16(cfg.TunnelPort))
 
 	backendTLS, err := cfg.BackendTLSConfig()
 	if err != nil {

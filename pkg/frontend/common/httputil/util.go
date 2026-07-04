@@ -195,7 +195,6 @@ func InitTraceID(ctx *gin.Context) string {
 	switch {
 	case traceID == "":
 		traceID = uuid.New().String()
-		log.GetLogger().Infof("x-request-id is empty, generates a traceID: %s", traceID)
 	case len(traceID) > constant.MaxTraceIDLength:
 		traceID = traceID[:constant.MaxTraceIDLength]
 	default:

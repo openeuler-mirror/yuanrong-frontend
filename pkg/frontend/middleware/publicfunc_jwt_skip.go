@@ -43,8 +43,19 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 
-		// Check if this is an invoke URL
+		// Sandbox /direct is a control-plane invoke fast path: require JWT,
+		// but allow the same user/developer roles as normal invoke endpoints.
+		if isSandboxDirectURL(path) {
+			c.Set(isInvokeURLKey, true)
+			c.Next()
+			return
+		}
+
+		// Check if this is an invoke URL. Mark the role-routing flag before
+		// metadata lookup so JWT role policy does not depend on alias/function
+		// metadata availability. Public-function skip remains best-effort below.
 		if isInvokeURL(path) {
+			c.Set(isInvokeURLKey, true)
 
 			// Extract function key and check if it's public
 			funcKey, err := extractFunctionKey(c)
@@ -61,9 +72,6 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 				c.Next()
 				return
 			}
-
-			// Mark as invoke URL for downstream middleware
-			c.Set(isInvokeURLKey, true)
 
 			// Load function metadata to check if it's public
 			funcSpec, ok := functionmeta.LoadFuncSpec(funcKey)
@@ -91,6 +99,10 @@ func PublicFunctionJWTSkipMiddleware() gin.HandlerFunc {
 }
 
 // isInvokeURL checks if the path matches invoke URL patterns
+func isSandboxDirectURL(path string) bool {
+	return path == "/direct" || strings.HasPrefix(path, "/direct/")
+}
+
 func isInvokeURL(path string) bool {
 	// Check for standard invoke URL: /serverless/v1/functions/{urn}/invocations
 	if strings.HasPrefix(path, "/serverless/v1/functions/") && strings.HasSuffix(path, "/invocations") {

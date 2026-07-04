@@ -72,7 +72,27 @@ func ApplyInstanceEvent(c *RouteCache, kind EventKind, key string, value []byte)
 		c.DeleteInstance(id)
 		return
 	}
+	// The owning tenant is authoritative in the instance key, not the JSON
+	// value; stamp it on each target so the proxy can authorize by tenant.
+	if tenant := tenantFromKey(key); tenant != "" {
+		for _, t := range targets {
+			t.Tenant = tenant
+		}
+	}
 	c.PutInstance(id, targets)
+}
+
+// tenantFromKey extracts the tenant id from a /sn/instance key, whose layout is
+// /sn/instance/business/yrk/tenant/{t}/function/{f}/version/{v}/defaultaz/{r}/{id}:
+// the segment immediately following the "tenant" segment. "" if not found.
+func tenantFromKey(key string) string {
+	segs := strings.Split(key, "/")
+	for i := 0; i+1 < len(segs); i++ {
+		if segs[i] == "tenant" {
+			return segs[i+1]
+		}
+	}
+	return ""
 }
 
 // instanceIDFromKey returns the last '/'-separated segment of an instance key,

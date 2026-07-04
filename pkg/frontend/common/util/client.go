@@ -123,7 +123,7 @@ type InvokeRequest struct {
 type SSEChan struct {
 	Event    chan []byte
 	EventErr error
-	// WaitEvent 用于通知sse消息处理结束，防止主流程和getEvent回调阻塞等待
+	// WaitEvent notifies that SSE message handling has ended, preventing the main flow and getEvent callback from blocking indefinitely.
 	WaitEvent chan struct{}
 }
 
@@ -138,6 +138,10 @@ type Client interface {
 	KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error)
 	CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg,
 		invokeOpt api.InvokeOptions) (instanceID string, err error)
+	InvokeInstanceByLibRt(funcMeta api.FunctionMeta, instanceID string, args []api.Arg,
+		invokeOpt api.InvokeOptions) (returnObjectID string, err error)
+	InvokeInstanceByLibRtAndGet(funcMeta api.FunctionMeta, instanceID string, args []api.Arg,
+		invokeOpt api.InvokeOptions) ([]byte, error)
 	KillByLibRt(instanceID string, signal int, payload []byte) (err error)
 	IsHealth() bool
 	IsDsHealth() bool
@@ -241,7 +245,7 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 		return res, resErr
 	}
 	sseChan := &SSEChan{
-		Event:     make(chan []byte, 100), // 使用100大小缓冲区，防止libruntime侧回写event消息阻塞
+		Event:     make(chan []byte, 100), // Use a buffer of 100 to prevent libruntime event writebacks from blocking.
 		WaitEvent: make(chan struct{}, 1),
 	}
 	c.clientLibruntime.GetEvent(objID, func(result []byte, err error) {
@@ -252,7 +256,7 @@ func (c *defaultClient) getRes(objID string, req InvokeRequest) ([]byte, error) 
 			return
 		}
 	})
-	stopSSEHandle := make(chan struct{}) // 用于反向通知sse消息处理结束，防止协程泄露
+	stopSSEHandle := make(chan struct{}) // Back-channel notification that SSE message handling has ended, preventing goroutine leaks.
 	go c.handleEvent(objID, sseChan, req, stopSSEHandle)
 	defer close(stopSSEHandle)
 	select {
@@ -424,6 +428,28 @@ func (c *defaultClient) CreateInstanceByLibRt(
 	invokeOpt api.InvokeOptions,
 ) (string, error) {
 	return c.clientLibruntime.CreateInstance(funcMeta, args, invokeOpt)
+}
+
+func (c *defaultClient) InvokeInstanceByLibRt(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) (string, error) {
+	return c.clientLibruntime.InvokeByInstanceId(funcMeta, instanceID, args, invokeOpt)
+}
+
+func (c *defaultClient) InvokeInstanceByLibRtAndGet(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) ([]byte, error) {
+	objID, err := c.InvokeInstanceByLibRt(funcMeta, instanceID, args, invokeOpt)
+	if err != nil {
+		return nil, err
+	}
+	return c.getRes(objID, InvokeRequest{BypassDataSystem: invokeOpt.BypassDataSystem})
 }
 
 func (c *defaultClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {

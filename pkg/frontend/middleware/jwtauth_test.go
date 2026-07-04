@@ -50,11 +50,11 @@ func TestJWTAuthMiddleware(t *testing.T) {
 			shouldCallNext:     true,
 		},
 		{
-			name:               "no auth header, should pass",
+			name:               "no auth header, should return 401",
 			enableAuth:         true,
 			authHeader:         "",
-			expectedStatusCode: http.StatusOK,
-			shouldCallNext:     true,
+			expectedStatusCode: http.StatusUnauthorized,
+			shouldCallNext:     false,
 		},
 		{
 			name:       "invalid JWT format, should return 401",
@@ -136,7 +136,7 @@ func TestJWTAuthMiddleware(t *testing.T) {
 			// Setup
 			w := httptest.NewRecorder()
 			c, router := gin.CreateTestContext(w)
-			
+
 			// Set config
 			config.GetConfig().IamConfig.EnableFuncTokenAuth = tt.enableAuth
 
@@ -174,7 +174,7 @@ func TestJWTAuthMiddleware(t *testing.T) {
 
 			// Verify
 			assert.Equal(t, tt.expectedStatusCode, w.Code, "status code mismatch")
-			
+
 			if tt.shouldCallNext {
 				assert.True(t, nextCalled || w.Code == http.StatusOK, "handler should be called")
 			} else {
@@ -206,10 +206,10 @@ func TestJWTAuthMiddleware_Integration(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:               "optional auth when no header provided",
+			name:               "auth enabled rejects missing token",
 			enableAuth:         true,
 			authHeader:         "",
-			expectedStatusCode: http.StatusOK,
+			expectedStatusCode: http.StatusUnauthorized,
 		},
 	}
 

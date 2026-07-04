@@ -20,13 +20,17 @@
 package api
 
 import (
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 
+	faasconstant "frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/frontend/config"
+	routerconfig "frontend/pkg/sandboxrouter/config"
 )
 
 var cfg = `{
@@ -63,6 +67,120 @@ func TestInitRoute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			InitRoute(tt.args.r)
+		})
+	}
+}
+
+func TestSandboxDirectRouteForwardsToLocalSandboxRouter(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	seen := make(chan *http.Request, 1)
+	backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})}
+	go func() { _ = backend.Serve(listener) }()
+	defer backend.Close()
+
+	config.InitFunctionConfig([]byte(fmt.Sprintf(`{
+		"slaQuota":1000,
+		"functionCapability":1,
+		"authenticationEnable":false,
+		"trafficLimitDisable":true,
+		"businessType":1,
+		"sandboxRouter":{"enabled":true,"listenIP":"127.0.0.1","listenPort":%d}
+	}`, listener.Addr().(*net.TCPAddr).Port)))
+
+	r := gin.New()
+	InitRoute(r)
+
+	server := httptest.NewServer(r)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/direct/demo/invoke?x=1&token=secret&tenant_id=default", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Auth", "token")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set(faasconstant.CaaSHeaderTraceID, "trace-direct")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+	got := <-seen
+	if got.URL.Path != "/demo/50090/invoke" || got.URL.RawQuery != "x=1" {
+		t.Fatalf("unexpected proxied URL: %s?%s", got.URL.Path, got.URL.RawQuery)
+	}
+	if got.Header.Get("X-Auth") != "" {
+		t.Fatalf("X-Auth was forwarded to sandboxRouter")
+	}
+	if got.Header.Get("X-Internal-Src") != "1" {
+		t.Fatalf("internal source marker was not set")
+	}
+	if got.Header.Get("X-Forwarded-Proto") != "https" {
+		t.Fatalf("X-Forwarded-Proto was not preserved: %q", got.Header.Get("X-Forwarded-Proto"))
+	}
+	if got.Header.Get(faasconstant.HeaderTraceID) != "trace-direct" {
+		t.Fatalf("trace header was not forwarded: %q", got.Header.Get(faasconstant.HeaderTraceID))
+	}
+	if resp.Header.Get(faasconstant.HeaderTraceID) != "trace-direct" {
+		t.Fatalf("trace header was not returned: %q", resp.Header.Get(faasconstant.HeaderTraceID))
+	}
+}
+
+func TestSandboxDirectRouterPathHidesControlPorts(t *testing.T) {
+	cfg := &routerconfig.SandboxRouterConfig{RRTPort: 50090, TunnelPort: 8765}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "rrt invoke alias", in: "/direct/demo/invoke", want: "/demo/50090/invoke"},
+		{name: "rrt health alias", in: "/direct/demo/healthz", want: "/demo/50090/healthz"},
+		{name: "rrt upload alias", in: "/direct/demo/upload", want: "/demo/50090/upload"},
+		{name: "rrt download alias", in: "/direct/demo/download", want: "/demo/50090/download"},
+		{name: "legacy port form", in: "/direct/demo/50090/invoke", want: "/demo/50090/invoke"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sandboxDirectRouterPath(tc.in, cfg); got != tc.want {
+				t.Fatalf("sandboxDirectRouterPath(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSandboxTunnelRouterPathHidesControlPort(t *testing.T) {
+	cfg := &routerconfig.SandboxRouterConfig{TunnelPort: 8765}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "tunnel alias", in: "/tunnel/demo", want: "/demo/8765"},
+		{name: "tunnel alias with tail", in: "/tunnel/demo/ws", want: "/demo/8765/ws"},
+		{name: "legacy port form", in: "/tunnel/demo/8765", want: "/demo/8765"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sandboxTunnelRouterPath(tc.in, cfg); got != tc.want {
+				t.Fatalf("sandboxTunnelRouterPath(%q) = %q, want %q", tc.in, got, tc.want)
+			}
 		})
 	}
 }

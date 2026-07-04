@@ -134,7 +134,7 @@ func InitRoute(r *gin.Engine) {
 	r.POST(urlDownload, handler.MultiGetHandler)
 	r.POST(urlDelete, handler.MultiDelHandler)
 	r.POST(urlExecute, handler.ExecuteHandler)
-	// app 外部请求经过dashboard，再请求到frontend，处理job
+	// External app requests pass through dashboard before reaching frontend for job handling.
 	appGroup := r.Group(urlGroupApp)
 	{
 		appGroup.POST(urlCreateApp, app.CreateHandler)
@@ -143,7 +143,7 @@ func InitRoute(r *gin.Engine) {
 		appGroup.DELETE(urlDeleteApp, app.DeleteHandler)
 		appGroup.POST(urlStopApp, app.StopHandler)
 	}
-	// job 外部请求直接访问frontend，处理job
+	// External job requests access frontend directly for job handling.
 	jobGroup := r.Group(commonJob.PathGroupJobs)
 	{
 		jobGroup.POST("", job.SubmitJobHandler)
@@ -173,11 +173,20 @@ func InitRoute(r *gin.Engine) {
 		authGroup.GET("/user", authHandler.UserHandler)
 	}
 
+	registerSandboxDirectRoute(r)
+
 	// sandbox management (direct create/delete without job polling)
 	sandboxGroup := r.Group("/api/sandbox")
 	{
-		sandboxGroup.POST("/create", sandbox.CreateHandler)
-		sandboxGroup.DELETE("/:instanceId", sandbox.DeleteHandler)
+		sandboxGroup.POST("/create", sandboxTraceHandler(sandbox.CreateHandler))
+		sandboxGroup.DELETE("/:instanceId", sandboxTraceHandler(sandbox.DeleteHandler))
+	}
+	sandboxV1Group := r.Group("/api/sandbox/v1/sandboxes")
+	{
+		sandboxV1Group.POST("", sandboxTraceHandler(sandbox.CreateV1Handler))
+		sandboxV1Group.DELETE("/:sandboxID", sandboxTraceHandler(sandbox.DeleteHandler))
+		sandboxV1Group.POST("/:sandboxID/invoke", sandboxTraceHandler(sandbox.InvokeV1Handler))
+		sandboxV1Group.GET("/:sandboxID/stream", sandboxTraceHandler(sandbox.StreamV1Handler))
 	}
 
 	// web terminal

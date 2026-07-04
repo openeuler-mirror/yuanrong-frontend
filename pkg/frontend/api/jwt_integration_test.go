@@ -52,18 +52,18 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 		expectedStatusCode int
 	}{
 		{
-			name:         "invoke without JWT when auth disabled",
-			enableAuth:   false,
-			authHeader:   "",
-			requestBody:  map[string]string{"test": "data"},
+			name:               "invoke without JWT when auth disabled",
+			enableAuth:         false,
+			authHeader:         "",
+			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:         "invoke without JWT when auth enabled (optional auth)",
-			enableAuth:   true,
-			authHeader:   "",
-			requestBody:  map[string]string{"test": "data"},
-			expectedStatusCode: http.StatusOK,
+			name:               "invoke without JWT when auth enabled",
+			enableAuth:         true,
+			authHeader:         "",
+			requestBody:        map[string]interface{}{"test": "data"},
+			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
 			name:       "invoke with invalid JWT",
@@ -72,7 +72,7 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
 				return nil, errors.New("invalid JWT")
 			},
-			requestBody:        map[string]string{"test": "data"},
+			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
@@ -87,7 +87,7 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 					},
 				}, nil
 			},
-			requestBody:        map[string]string{"test": "data"},
+			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
@@ -105,7 +105,7 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 			mockValidateIAM: func(authHeader, traceID string) error {
 				return errors.New("IAM validation failed")
 			},
-			requestBody:        map[string]string{"test": "data"},
+			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
@@ -123,7 +123,7 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 			mockValidateIAM: func(authHeader, traceID string) error {
 				return nil
 			},
-			requestBody:        map[string]string{"test": "data"},
+			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusOK,
 		},
 	}
@@ -180,7 +180,7 @@ func TestMultipleEndpointsWithJWTMiddleware(t *testing.T) {
 
 	// Setup router
 	router := gin.New()
-	
+
 	// Endpoints without JWT middleware (like urlPreCreate)
 	router.POST("/create", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "created"})
@@ -213,11 +213,11 @@ func TestMultipleEndpointsWithJWTMiddleware(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:               "invoke without auth when enabled should succeed (optional)",
+			name:               "invoke without auth when enabled should fail",
 			endpoint:           "/invoke",
 			authHeader:         "",
 			enableAuth:         true,
-			expectedStatusCode: http.StatusOK,
+			expectedStatusCode: http.StatusUnauthorized,
 		},
 	}
 

@@ -17,6 +17,7 @@
 package middleware
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -163,6 +164,16 @@ func GlobalJWTAuthMiddleware() gin.HandlerFunc {
 		method := c.Request.Method
 		log.GetLogger().Debugf("Path %s %s JWT authentication", method, path)
 
+		// Reverse tunnel is a data-plane gateway alias. The SDK deliberately does
+		// not send platform JWTs on the default ws:// tunnel, and server-side tunnel
+		// setup is already owned by the authenticated sandbox create call. Do not
+		// gate /tunnel on frontend JWT.
+		if isTunnelRequest(c.Request) {
+			log.GetLogger().Debugf("Tunnel path %s %s skips frontend JWT authentication", method, path)
+			c.Next()
+			return
+		}
+
 		// Check if path is in whitelist
 		if isInAuthWhitelist(path, method) {
 			log.GetLogger().Debugf("Path %s %s is in auth whitelist, skipping JWT authentication", method, path)
@@ -190,4 +201,15 @@ func GlobalJWTAuthMiddleware() gin.HandlerFunc {
 		}
 		jwtHandler(c)
 	}
+}
+
+func isTunnelRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	path := r.URL.Path
+	if path != "/tunnel" && !strings.HasPrefix(path, "/tunnel/") {
+		return false
+	}
+	return true
 }
