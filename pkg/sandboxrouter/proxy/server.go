@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strconv"
+	"strings"
 	"time"
 
 	"frontend/pkg/common/faas_common/constant"
@@ -55,6 +56,7 @@ const (
 	reqInfoKey                    ctxKey = 0
 	internalSrcHeader                    = "X-Internal-Src"
 	internalSrcAuthenticatedValue        = "1"
+	defaultTunnelAliasPort        uint16 = 8765
 )
 
 // Server parses, resolves, and reverse-proxies sandbox traffic. http and https
@@ -109,6 +111,45 @@ func requestFromLoopback(r *http.Request) bool {
 
 func frontendAuthenticatedRequest(r *http.Request) bool {
 	return requestFromLoopback(r) && r.Header.Get(internalSrcHeader) == internalSrcAuthenticatedValue
+}
+
+// normalizeTunnelAliasPath lets the sandboxRouter serve the public tunnel URL
+// shape directly. The canonical router grammar remains /{safeID}/{port}/...,
+// while /tunnel/{safeID} is a static alias for /{safeID}/{tunnelPort}.
+// /tunnel/{safeID}/{port}/... is also accepted as a legacy explicit-port form
+// by simply stripping the /tunnel prefix.
+func (s *Server) normalizeTunnelAliasPath(path string) string {
+	const prefix = "/tunnel/"
+	if path == "/tunnel" || !strings.HasPrefix(path, prefix) {
+		return path
+	}
+
+	rest := strings.TrimPrefix(path, prefix)
+	if rest == "" {
+		return path
+	}
+
+	segments := strings.Split(rest, "/")
+	safeID := segments[0]
+	if safeID == "" {
+		return path
+	}
+
+	if len(segments) >= 2 {
+		if port, err := strconv.ParseUint(segments[1], 10, 16); err == nil && port != 0 {
+			return "/" + rest
+		}
+	}
+
+	port := s.tunnelPort
+	if port == 0 {
+		port = defaultTunnelAliasPort
+	}
+	tail := ""
+	if len(segments) > 1 {
+		tail = "/" + strings.Join(segments[1:], "/")
+	}
+	return "/" + safeID + "/" + strconv.FormatUint(uint64(port), 10) + tail
 }
 
 // New builds a Server over the given resolver with default transports. The
@@ -179,7 +220,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		)
 	}()
 
-	parsed, err := route.ParsePath(r.URL.Path)
+	parsed, err := route.ParsePath(s.normalizeTunnelAliasPath(r.URL.Path))
 	if err != nil {
 		http.NotFound(w, r) // 404: no router would match this shape
 		return
