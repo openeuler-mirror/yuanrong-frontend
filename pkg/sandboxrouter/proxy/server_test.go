@@ -157,3 +157,52 @@ func TestProxyHTTPSBackendVerifyFails(t *testing.T) {
 		t.Errorf("status = %d, want 502 (TLS verify failure)", rec.Code)
 	}
 }
+
+func TestProxyTunnelAliasUsesConfiguredTunnelPort(t *testing.T) {
+	var gotPath, gotInstID, gotPort string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotInstID = r.Header.Get("X-Instance-Id")
+		gotPort = r.Header.Get("X-Instance-Port")
+		io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	s := New(fakeResolver{target: targetTo(t, upstream.URL)})
+	s.SetAuth(true, false, 50090, 8765)
+	rec := do(s, http.MethodGet, "/tunnel/default-rtt/ws")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotPath != "/ws" {
+		t.Errorf("upstream path = %q, want /ws", gotPath)
+	}
+	if gotInstID != "default-rtt" || gotPort != "8765" {
+		t.Errorf("upstream instance/port = %q/%q, want default-rtt/8765", gotInstID, gotPort)
+	}
+}
+
+func TestProxyTunnelAliasExplicitPortStripsTunnelPrefix(t *testing.T) {
+	var gotPath, gotPort string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotPort = r.Header.Get("X-Instance-Port")
+		io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	s := New(fakeResolver{target: targetTo(t, upstream.URL)})
+	s.SetAuth(true, false, 50090, 8765)
+	rec := do(s, http.MethodGet, "/tunnel/default-rtt/8766/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotPath != "/health" {
+		t.Errorf("upstream path = %q, want /health", gotPath)
+	}
+	if gotPort != "8766" {
+		t.Errorf("upstream port = %q, want 8766", gotPort)
+	}
+}
