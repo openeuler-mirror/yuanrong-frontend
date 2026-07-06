@@ -192,10 +192,14 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 		t.Fatalf("expected resource quota fields, got %+v", body[0])
 	}
 	if body[0]["limit_cpu"] != float64(1000) ||
-		body[0]["limit_mem"] != float64(2048) ||
-		body[0]["limit_gpu"] != float64(2) ||
-		body[0]["limit_npu"] != float64(4) {
-		t.Fatalf("expected resource limit fields, got %+v", body[0])
+		body[0]["limit_mem"] != float64(2048) {
+		t.Fatalf("expected CPU and memory resource limit fields, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_gpu"]; ok {
+		t.Fatalf("did not expect limit_gpu field, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_npu"]; ok {
+		t.Fatalf("did not expect limit_npu field, got %+v", body[0])
 	}
 	if body[0]["image"] != "registry.example.com/ns/image:tag" {
 		t.Fatalf("expected image field, got %+v", body[0])
@@ -286,11 +290,17 @@ func TestSummarizeInstancesMatchesConcreteGPUAndNPUResourceKeys(t *testing.T) {
 	if len(body) != 1 {
 		t.Fatalf("expected one instance, got %+v", body)
 	}
-	if body[0]["required_gpu"] != float64(1) || body[0]["limit_gpu"] != float64(2) {
+	if body[0]["required_gpu"] != float64(1) {
 		t.Fatalf("expected concrete GPU resource to match, got %+v", body[0])
 	}
-	if body[0]["required_npu"] != float64(3) || body[0]["limit_npu"] != float64(4) {
+	if body[0]["required_npu"] != float64(3) {
 		t.Fatalf("expected concrete NPU resource to match, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_gpu"]; ok {
+		t.Fatalf("did not expect limit_gpu field, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_npu"]; ok {
+		t.Fatalf("did not expect limit_npu field, got %+v", body[0])
 	}
 }
 

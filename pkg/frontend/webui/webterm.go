@@ -186,8 +186,6 @@ type InstanceInfo struct {
 	RequiredNPU      float64           `json:"required_npu"`     // Requested NPU quota
 	LimitCPU         float64           `json:"limit_cpu"`        // CPU limit quota
 	LimitMem         float64           `json:"limit_mem"`        // Memory limit quota
-	LimitGPU         float64           `json:"limit_gpu"`        // GPU limit quota
-	LimitNPU         float64           `json:"limit_npu"`        // NPU limit quota
 	RuntimeSeconds   int64             `json:"runtime_seconds"`  // Runtime duration in seconds
 	StartTime        string            `json:"startTime"`        // Start time
 	CreateOptions    map[string]string `json:"createOptions"`    // Create options
@@ -364,8 +362,6 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 			"required_npu":    getResourceValueOrDefault("NPU/.+/count", inst.Resources.Resources, inst.RequiredNPU),
 			"limit_cpu":       getResourceLimitOrDefault("CPU", inst.Resources.Resources, inst.LimitCPU),
 			"limit_mem":       getResourceLimitOrDefault("Memory", inst.Resources.Resources, inst.LimitMem),
-			"limit_gpu":       getResourceLimitOrDefault("GPU", inst.Resources.Resources, inst.LimitGPU),
-			"limit_npu":       getResourceLimitOrDefault("NPU/.+/count", inst.Resources.Resources, inst.LimitNPU),
 			"runtime_seconds": getRuntimeSeconds(inst),
 		}
 		instances = append(instances, instance)
