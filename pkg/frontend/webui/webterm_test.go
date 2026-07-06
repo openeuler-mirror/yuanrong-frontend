@@ -200,6 +200,9 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	if body[0]["image"] != "registry.example.com/ns/image:tag" {
 		t.Fatalf("expected image field, got %+v", body[0])
 	}
+	if body[0]["image_endpoint"] != "" {
+		t.Fatalf("expected empty image_endpoint for registry image, got %+v", body[0])
+	}
 	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds <= 0 {
 		t.Fatalf("expected positive runtime_seconds, got %+v", body[0]["runtime_seconds"])
 	}
@@ -239,6 +242,9 @@ func TestSummarizeInstancesFormatsS3RootfsAsImage(t *testing.T) {
 	if body[0]["image"] != "s3://crfs-dev/rootfs.img" {
 		t.Fatalf("image = %q, want s3://crfs-dev/rootfs.img", body[0]["image"])
 	}
+	if body[0]["image_endpoint"] != "cn-hangzhou.example.com" {
+		t.Fatalf("image_endpoint = %q, want cn-hangzhou.example.com", body[0]["image_endpoint"])
+	}
 }
 
 func TestSummarizeInstancesFormatsOSSRootfsAsS3Image(t *testing.T) {
@@ -258,6 +264,33 @@ func TestSummarizeInstancesFormatsOSSRootfsAsS3Image(t *testing.T) {
 	}
 	if body[0]["image"] != "s3://yr-rootfs-prod/images/python310/rootfs.img" {
 		t.Fatalf("image = %q, want s3://yr-rootfs-prod/images/python310/rootfs.img", body[0]["image"])
+	}
+	if body[0]["image_endpoint"] != "https://oss-cn-hangzhou.aliyuncs.com" {
+		t.Fatalf("image_endpoint = %q, want https://oss-cn-hangzhou.aliyuncs.com", body[0]["image_endpoint"])
+	}
+}
+
+func TestSummarizeInstancesMatchesConcreteGPUAndNPUResourceKeys(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		Resources: Resources{Resources: map[string]Resource{
+			"GPU/NVIDIA-A10/count": {
+				Scalar: ValueScalar{Value: 1, Limit: 2},
+			},
+			"NPU/Ascend910B4/count": {
+				Scalar: ValueScalar{Value: 3, Limit: 4},
+			},
+		}},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["required_gpu"] != float64(1) || body[0]["limit_gpu"] != float64(2) {
+		t.Fatalf("expected concrete GPU resource to match, got %+v", body[0])
+	}
+	if body[0]["required_npu"] != float64(3) || body[0]["limit_npu"] != float64(4) {
+		t.Fatalf("expected concrete NPU resource to match, got %+v", body[0])
 	}
 }
 

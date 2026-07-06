@@ -18,6 +18,7 @@ package execendpoint
 
 import (
 	"encoding/json"
+	"frontend/pkg/sandboxrouter/rootfs"
 	"strings"
 )
 
@@ -100,11 +101,13 @@ func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 	if tenantID == "" {
 		tenantID = tenantIDFromKey(key)
 	}
+	image := rootfsDisplay(info.ScheduleOption.Extension, info.CreateOptions)
 	s.PutSummary(Summary{
 		InstanceID:     id,
 		TenantID:       tenantID,
 		Function:       info.Function,
-		Image:          rootfsImage(info.ScheduleOption.Extension, info.CreateOptions),
+		Image:          image.Image,
+		ImageEndpoint:  image.Endpoint,
 		StatusCode:     info.InstanceStatus.Code,
 		StatusMsg:      info.InstanceStatus.Msg,
 		StatusType:     info.InstanceStatus.Type,
@@ -126,46 +129,14 @@ func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 	})
 }
 
-func rootfsImage(optionMaps ...map[string]string) string {
+func rootfsDisplay(optionMaps ...map[string]string) rootfs.Display {
 	for _, options := range optionMaps {
-		rootfs := strings.TrimSpace(options["rootfs"])
-		if rootfs == "" {
-			continue
-		}
-		var parsed rootfsSpec
-		if err := json.Unmarshal([]byte(rootfs), &parsed); err == nil {
-			if image := parsed.DisplayImage(); image != "" {
-				return image
-			}
-		}
-		if !strings.HasPrefix(rootfs, "{") {
-			return rootfs
+		display := rootfs.DisplayInfo(options["rootfs"])
+		if display.Image != "" || display.Endpoint != "" {
+			return display
 		}
 	}
-	return ""
-}
-
-type rootfsSpec struct {
-	Type        string `json:"type"`
-	ImageURL    string `json:"imageurl"`
-	StorageInfo struct {
-		Bucket string `json:"bucket"`
-		Object string `json:"object"`
-	} `json:"storageInfo"`
-}
-
-func (r rootfsSpec) DisplayImage() string {
-	if strings.EqualFold(strings.TrimSpace(r.Type), "s3") {
-		bucket := strings.TrimSpace(r.StorageInfo.Bucket)
-		object := strings.Trim(strings.TrimSpace(r.StorageInfo.Object), "/")
-		if bucket != "" && object != "" {
-			return "s3://" + bucket + "/" + object
-		}
-		if bucket != "" {
-			return "s3://" + bucket
-		}
-	}
-	return strings.TrimSpace(r.ImageURL)
+	return rootfs.Display{}
 }
 
 // instanceIDFromKey returns the last '/'-separated segment of an instance key,

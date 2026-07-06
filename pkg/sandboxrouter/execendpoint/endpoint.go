@@ -55,6 +55,7 @@ type Summary struct {
 	TenantID       string
 	Function       string
 	Image          string
+	ImageEndpoint  string
 	StatusCode     int32
 	StatusMsg      string
 	StatusType     int32

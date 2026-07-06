@@ -69,6 +69,9 @@ func TestApplyEventFormatsS3RootfsAsImage(t *testing.T) {
 	if summaries[0].Image != "s3://crfs-dev/rootfs.img" {
 		t.Fatalf("summary image = %q, want s3://crfs-dev/rootfs.img", summaries[0].Image)
 	}
+	if summaries[0].ImageEndpoint != "cn-hangzhou.example.com" {
+		t.Fatalf("summary image endpoint = %q, want cn-hangzhou.example.com", summaries[0].ImageEndpoint)
+	}
 }
 
 func TestApplyEventFormatsOSSRootfsAsS3Image(t *testing.T) {
@@ -84,6 +87,9 @@ func TestApplyEventFormatsOSSRootfsAsS3Image(t *testing.T) {
 	}
 	if summaries[0].Image != "s3://yr-rootfs-prod/images/python310/rootfs.img" {
 		t.Fatalf("summary image = %q, want s3://yr-rootfs-prod/images/python310/rootfs.img", summaries[0].Image)
+	}
+	if summaries[0].ImageEndpoint != "https://oss-cn-hangzhou.aliyuncs.com" {
+		t.Fatalf("summary image endpoint = %q, want https://oss-cn-hangzhou.aliyuncs.com", summaries[0].ImageEndpoint)
 	}
 }
 

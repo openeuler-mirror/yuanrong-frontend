@@ -44,6 +44,7 @@ import (
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/sandboxrouter/execendpoint"
+	"frontend/pkg/sandboxrouter/rootfs"
 )
 
 //go:embed static/*
@@ -174,6 +175,7 @@ type InstanceInfo struct {
 	FunctionProxyID  string            `json:"functionProxyID"`  // Function Proxy ID
 	Function         string            `json:"function"`         // Function name
 	Image            string            `json:"image"`            // Container image
+	ImageEndpoint    string            `json:"image_endpoint"`   // Non-sensitive image endpoint
 	RuntimeAddress   string            `json:"runtimeAddress"`   // Runtime address
 	RuntimeID        string            `json:"runtimeID"`        // Runtime ID
 	InstanceStatus   InstanceStatus    `json:"instanceStatus"`   // Instance status
@@ -353,6 +355,7 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 			"tenantID":        inst.TenantID,
 			"function":        inst.Function,
 			"image":           getInstanceImage(inst),
+			"image_endpoint":  getInstanceImageEndpoint(inst),
 			"status":          statusText,
 			"error":           errorDetail,
 			"required_cpu":    getResourceValueOrDefault("CPU", inst.Resources.Resources, inst.RequiredCPU),
@@ -375,11 +378,12 @@ func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[str
 	for _, summary := range summaries {
 		resources := convertLocalResources(summary.Resources)
 		inst := InstanceInfo{
-			InstanceID: summary.InstanceID,
-			TenantID:   summary.TenantID,
-			Function:   summary.Function,
-			Image:      summary.Image,
-			StartTime:  localSummaryStartTime(summary),
+			InstanceID:    summary.InstanceID,
+			TenantID:      summary.TenantID,
+			Function:      summary.Function,
+			Image:         summary.Image,
+			ImageEndpoint: summary.ImageEndpoint,
+			StartTime:     localSummaryStartTime(summary),
 			InstanceStatus: InstanceStatus{
 				Code:     int(summary.StatusCode),
 				ExitCode: int(summary.StatusExitCode),
@@ -428,62 +432,56 @@ func paginateInstanceSummaries(summaries []execendpoint.Summary, page, pageSize 
 }
 
 func getResourceValueOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
-	if resource, ok := resources[resourceName]; ok {
+	if resource, ok := findResource(resourceName, resources); ok {
 		return resource.Scalar.Value
 	}
 	return fallback
 }
 
 func getResourceLimitOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
-	if resource, ok := resources[resourceName]; ok {
+	if resource, ok := findResource(resourceName, resources); ok {
 		return resource.Scalar.Limit
 	}
 	return fallback
+}
+
+func findResource(resourceName string, resources map[string]Resource) (Resource, bool) {
+	if resource, ok := resources[resourceName]; ok {
+		return resource, true
+	}
+	for name, resource := range resources {
+		if resourceName == "GPU" && (strings.HasPrefix(name, "GPU/") || strings.HasPrefix(name, "nvidia.com/gpu")) {
+			return resource, true
+		}
+		if resourceName == "NPU/.+/count" && strings.HasPrefix(name, "NPU/") && strings.HasSuffix(name, "/count") {
+			return resource, true
+		}
+	}
+	return Resource{}, false
 }
 
 func getInstanceImage(inst InstanceInfo) string {
 	if strings.TrimSpace(inst.Image) != "" {
 		return strings.TrimSpace(inst.Image)
 	}
+	return getInstanceRootfsDisplay(inst).Image
+}
+
+func getInstanceImageEndpoint(inst InstanceInfo) string {
+	if strings.TrimSpace(inst.ImageEndpoint) != "" {
+		return strings.TrimSpace(inst.ImageEndpoint)
+	}
+	return getInstanceRootfsDisplay(inst).Endpoint
+}
+
+func getInstanceRootfsDisplay(inst InstanceInfo) rootfs.Display {
 	for _, options := range []map[string]string{inst.ScheduleOption.Extension, inst.CreateOptions} {
-		rootfs := strings.TrimSpace(options["rootfs"])
-		if rootfs == "" {
-			continue
-		}
-		var parsed rootfsSpec
-		if err := json.Unmarshal([]byte(rootfs), &parsed); err == nil {
-			if image := parsed.DisplayImage(); image != "" {
-				return image
-			}
-		}
-		if !strings.HasPrefix(rootfs, "{") {
-			return rootfs
+		display := rootfs.DisplayInfo(options["rootfs"])
+		if display.Image != "" || display.Endpoint != "" {
+			return display
 		}
 	}
-	return ""
-}
-
-type rootfsSpec struct {
-	Type        string `json:"type"`
-	ImageURL    string `json:"imageurl"`
-	StorageInfo struct {
-		Bucket string `json:"bucket"`
-		Object string `json:"object"`
-	} `json:"storageInfo"`
-}
-
-func (r rootfsSpec) DisplayImage() string {
-	if strings.EqualFold(strings.TrimSpace(r.Type), "s3") {
-		bucket := strings.TrimSpace(r.StorageInfo.Bucket)
-		object := strings.Trim(strings.TrimSpace(r.StorageInfo.Object), "/")
-		if bucket != "" && object != "" {
-			return "s3://" + bucket + "/" + object
-		}
-		if bucket != "" {
-			return "s3://" + bucket
-		}
-	}
-	return strings.TrimSpace(r.ImageURL)
+	return rootfs.Display{}
 }
 
 func getRuntimeSeconds(inst InstanceInfo) int64 {
