@@ -19,6 +19,7 @@ package frontend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -38,9 +39,12 @@ import (
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/frontend/common/httputil"
+	"frontend/pkg/frontend/common/jwtauth"
+	"frontend/pkg/frontend/common/tenantauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/serverstatus"
+	"frontend/pkg/sandboxrouter/execendpoint"
 )
 
 var (
@@ -262,13 +266,42 @@ func KillHandler(ctx *gin.Context) {
 	// need to implement protobuf encoding/decoding themselves.
 	isJSON := ctx.ContentType() == "application/json"
 	killReqRaw := body
+	var killReq *core.KillRequest
 	if isJSON {
-		killReqRaw, err = killRequestJSONToProto(body)
+		killReq, killReqRaw, err = decodeKillRequest(body, true)
 		if err != nil {
 			log.GetLogger().Errorf("%s|failed to decode kill request json: %s", traceID, err.Error())
 			httpCode = http.StatusBadRequest
 			hasError = true
 			SetCtxResponse(ctx, []byte(err.Error()), httpCode)
+			return
+		}
+	}
+
+	needsAuth, errCode, authErr := ensureKillJWTContext(ctx, traceID)
+	if authErr != nil {
+		log.GetLogger().Warnf("%s|rejects instance kill request: %s", traceID, authErr.Error())
+		httpCode = errCode
+		hasError = true
+		SetCtxResponse(ctx, []byte(authErr.Error()), httpCode)
+		return
+	}
+	if needsAuth {
+		if killReq == nil {
+			killReq, _, err = decodeKillRequest(body, false)
+			if err != nil {
+				log.GetLogger().Errorf("%s|failed to decode kill request protobuf: %s", traceID, err.Error())
+				httpCode = http.StatusBadRequest
+				hasError = true
+				SetCtxResponse(ctx, []byte(err.Error()), httpCode)
+				return
+			}
+		}
+		if errCode, authErr := authorizeKillRequest(ctx, killReq); authErr != nil {
+			log.GetLogger().Warnf("%s|rejects instance kill request: %s", traceID, authErr.Error())
+			httpCode = errCode
+			hasError = true
+			SetCtxResponse(ctx, []byte(authErr.Error()), httpCode)
 			return
 		}
 	}
@@ -303,13 +336,82 @@ func KillHandler(ctx *gin.Context) {
 // JSON fields are ignored so the wire contract can evolve without breaking
 // older clients.
 func killRequestJSONToProto(body []byte) ([]byte, error) {
+	_, raw, err := decodeKillRequest(body, true)
+	return raw, err
+}
+
+func decodeKillRequest(body []byte, isJSON bool) (*core.KillRequest, []byte, error) {
 	killReq := &core.KillRequest{}
 	if len(body) > 0 {
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, killReq); err != nil {
-			return nil, err
+		if isJSON {
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, killReq); err != nil {
+				return nil, nil, err
+			}
+		} else if err := proto.Unmarshal(body, killReq); err != nil {
+			return nil, nil, err
 		}
 	}
-	return proto.Marshal(killReq)
+	raw, err := proto.Marshal(killReq)
+	if err != nil {
+		return nil, nil, err
+	}
+	return killReq, raw, nil
+}
+
+func needsKillAuthorization(ctx *gin.Context) bool {
+	_, hasSub := ctx.Get("jwt_sub")
+	_, hasRole := ctx.Get("jwt_role")
+	return hasSub || hasRole || ctx.GetHeader(jwtauth.HeaderXAuth) != ""
+}
+
+func ensureKillJWTContext(ctx *gin.Context, traceID string) (bool, int, error) {
+	if !needsKillAuthorization(ctx) {
+		return false, http.StatusOK, nil
+	}
+	if _, hasSub := ctx.Get("jwt_sub"); hasSub {
+		if _, hasRole := ctx.Get("jwt_role"); hasRole {
+			return true, http.StatusOK, nil
+		}
+	}
+	token := ctx.GetHeader(jwtauth.HeaderXAuth)
+	identity, errCode, err := tenantauth.AuthenticateDeveloperToken(token, traceID)
+	if err != nil {
+		return true, errCode, err
+	}
+	ctx.Set("jwt_sub", identity.TenantID)
+	ctx.Set("jwt_role", identity.Role)
+	return true, http.StatusOK, nil
+}
+
+func authorizeKillRequest(ctx *gin.Context, killReq *core.KillRequest) (int, error) {
+	callerTenant, _ := ctx.Get("jwt_sub")
+	callerRole, _ := ctx.Get("jwt_role")
+	callerTenantID, ok := callerTenant.(string)
+	if !ok || callerTenantID == "" {
+		return http.StatusForbidden, errors.New("missing caller tenant in JWT context")
+	}
+	callerRoleName, ok := callerRole.(string)
+	if !ok || callerRoleName == "" {
+		return http.StatusForbidden, errors.New("missing caller role in JWT context")
+	}
+	if callerRoleName != jwtauth.RoleDeveloper {
+		return http.StatusForbidden, errors.New("caller role is not authorized to delete instances")
+	}
+	instanceID := killReq.GetInstanceID()
+	if instanceID == "" {
+		return http.StatusBadRequest, errors.New("missing instanceID")
+	}
+	summary, ok := execendpoint.Default().GetSummary(instanceID)
+	if !ok {
+		return http.StatusNotFound, errors.New("instance not found in frontend cache")
+	}
+	if callerTenantID == tenantauth.SystemTenantID {
+		return http.StatusOK, nil
+	}
+	if callerTenantID == summary.TenantID {
+		return http.StatusOK, nil
+	}
+	return http.StatusForbidden, errors.New("caller tenant is not authorized to delete target instance")
 }
 
 // killResponseProtoToJSON transcodes a serialized core_service.KillResponse

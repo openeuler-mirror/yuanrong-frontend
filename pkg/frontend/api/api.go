@@ -171,6 +171,8 @@ func InitRoute(r *gin.Engine) {
 		authGroup.POST("/token/direct", authHandler.DirectTokenHandler)
 		authGroup.POST("/token/exchange", authHandler.TokenExchangeHandler)
 		authGroup.GET("/user", authHandler.UserHandler)
+		authGroup.GET("/token/require", authHandler.RequireTokenProxyHandler)
+		authGroup.GET("/token/abandon", authHandler.AbandonTokenProxyHandler)
 	}
 
 	registerSandboxDirectRoute(r)

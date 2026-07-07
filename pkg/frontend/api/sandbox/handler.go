@@ -40,9 +40,11 @@ import (
 	frontendhttpconstant "frontend/pkg/frontend/common/httpconstant"
 	httputil "frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/jwtauth"
+	"frontend/pkg/frontend/common/tenantauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
 	"frontend/pkg/frontend/schedulerproxy"
+	"frontend/pkg/sandboxrouter/execendpoint"
 	routerroute "frontend/pkg/sandboxrouter/route"
 	api "yuanrong.org/kernel/runtime/libruntime/api"
 )
@@ -1020,6 +1022,19 @@ func DeleteHandler(ctx *gin.Context) {
 		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("instanceId is required"))
 		return
 	}
+	needsAuth, errCode, authErr := ensureDeleteJWTContext(ctx, ctx.GetHeader(constant.HeaderTraceID))
+	if authErr != nil {
+		log.GetLogger().Warnf("reject sandbox delete instanceID=%s: %v", instanceID, authErr)
+		appapi.SetCtxResponse(ctx, nil, errCode, authErr)
+		return
+	}
+	if needsAuth {
+		if errCode, err := authorizeSandboxDelete(ctx, instanceID); err != nil {
+			log.GetLogger().Warnf("reject sandbox delete instanceID=%s: %v", instanceID, err)
+			appapi.SetCtxResponse(ctx, nil, errCode, err)
+			return
+		}
+	}
 
 	if err := util.NewClient().KillByLibRt(instanceID, sandboxKillInstanceSignal, []byte("sandbox deleted")); err != nil {
 		log.GetLogger().Errorf("failed to kill sandbox instance %s: %v", instanceID, err)
@@ -1028,4 +1043,56 @@ func DeleteHandler(ctx *gin.Context) {
 	}
 
 	appapi.SetCtxResponse(ctx, map[string]string{"status": "deleted"}, http.StatusOK, nil)
+}
+
+func needsDeleteAuthorization(ctx *gin.Context) bool {
+	_, hasSub := ctx.Get("jwt_sub")
+	_, hasRole := ctx.Get("jwt_role")
+	return hasSub || hasRole || ctx.GetHeader(jwtauth.HeaderXAuth) != ""
+}
+
+func ensureDeleteJWTContext(ctx *gin.Context, traceID string) (bool, int, error) {
+	if !needsDeleteAuthorization(ctx) {
+		return false, http.StatusOK, nil
+	}
+	if _, hasSub := ctx.Get("jwt_sub"); hasSub {
+		if _, hasRole := ctx.Get("jwt_role"); hasRole {
+			return true, http.StatusOK, nil
+		}
+	}
+	token := ctx.GetHeader(jwtauth.HeaderXAuth)
+	identity, errCode, err := tenantauth.AuthenticateDeveloperToken(token, traceID)
+	if err != nil {
+		return true, errCode, err
+	}
+	ctx.Set("jwt_sub", identity.TenantID)
+	ctx.Set("jwt_role", identity.Role)
+	return true, http.StatusOK, nil
+}
+
+func authorizeSandboxDelete(ctx *gin.Context, instanceID string) (int, error) {
+	callerTenant, _ := ctx.Get("jwt_sub")
+	callerRole, _ := ctx.Get("jwt_role")
+	callerTenantID, ok := callerTenant.(string)
+	if !ok || callerTenantID == "" {
+		return http.StatusForbidden, errors.New("missing caller tenant in JWT context")
+	}
+	callerRoleName, ok := callerRole.(string)
+	if !ok || callerRoleName == "" {
+		return http.StatusForbidden, errors.New("missing caller role in JWT context")
+	}
+	if callerRoleName != jwtauth.RoleDeveloper {
+		return http.StatusForbidden, errors.New("caller role is not authorized to delete instances")
+	}
+	summary, ok := execendpoint.Default().GetSummary(instanceID)
+	if !ok {
+		return http.StatusNotFound, errors.New("instance not found in frontend cache")
+	}
+	if callerTenantID == tenantauth.SystemTenantID {
+		return http.StatusOK, nil
+	}
+	if callerTenantID == summary.TenantID {
+		return http.StatusOK, nil
+	}
+	return http.StatusForbidden, errors.New("caller tenant is not authorized to delete target instance")
 }

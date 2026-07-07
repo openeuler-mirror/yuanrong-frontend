@@ -41,6 +41,7 @@ import (
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/jwtauth"
+	"frontend/pkg/frontend/common/tenantauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/sandboxrouter/execendpoint"
@@ -953,10 +954,10 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Get tenant_id from request parameters, use default if not provided
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, errCode, err := resolveInstancesTenantID(r)
+	if err != nil {
+		http.Error(w, err.Error(), errCode)
+		return
 	}
 
 	instanceID := r.URL.Query().Get("instance_id")
@@ -994,6 +995,31 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 		log.GetLogger().Infof("Error encoding instances: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+func resolveInstancesTenantID(r *http.Request) (string, int, error) {
+	rawTenantID := r.URL.Query().Get("tenant_id")
+	requestedTenantID := rawTenantID
+	if requestedTenantID == "" {
+		requestedTenantID = "default"
+	}
+
+	token := r.Header.Get(jwtauth.HeaderXAuth)
+	if token == "" {
+		return requestedTenantID, http.StatusOK, nil
+	}
+	identity, errCode, err := tenantauth.AuthenticateDeveloperToken(token, r.Header.Get("X-Trace-ID"))
+	if err != nil {
+		return "", errCode, err
+	}
+	if identity.IsSystemTenant {
+		if rawTenantID == "" || requestedTenantID == tenantauth.SystemTenantID {
+			return "", http.StatusOK, nil
+		}
+		return requestedTenantID, http.StatusOK, nil
+	}
+
+	return identity.TenantID, http.StatusOK, nil
 }
 
 func instanceStatusText(code int) string {

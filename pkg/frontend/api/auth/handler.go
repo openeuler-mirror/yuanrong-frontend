@@ -54,13 +54,15 @@ var stateSigningKey = mustGenerateStateSigningKey()
 
 // Handler handles authentication HTTP requests
 type Handler struct {
-	iamServerAddr string
+	iamServerAddr    string
+	tokenProxyClient TokenProxyIAMClient
 }
 
 // NewHandler creates a new auth Handler
 func NewHandler(iamServerAddr string) *Handler {
 	return &Handler{
-		iamServerAddr: iamServerAddr,
+		iamServerAddr:    iamServerAddr,
+		tokenProxyClient: NewDefaultTokenProxyIAMClient(iamServerAddr),
 	}
 }
 
