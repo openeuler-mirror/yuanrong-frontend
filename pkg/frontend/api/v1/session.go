@@ -32,10 +32,8 @@ import (
 	"frontend/pkg/common/faas_common/statuscode"
 	commontype "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/urnutils"
-	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
-	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/invocation"
 	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/middleware"
@@ -97,7 +95,7 @@ func DeleteSessionHandler(ctx *gin.Context) {
 	}
 
 	funcKey := urnutils.CombineFunctionKey(funcURN.TenantID, funcURN.FuncName, funcURN.FuncVersion)
-	sessionKey := buildSessionDataKey(resolveSessionFunctionName(funcKey), sessionID)
+	sessionKey := buildSessionDataKey(funcKey, sessionID)
 	if _, err = datasystemclient.KVGetWithRetry(sessionKey, &datasystemclient.Option{TenantID: funcURN.TenantID}, traceID); err != nil {
 		if errors.Is(err, datasystemclient.ErrKeyNotFound) {
 			writeSessionError(ctx, http.StatusNotFound, statuscode.FrontendStatusNotFound,
@@ -176,32 +174,6 @@ func buildSessionDataKey(functionName, sessionID string) string {
 		return sessionKey[:maxSessionKeyLength]
 	}
 	return sessionKey
-}
-
-func resolveSessionFunctionName(funcKey string) string {
-	_, funcName, _ := utils.ParseFuncKey(funcKey)
-	funcSpec, ok := loadFuncSpecSafely(funcKey)
-	if !ok || funcSpec == nil || funcSpec.FuncMetaData.Name == "" {
-		return funcName
-	}
-	return funcSpec.FuncMetaData.Name
-}
-
-func loadFuncSpecSafely(funcKey string) (*commontype.FuncSpec, bool) {
-	var (
-		funcSpec *commontype.FuncSpec
-		ok       bool
-	)
-	func() {
-		defer func() {
-			if recover() != nil {
-				funcSpec = nil
-				ok = false
-			}
-		}()
-		funcSpec, ok = functionmeta.LoadFuncSpec(funcKey)
-	}()
-	return funcSpec, ok
 }
 
 func writeSessionError(ctx *gin.Context, httpCode int, innerCode int, err error) {

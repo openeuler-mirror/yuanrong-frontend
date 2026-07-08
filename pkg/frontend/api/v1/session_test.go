@@ -18,7 +18,6 @@ package v1
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,6 @@ import (
 	"frontend/pkg/common/faas_common/datasystemclient"
 	"frontend/pkg/common/faas_common/snerror"
 	commontype "frontend/pkg/common/faas_common/types"
-	"frontend/pkg/frontend/functionmeta"
 	"frontend/pkg/frontend/invocation"
 	"frontend/pkg/frontend/leaseadaptor"
 	"frontend/pkg/frontend/responsehandler"
@@ -106,11 +104,6 @@ func TestDeleteSessionHandler(t *testing.T) {
 	convey.Convey("delete session success", t, func() {
 		var capturedKey string
 		var capturedTenantID string
-		etcdKey, err := initSessionDeleteFuncMeta()
-		convey.So(err, convey.ShouldBeNil)
-		defer func() {
-			convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
-		}()
 		patches := gomonkey.NewPatches()
 		defer patches.Reset()
 		patches.ApplyFunc(datasystemclient.KVGetWithRetry,
@@ -136,15 +129,10 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
 		convey.So(capturedTenantID, convey.ShouldEqual, "12345678901234561234567890123456")
 		convey.So(capturedKey, convey.ShouldEqual,
-			"yr:agent_session:v1:OmH5nh0gvdq9c7oXxMaE9sKEmZG0_lLjGR2jZ9kY_GQ")
+			"yr:agent_session:v1:SICl-9zkITdgerEUm_FOtwGPa568P19_wo6bOtKekpE")
 	})
 
 	convey.Convey("delete session not found", t, func() {
-		etcdKey, err := initSessionDeleteFuncMeta()
-		convey.So(err, convey.ShouldBeNil)
-		defer func() {
-			convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
-		}()
 		patches := gomonkey.NewPatches()
 		defer patches.Reset()
 		patches.ApplyFunc(datasystemclient.KVGetWithRetry,
@@ -169,11 +157,7 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Body.String(), convey.ShouldContainSubstring, "session not found")
 	})
 
-	convey.Convey("delete session falls back to function name when metadata is absent", t, func() {
-		etcdKey, err := initSessionDeleteFuncMeta()
-		convey.So(err, convey.ShouldBeNil)
-		convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
-
+	convey.Convey("delete session uses function key when metadata is absent", t, func() {
 		var capturedKey string
 		patches := gomonkey.NewPatches()
 		defer patches.Reset()
@@ -198,15 +182,10 @@ func TestDeleteSessionHandler(t *testing.T) {
 
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusOK)
 		convey.So(capturedKey, convey.ShouldEqual,
-			"yr:agent_session:v1:OmH5nh0gvdq9c7oXxMaE9sKEmZG0_lLjGR2jZ9kY_GQ")
+			"yr:agent_session:v1:SICl-9zkITdgerEUm_FOtwGPa568P19_wo6bOtKekpE")
 	})
 
 	convey.Convey("delete session failed", t, func() {
-		etcdKey, err := initSessionDeleteFuncMeta()
-		convey.So(err, convey.ShouldBeNil)
-		defer func() {
-			convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
-		}()
 		patches := gomonkey.NewPatches()
 		defer patches.Reset()
 		patches.ApplyFunc(datasystemclient.KVGetWithRetry,
@@ -232,11 +211,6 @@ func TestDeleteSessionHandler(t *testing.T) {
 	})
 
 	convey.Convey("delete session delete failed after existence check", t, func() {
-		etcdKey, err := initSessionDeleteFuncMeta()
-		convey.So(err, convey.ShouldBeNil)
-		defer func() {
-			convey.So(functionmeta.ProcessDelete(etcdKey, "meta"), convey.ShouldBeNil)
-		}()
 		patches := gomonkey.NewPatches()
 		defer patches.Reset()
 		patches.ApplyFunc(datasystemclient.KVGetWithRetry,
@@ -260,19 +234,4 @@ func TestDeleteSessionHandler(t *testing.T) {
 		convey.So(rw.Code, convey.ShouldEqual, http.StatusInternalServerError)
 		convey.So(rw.Body.String(), convey.ShouldContainSubstring, "delete failed")
 	})
-}
-
-func initSessionDeleteFuncMeta() (string, error) {
-	metaValue, _ := json.Marshal(commontype.FunctionMetaInfo{
-		FuncMetaData: commontype.FuncMetaData{
-			Name:     "0@yrservice@test-faas-python-runtime-001",
-			TenantID: "12345678901234561234567890123456",
-		},
-	})
-	etcdKey := "//////12345678901234561234567890123456//0@yrservice@test-faas-python-runtime-001//"
-	_ = functionmeta.ProcessDelete(etcdKey, "meta")
-	if err := functionmeta.ProcessUpdate(etcdKey, metaValue, "meta"); err != nil {
-		return "", err
-	}
-	return etcdKey, nil
 }
