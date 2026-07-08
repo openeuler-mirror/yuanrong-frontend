@@ -35,6 +35,8 @@ var gInstanceScheduler = &FunctionInstancesMap{
 	instancesMap: make(map[string]*functionInstanceMap),
 }
 
+var routeOnlyInstances sync.Map // key: instanceID, value: *types.InstanceSpecification
+
 var subject = subscriber.NewSubject()
 
 // GetInstanceSubject -
@@ -72,6 +74,75 @@ func (g *FunctionInstancesMap) GetInstance(funcKey, resSpecKey, instanceId strin
 		return nil
 	}
 	return resInstancesMap.getInstance(resSpecKey, instanceId)
+}
+
+// GetInstanceByID returns an instance by function and instance id without
+// requiring the caller to know the resource-spec queue key. It first checks the
+// ordinary watcher-backed map, then route-only records written by the
+// frontend-proxy path.
+func (g *FunctionInstancesMap) GetInstanceByID(funcKey, instanceID string) *types.InstanceSpecification {
+	if instanceID == "" {
+		return nil
+	}
+	g.lock.RLock()
+	resInstancesMap, ok := g.instancesMap[funcKey]
+	g.lock.RUnlock()
+	if ok {
+		if instance := resInstancesMap.getInstanceByID(instanceID); instance != nil {
+			return instance
+		}
+	}
+	if value, ok := routeOnlyInstances.Load(instanceID); ok {
+		instance, _ := value.(*types.InstanceSpecification)
+		if instance != nil && (funcKey == "" || instance.Function == "" || instance.Function == funcKey) {
+			return instance
+		}
+	}
+	return nil
+}
+
+// GetInstanceByIDAcrossFunctions returns an instance by id across all function
+// queues. It is used by the new frontend-proxy route resolver when the request
+// only carries instance id.
+func (g *FunctionInstancesMap) GetInstanceByIDAcrossFunctions(instanceID string) *types.InstanceSpecification {
+	if instanceID == "" {
+		return nil
+	}
+	g.lock.RLock()
+	for _, resInstancesMap := range g.instancesMap {
+		if instance := resInstancesMap.getInstanceByID(instanceID); instance != nil {
+			g.lock.RUnlock()
+			return instance
+		}
+	}
+	g.lock.RUnlock()
+	if value, ok := routeOnlyInstances.Load(instanceID); ok {
+		instance, _ := value.(*types.InstanceSpecification)
+		return instance
+	}
+	return nil
+}
+
+// RecordRouteOnlyInstance stores the minimal route metadata returned by the
+// frontend-proxy create path. It deliberately does not publish an instance
+// watcher update because it is not a full InstanceSpecification lifecycle event.
+func RecordRouteOnlyInstance(funcKey, instanceID, functionProxyAddress string) {
+	if instanceID == "" || functionProxyAddress == "" {
+		return
+	}
+	routeOnlyInstances.Store(instanceID, &types.InstanceSpecification{
+		InstanceID:      instanceID,
+		Function:        funcKey,
+		FunctionProxyID: functionProxyAddress,
+	})
+}
+
+// RemoveRouteOnlyInstance clears route-only metadata after frontend-proxy kill.
+func RemoveRouteOnlyInstance(instanceID string) {
+	if instanceID == "" {
+		return
+	}
+	routeOnlyInstances.Delete(instanceID)
 }
 
 func (g *FunctionInstancesMap) addInstance(funcKey string, instance *types.InstanceSpecification,
@@ -165,6 +236,17 @@ func (f *functionInstanceMap) getInstance(resSpecKey, instanceId string) *types.
 		return nil
 	}
 	return q.getInstance(instanceId)
+}
+
+func (f *functionInstanceMap) getInstanceByID(instanceID string) *types.InstanceSpecification {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+	for _, q := range f.instanceQueues {
+		if instance := q.getInstance(instanceID); instance != nil {
+			return instance
+		}
+	}
+	return nil
 }
 
 func (f *functionInstanceMap) addInstance(instance *types.InstanceSpecification, logger api.FormatLogger) {

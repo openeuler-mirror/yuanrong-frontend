@@ -34,6 +34,10 @@ const (
 const (
 	// BackendTypeKernel -
 	BackendTypeKernel = iota
+	// BackendTypeFrontendProxy routes frontend invoke through the frontend-owned
+	// Go runtime seam. The default zero value stays BackendTypeKernel so
+	// existing FRONTEND_CONFIG files keep the old libruntime/CGO path.
+	BackendTypeFrontendProxy
 )
 
 const (

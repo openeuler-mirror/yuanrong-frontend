@@ -23,6 +23,7 @@ import (
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
+	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/common/faas_common/utils"
@@ -88,6 +89,32 @@ func SetAPIClientLibruntime(rt invokerLibruntime) {
 	clientLibruntime = rt
 }
 
+// RuntimeBackendOptions controls staged compatibility behavior behind the
+// existing invokerLibruntime seam.
+type RuntimeBackendOptions struct {
+	// EnableLegacyFallback allows unsupported Go-native methods to call the old
+	// libruntime control path. Keep this false for the target frontend-proxy path
+	// so create/kill/acquire gaps fail fast instead of silently looking complete.
+	EnableLegacyFallback bool
+}
+
+// SetAPIClientRuntimeBackend selects the implementation behind the existing
+// invokerLibruntime seam. Default BackendTypeKernel preserves the old
+// libruntime/CGO path; BackendTypeFrontendProxy installs the Go-native simple
+// runtime so callers above defaultClient do not need a second API.
+func SetAPIClientRuntimeBackend(backendType int, rt invokerLibruntime) {
+	SetAPIClientRuntimeBackendWithOptions(backendType, rt, RuntimeBackendOptions{})
+}
+
+func SetAPIClientRuntimeBackendWithOptions(backendType int, rt invokerLibruntime, opts RuntimeBackendOptions) {
+	if backendType == constant.BackendTypeFrontendProxy {
+		clientLibruntime = newClientSimpleRuntimeWithProxyClientControlAndFallback(
+			newRoutingFrontendProxyInvokeClient(), rt, opts.EnableLegacyFallback)
+		return
+	}
+	clientLibruntime = rt
+}
+
 // InvokeRequest -
 type InvokeRequest struct {
 	Function         string
@@ -142,8 +169,12 @@ type Client interface {
 	CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error)
 	InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error)
 	KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error)
+	CreateRuntimeInstance(funcMeta api.FunctionMeta, args []api.Arg,
+		invokeOpt api.InvokeOptions) (instanceID string, err error)
 	CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg,
 		invokeOpt api.InvokeOptions) (instanceID string, err error)
+	KillInstance(funcMeta api.FunctionMeta, instanceID string, signal int, payload []byte,
+		invokeOpt api.InvokeOptions) (err error)
 	KillByLibRt(instanceID string, signal int, payload []byte) (err error)
 	IsHealth() bool
 	IsDsHealth() bool
@@ -431,7 +462,30 @@ func (c *defaultClient) KillByLibRt(instanceID string, signal int, payload []byt
 	return c.clientLibruntime.Kill(instanceID, signal, payload, api.InvokeOptions{})
 }
 
+func (c *defaultClient) KillInstance(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	signal int,
+	payload []byte,
+	invokeOpt api.InvokeOptions,
+) error {
+	if typedRuntime, ok := c.clientLibruntime.(interface {
+		KillInstance(api.FunctionMeta, string, int, []byte, api.InvokeOptions) error
+	}); ok {
+		return typedRuntime.KillInstance(funcMeta, instanceID, signal, payload, invokeOpt)
+	}
+	return c.clientLibruntime.Kill(instanceID, signal, payload, invokeOpt)
+}
+
 func (c *defaultClient) CreateInstanceByLibRt(
+	funcMeta api.FunctionMeta,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) (string, error) {
+	return c.CreateRuntimeInstance(funcMeta, args, invokeOpt)
+}
+
+func (c *defaultClient) CreateRuntimeInstance(
 	funcMeta api.FunctionMeta,
 	args []api.Arg,
 	invokeOpt api.InvokeOptions,
@@ -449,5 +503,5 @@ func (c *defaultClient) IsHealth() bool {
 }
 
 func (c *defaultClient) IsDsHealth() bool {
-	return c.clientLibruntime.IsHealth()
+	return c.clientLibruntime.IsDsHealth()
 }

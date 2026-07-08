@@ -30,6 +30,7 @@ import (
 	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/frontend/asyncinvocation"
+	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functiontask"
 	"frontend/pkg/frontend/invocation"
@@ -68,6 +69,8 @@ func main() {
 		logAndPrintError(fmt.Sprintf("init module config error: %s", err.Error()))
 		return
 	}
+	util.SetAPIClientRuntimeBackendWithOptions(config.GetConfig().FunctionInvokeBackend, nil,
+		util.RuntimeBackendOptions{EnableLegacyFallback: config.GetConfig().FunctionInvokeLegacyFallback})
 	// Fix Critical #4: Load async invocation config
 	asyncinvocation.LoadConfigFromMain(config.GetConfig())
 	urnutils.SetSeparator(config.GetConfig().FunctionNameSeparator)

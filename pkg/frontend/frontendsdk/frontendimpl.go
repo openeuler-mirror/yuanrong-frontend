@@ -268,7 +268,8 @@ func initSDKHandler(args []api.Arg, rt api.LibruntimeAPI) ([]byte, error) {
 	}
 	initSubscribe()
 	schedulerproxy.Proxy.RTAPI = rt
-	util.SetAPIClientLibruntime(rt)
+	util.SetAPIClientRuntimeBackendWithOptions(config.GetConfig().FunctionInvokeBackend, rt,
+		util.RuntimeBackendOptions{EnableLegacyFallback: config.GetConfig().FunctionInvokeLegacyFallback})
 	datasystemclient.SetStreamEnable(config.GetConfig().StreamEnable)
 	datasystemclient.InitDataSystemLibruntime(config.GetConfig().DataSystemConfig, rt, stopCh)
 	responsehandler.Handler = (&invocation.FGAdapter{}).MakeResponseHandler()

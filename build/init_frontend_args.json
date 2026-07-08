@@ -23,6 +23,9 @@
       "enabled": {auth_enabled}
     },
     "metaServiceAddress": "{meta_service_address}",
+    "functionInvokeBackend": {function_invoke_backend},
+    "functionInvokeLegacyFallback": {function_invoke_legacy_fallback},
+    "frontendProxyAddress": "{frontend_proxy_address}",
     "alarmConfig": {
       "enableAlarm": false,
       "minInsStartInterval": 15,
