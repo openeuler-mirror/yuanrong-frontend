@@ -35,12 +35,16 @@ import (
 )
 
 // EventManager -
-var EventManager *EventManagerInfo
+var (
+	EventManager     *EventManagerInfo
+	BlueEventManager *EventManagerInfo
+)
 
 // EventManagerInfo -
 type EventManagerInfo struct {
 	leaseIds       map[string]map[string]time.Time // instanceName : leaseId : time
 	schedulerInfos map[string]*types.InstanceInfo
+	ringName       string
 	sync.RWMutex
 }
 
@@ -48,7 +52,23 @@ func init() {
 	EventManager = &EventManagerInfo{
 		leaseIds:       make(map[string]map[string]time.Time),
 		schedulerInfos: make(map[string]*types.InstanceInfo),
+		ringName:       constant.GreenRing,
 		RWMutex:        sync.RWMutex{},
+	}
+	BlueEventManager = &EventManagerInfo{
+		leaseIds:       make(map[string]map[string]time.Time),
+		schedulerInfos: make(map[string]*types.InstanceInfo),
+		ringName:       constant.BlueRing,
+		RWMutex:        sync.RWMutex{},
+	}
+}
+
+func (m *EventManagerInfo) getProxyManager() *ProxyManager {
+	switch m.ringName {
+	case constant.BlueRing:
+		return BlueProxy
+	default:
+		return Proxy
 	}
 }
 
@@ -99,8 +119,8 @@ func (m *EventManagerInfo) ProcessDelete(event *etcd3.Event, logger api.FormatLo
 	}
 
 	defer logger.Infof("process delete event over")
-	if needRemove && info != nil && Proxy.ExistInstanceName(info.InstanceName) {
-		Proxy.Remove(info, logger)
+	if needRemove && info != nil && m.getProxyManager().ExistInstanceName(info.InstanceName) {
+		m.getProxyManager().Remove(info, logger)
 		logger.Infof("deleted from ProxyManager")
 	}
 }
@@ -154,7 +174,7 @@ func (m *EventManagerInfo) ProcessUpdate(event *etcd3.Event, logger api.FormatLo
 
 	logger = logger.With(zap.Any("instanceName", info.InstanceName), zap.Any("instanceId", info.InstanceID))
 	schedulerNodeInfo := &SchedulerNodeInfo{InstanceInfo: info, UpdateTime: updateTime}
-	Proxy.Add(schedulerNodeInfo, logger)
+	m.getProxyManager().Add(schedulerNodeInfo, logger)
 	logger.Infof("add to ProxyManager")
 }
 

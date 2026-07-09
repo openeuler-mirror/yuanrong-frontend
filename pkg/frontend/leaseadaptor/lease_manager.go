@@ -58,13 +58,16 @@ const (
 )
 
 var (
-	instanceManager *Manager
-	once            sync.Once
+	instanceManager     *Manager
+	blueInstanceManager *Manager
+	once                sync.Once
+	blueOnce            sync.Once
 )
 
 // Manager manges
 type Manager struct {
 	globalFuncKeyLeasePools map[string]*FuncKeyLeasePools
+	ringName                string
 	sync.RWMutex
 }
 
@@ -73,9 +76,21 @@ func GetInstanceManager() *Manager {
 	once.Do(func() {
 		instanceManager = &Manager{
 			globalFuncKeyLeasePools: make(map[string]*FuncKeyLeasePools, defaultMapSize),
+			ringName:                constant.GreenRing,
 		}
 	})
 	return instanceManager
+}
+
+// GetBlueInstanceManager creates blue Manager
+func GetBlueInstanceManager() *Manager {
+	blueOnce.Do(func() {
+		blueInstanceManager = &Manager{
+			globalFuncKeyLeasePools: make(map[string]*FuncKeyLeasePools, defaultMapSize),
+			ringName:                constant.BlueRing,
+		}
+	})
+	return blueInstanceManager
 }
 
 // ClearFuncLeasePools -
@@ -108,7 +123,7 @@ func (im *Manager) AcquireInstance(ctx *types.InvokeProcessContext, funcSpec *co
 	im.Lock()
 	funcKeyLeasePools, ok := im.globalFuncKeyLeasePools[ctx.FuncKey]
 	if !ok {
-		funcKeyLeasePools = newFuncKeyLeasePools(ctx.FuncKey)
+		funcKeyLeasePools = im.newFuncKeyLeasePools(ctx.FuncKey)
 		im.globalFuncKeyLeasePools[ctx.FuncKey] = funcKeyLeasePools
 	}
 	im.Unlock()
@@ -151,9 +166,10 @@ type FuncKeyLeasePools struct {
 	leaseIdToLeasePool map[string]*LeasePool
 
 	interval atomic.Int64
+	ringName *types.RingName
 }
 
-func newFuncKeyLeasePools(funckey string) *FuncKeyLeasePools {
+func (im *Manager) newFuncKeyLeasePools(funckey string) *FuncKeyLeasePools {
 	funcKeyLeasePools := &FuncKeyLeasePools{
 		leasePools:         make(map[string]*LeasePool),
 		RWMutex:            sync.RWMutex{},
@@ -164,6 +180,7 @@ func newFuncKeyLeasePools(funckey string) *FuncKeyLeasePools {
 		globalLeaseList:    make(map[string]*InstanceLease, defaultMapSize),
 		leaseIdToLeasePool: make(map[string]*LeasePool, defaultMapSize),
 		interval:           atomic.Int64{},
+		ringName:           &types.RingName{Name: im.ringName},
 	}
 	funcKeyLeasePools.interval.Store(int64(defaultRetainLeaseTime * time.Millisecond))
 	go funcKeyLeasePools.loop()
@@ -220,6 +237,7 @@ func getPoolKey(funckey string, option *commontypes.AcquireOption) string {
 		sessionStr = option.InstanceSession.ToString()
 	}
 	splits = append(splits, sessionStr)
+	splits = append(splits, option.RingName)
 	return strings.Join(splits, "|")
 }
 
@@ -233,22 +251,24 @@ func (flps *FuncKeyLeasePools) acquireInstance(option *commontypes.AcquireOption
 		flps.Lock()
 		leasePool, ok = flps.leasePools[poolKey]
 		if !ok {
-			leasePool = newInstanceLeasePool(flps.funcKey, option)
+			leasePool = newInstanceLeasePool(flps.funcKey, option, flps.ringName)
 			flps.leasePools[poolKey] = leasePool
 		}
 		flps.Unlock()
 		flps.RLock()
 	}
+	leasePool.IncPendingReqNum()
+	defer leasePool.DecPendingReqNum()
 	flps.RUnlock()
 	lease, err := leasePool.acquireInstanceLease(option)
 	if err != nil {
 		return nil, err
 	}
-	flps.Lock()
+	flps.RLock()
 
 	flps.globalLeaseList[lease.ThreadID] = lease
 	flps.leaseIdToLeasePool[lease.ThreadID] = leasePool
-	flps.Unlock()
+	flps.RUnlock()
 	return lease.InstanceAllocationInfo, nil
 }
 
@@ -295,7 +315,7 @@ func (flps *FuncKeyLeasePools) loop() {
 func (flps *FuncKeyLeasePools) clearEmptyLeasePool() {
 	flps.Lock()
 	for key, leasePool := range flps.leasePools {
-		if leasePool.empty() {
+		if leasePool.empty() && leasePool.pendingNum.Load() <= 0 {
 			utils.SafeCloseChannel(leasePool.stopCh)
 			delete(flps.leasePools, key)
 		}
@@ -303,15 +323,14 @@ func (flps *FuncKeyLeasePools) clearEmptyLeasePool() {
 	flps.Unlock()
 }
 
-func getSchedulerNodeInfo(lease *InstanceLease) *schedulerproxy.SchedulerNodeInfo {
+func (flps *FuncKeyLeasePools) getSchedulerNodeInfo(lease *InstanceLease) *schedulerproxy.SchedulerNodeInfo {
 	schedulerId := lease.schedulerInstanceId
-	schedulerInfo := schedulerproxy.Proxy.GetSchedulerByInstanceId(schedulerId)
-	logger := log.GetLogger().With(zap.Any("leaseId", lease.ThreadID))
+	schedulerInfo := getProxyManagerByRing(lease.ringName).GetSchedulerByInstanceId(schedulerId)
+	logger := log.GetLogger().With(zap.Any("leaseId", lease.ThreadID), zap.Any("ringName", lease.ringName))
 	if schedulerInfo == nil {
 		var err error
-		schedulerInfo, err = schedulerproxy.Proxy.Get(lease.FuncKey, logger)
+		schedulerInfo, err = getProxyManagerByRing(lease.ringName).Get(lease.FuncKey, logger)
 		if err != nil {
-			lease.RUnlock()
 			logger.Warnf("can not get scheduler")
 			return nil
 		}
@@ -375,12 +394,53 @@ type BatchRetainLeaseInfosArr struct {
 	arr []*BatchRetainLeaseInfos
 }
 
+func (flps *FuncKeyLeasePools) getProxyManager() *schedulerproxy.ProxyManager {
+	if flps.ringName == nil {
+		return schedulerproxy.Proxy
+	}
+	switch flps.ringName.Name {
+	case constant.BlueRing:
+		return schedulerproxy.BlueProxy
+	default:
+		return schedulerproxy.Proxy
+	}
+}
+
+func getProxyManagerByRing(ringName string) *schedulerproxy.ProxyManager {
+	switch ringName {
+	case constant.BlueRing:
+		return schedulerproxy.BlueProxy
+	default:
+		return schedulerproxy.Proxy
+	}
+}
+
+func (flps *FuncKeyLeasePools) setRingName(leaseId string, lease *InstanceLease) {
+	var ringName string
+	leasePool := flps.leaseIdToLeasePool[leaseId]
+	if leasePool != nil && leasePool.session != nil {
+		if ShouldUseBlueRing(utils.ConvertHashToPercent(leasePool.session.SessionID)) {
+			ringName = constant.BlueRing
+		} else {
+			ringName = constant.GreenRing
+		}
+		lease.Lock()
+		defer lease.Unlock()
+		if lease.ringName != ringName {
+			lease.ringName = ringName
+			lease.acquireOption.RingName = ringName
+			lease.reacquire = true
+		}
+	}
+}
+
 func (flps *FuncKeyLeasePools) doBatchRetain() {
 	funcKeyAllBatches := make(map[string]*BatchRetainLeaseInfosArr)
 	exitLeases := make([]*InstanceLease, 0, defaultMapSize)
-	flps.RLock()
+	flps.Lock()
 	for leaseId, lease := range flps.globalLeaseList {
-		logger := log.GetLogger().With(zap.Any("batchRetain", true), zap.Any("leaseId", leaseId))
+		logger := log.GetLogger().With(zap.Any("batchRetain", true), zap.Any("leaseId", leaseId),
+			zap.Any("ringName", lease.ringName))
 		if !leaseCanReuse(lease) || lease.exited.Load() {
 			exitLeases = append(exitLeases, lease)
 			logger.Debugf("lease exited")
@@ -388,8 +448,9 @@ func (flps *FuncKeyLeasePools) doBatchRetain() {
 		}
 		logger.Debugf("doBatchRetain begin")
 
+		flps.setRingName(leaseId, lease)
 		lease.RLock()
-		schedulerInfo := getSchedulerNodeInfo(lease)
+		schedulerInfo := flps.getSchedulerNodeInfo(lease)
 		if schedulerInfo == nil {
 			lease.RUnlock()
 			continue
@@ -421,7 +482,7 @@ func (flps *FuncKeyLeasePools) doBatchRetain() {
 		}
 		lease.RUnlock()
 	}
-	flps.RUnlock()
+	flps.Unlock()
 	flps.processBatchLease(exitLeases, funcKeyAllBatches)
 }
 
@@ -564,21 +625,23 @@ func (flps *FuncKeyLeasePools) processErrBatchResponse(batch *BatchRetainLeaseIn
 
 // LeasePool stores instance leases
 type LeasePool struct {
-	funcKey       string
-	invokeLabel   string
-	poolLabel     string
-	invokeTag     map[string]string
-	session       *commontypes.InstanceSessionConfig
-	sessionCtxID  string
+	funcKey          string
+	invokeLabel      string
+	poolLabel        string
+	invokeTag        map[string]string
+	session          *commontypes.InstanceSessionConfig
+	sessionCtxID     string
 	enableSessionCtx bool
-	idleLeaseList *queue.FifoQueue
-	leaseMap      map[string]*InstanceLease
-	resSpecStr    string
-	stopCh        chan struct{}
+	idleLeaseList    *queue.FifoQueue
+	leaseMap         map[string]*InstanceLease
+	resSpecStr       string
+	stopCh           chan struct{}
 	sync.RWMutex
 	logger        api.FormatLogger
 	leasePoolKey  string
 	inFlightCount atomic.Int32
+	pendingNum    atomic.Int32
+	ringName      *types.RingName
 }
 
 func identityFunc(obj interface{}) string {
@@ -589,21 +652,46 @@ func identityFunc(obj interface{}) string {
 	return ""
 }
 
-func newInstanceLeasePool(funcKey string, option *commontypes.AcquireOption) *LeasePool {
+func newInstanceLeasePool(funcKey string, option *commontypes.AcquireOption, ringName *types.RingName) *LeasePool {
 	return &LeasePool{
-		funcKey:       funcKey,
-		invokeLabel:   option.InstanceLabel,
-		poolLabel:     option.PoolLabel,
-		invokeTag:     option.InvokeTag,
-		session:       option.InstanceSession,
-		sessionCtxID:  option.SessionCtxID,
+		funcKey:          funcKey,
+		invokeLabel:      option.InstanceLabel,
+		poolLabel:        option.PoolLabel,
+		invokeTag:        option.InvokeTag,
+		session:          option.InstanceSession,
+		sessionCtxID:     option.SessionCtxID,
 		enableSessionCtx: option.EnableSessionCtx,
-		idleLeaseList: queue.NewFifoQueue(identityFunc),
-		leaseMap:      make(map[string]*InstanceLease, defaultMapSize),
-		stopCh:        make(chan struct{}),
-		logger:        log.GetLogger().With(zap.Any("poolKey", getPoolKey(funcKey, option))),
-		inFlightCount: atomic.Int32{},
+		idleLeaseList:    queue.NewFifoQueue(identityFunc),
+		leaseMap:         make(map[string]*InstanceLease, defaultMapSize),
+		stopCh:           make(chan struct{}),
+		logger:           log.GetLogger().With(zap.Any("poolKey", getPoolKey(funcKey, option))),
+		inFlightCount:    atomic.Int32{},
+		ringName:         ringName,
 	}
+}
+
+func (lp *LeasePool) getProxyManager() *schedulerproxy.ProxyManager {
+	lp.RLock()
+	defer lp.RUnlock()
+	if lp.ringName == nil {
+		return schedulerproxy.Proxy
+	}
+	switch lp.ringName.Name {
+	case constant.BlueRing:
+		return schedulerproxy.BlueProxy
+	default:
+		return schedulerproxy.Proxy
+	}
+}
+
+// IncPendingReqNum -
+func (lp *LeasePool) IncPendingReqNum() {
+	lp.pendingNum.Add(1)
+}
+
+// DecPendingReqNum -
+func (lp *LeasePool) DecPendingReqNum() {
+	lp.pendingNum.Add(-1)
 }
 
 func (lp *LeasePool) empty() bool {
@@ -624,11 +712,14 @@ func (ip *LeasePool) acquireHandler(funcKey string, option *commontypes.AcquireO
 		var schedulerNodeInfo *schedulerproxy.SchedulerNodeInfo
 		var getSchedulerNodeInfoErr error
 		if option.EnableSessionCtx {
-			logger.Debugf("acquire with sessionCtx routing, funcKey=%s, sessionCtxID=%q", funcKey, option.SessionCtxID)
-			schedulerNodeInfo, getSchedulerNodeInfoErr = schedulerproxy.Proxy.GetWithoutUnexpectedSchedulerInfosWithCtx(
+			logger.Debugf("acquire with sessionCtx routing, funcKey=%s, sessionCtxID=%q",
+				funcKey, option.SessionCtxID)
+			schedulerNodeInfo, getSchedulerNodeInfoErr = getProxyManagerByRing(
+				option.RingName).GetWithoutUnexpectedSchedulerInfosWithCtx(
 				funcKey, option.SessionCtxID, unavailableSchedulerNodeInfos, logger)
 		} else {
-			schedulerNodeInfo, getSchedulerNodeInfoErr = schedulerproxy.Proxy.GetWithoutUnexpectedSchedulerInfos(
+			schedulerNodeInfo, getSchedulerNodeInfoErr = getProxyManagerByRing(
+				option.RingName).GetWithoutUnexpectedSchedulerInfos(
 				funcKey, unavailableSchedulerNodeInfos, logger)
 		}
 		if getSchedulerNodeInfoErr != nil {
@@ -645,7 +736,7 @@ func (ip *LeasePool) acquireHandler(funcKey string, option *commontypes.AcquireO
 			return acquireResponseErr
 		}
 		if acquireResponse != nil && acquireResponse.ErrorCode == statuscode.AcquireNonOwnerSchedulerErrorCode {
-			acquireResponse, getSchedulerNodeInfoErr = acquireWithSameSchedulerIdRetry(funcKey, option,
+			acquireResponse, getSchedulerNodeInfoErr = ip.acquireWithSameSchedulerIdRetry(funcKey, option,
 				acquireResponse.ErrorMessage)
 		}
 		return acquireResponseErr
@@ -672,9 +763,9 @@ func (ip *LeasePool) acquireHandler(funcKey string, option *commontypes.AcquireO
 	return lease, nil
 }
 
-func acquireWithSameSchedulerIdRetry(funcKey string, option *commontypes.AcquireOption, schedulerId string) (
-	*commontypes.InstanceResponse, error) {
-	schedulerNodeInfo := schedulerproxy.Proxy.GetSchedulerByInstanceId(schedulerId)
+func (ip *LeasePool) acquireWithSameSchedulerIdRetry(funcKey string, option *commontypes.AcquireOption,
+	schedulerId string) (*commontypes.InstanceResponse, error) {
+	schedulerNodeInfo := getProxyManagerByRing(option.RingName).GetSchedulerByInstanceId(schedulerId)
 	if schedulerNodeInfo == nil {
 		return nil, fmt.Errorf("not found scheduler: %s info", schedulerId)
 	}
@@ -750,7 +841,7 @@ func (ip *LeasePool) handleLeaseExpiredLoop(lease *InstanceLease) {
 		}
 		if release {
 			ip.removeLease(lease.ThreadID)
-			doReleaseInvoke(ip.funcKey, lease.ThreadID, lease.acquireOption, lease.report(true))
+			ip.doReleaseInvoke(ip.funcKey, lease.ThreadID, lease.acquireOption, lease.report(true))
 			logger.Infof("release lease")
 			return
 		}

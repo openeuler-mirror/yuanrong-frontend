@@ -289,6 +289,7 @@ type InvokeProcessContext struct {
 	InvokeWithoutScheduler bool
 	IsInterrupted          bool
 	SessionCtxID           string
+	RingName               string
 
 	// request info
 	ReqHeader map[string]string
@@ -403,4 +404,9 @@ type RequestTraceInfo struct {
 	FrontendCost time.Duration
 	BusCost      time.Duration
 	WorkerCost   time.Duration
+}
+
+// RingName -
+type RingName struct {
+	Name string
 }

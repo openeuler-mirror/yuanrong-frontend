@@ -27,6 +27,8 @@ import (
 func StartWatch(stopCh <-chan struct{}) error {
 	log.GetLogger().Infof("FaaS-Frontend etcd watcher starting...")
 	go startWatchScheduler(stopCh)
+	go startWatchBlueScheduler(stopCh)
+	go startWatchGrayConf(stopCh)
 	if !config.GetConfig().LeaseBypass {
 		go startWatchRemoteClientLease(stopCh)
 	} else {

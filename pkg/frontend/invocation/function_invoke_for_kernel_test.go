@@ -17,8 +17,10 @@
 package invocation
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/faas_common/statuscode"
 	"frontend/pkg/common/faas_common/types"
+	"frontend/pkg/common/uuid"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
@@ -187,17 +190,26 @@ func Test_needDownGrade(t *testing.T) {
 		defer clearSchedulerProxy()
 		defer instancemanager.GetFaaSSchedulerInstanceManager().Reset()
 
+		ctx := &types2.InvokeProcessContext{
+			InvokeTimeout: 10,
+			RespHeader:    make(map[string]string),
+		}
+		funcSpec := &types.FuncSpec{}
+		funcSpec.ResourceMetaData.CPU = 500
+		funcSpec.ResourceMetaData.Memory = 500
+		handler := newKernelRequestHandler(ctx, funcSpec)
+
 		schedulerInfo := &types.InstanceInfo{}
-		convey.So(needDownGrade(schedulerInfo), convey.ShouldBeTrue)
+		convey.So(handler.needDownGrade(schedulerInfo), convey.ShouldBeTrue)
 
 		mockSchedulerProxyAdd("0")
 		mockSchedulerInstanceAdd("1")
-		convey.So(needDownGrade(schedulerInfo), convey.ShouldBeTrue)
+		convey.So(handler.needDownGrade(schedulerInfo), convey.ShouldBeTrue)
 
-		convey.So(needDownGrade(nil), convey.ShouldBeTrue)
+		convey.So(handler.needDownGrade(nil), convey.ShouldBeTrue)
 
 		mockSchedulerInstanceAdd("0")
-		convey.So(needDownGrade(schedulerInfo), convey.ShouldBeFalse)
+		convey.So(handler.needDownGrade(schedulerInfo), convey.ShouldBeFalse)
 		mockSchedulerProxyRemove("0")
 		mockSchedulerInstanceRemove("0")
 		mockSchedulerInstanceRemove("1")
@@ -325,18 +337,21 @@ func Test_functionInvokeForKernel(t *testing.T) {
 		mockSchedulerProxyAdd("0")
 		mockSchedulerInstanceAdd("0")
 		var getreq util.InvokeRequest
-		defer gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+		defer gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext,
+			req util.InvokeRequest) snerror.SNError {
 			getreq = req
 			return nil
 		}).Reset()
-		p := gomonkey.ApplyFunc(needDownGrade, func() bool {
+		p := gomonkey.ApplyFunc((*kernelRequestHandler).needDownGrade, func(_ *kernelRequestHandler,
+			schedulerInfo *types.InstanceInfo) bool {
 			return false
 		})
 		newKernelRequestHandler(ctx, funcSpec).invoke()
 		p.Reset()
 		convey.So(getreq.InstanceID, convey.ShouldEqual, "")
 		getreq.SchedulerID = ""
-		defer gomonkey.ApplyFunc(needDownGrade, func() bool {
+		defer gomonkey.ApplyFunc((*kernelRequestHandler).needDownGrade, func(_ *kernelRequestHandler,
+			schedulerInfo *types.InstanceInfo) bool {
 			return true
 		}).Reset()
 
@@ -373,7 +388,8 @@ func Test_functionInvokeForKernel_legacy(t *testing.T) {
 		mockSchedulerProxyAdd("0")
 		mockSchedulerInstanceAdd("0")
 		var getreq util.InvokeRequest
-		defer gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext, req util.InvokeRequest) snerror.SNError {
+		defer gomonkey.ApplyFunc(invokeFunctionWithLibRuntime, func(_ *types2.InvokeProcessContext,
+			req util.InvokeRequest) snerror.SNError {
 			getreq = req
 			return nil
 		}).Reset()
@@ -381,14 +397,16 @@ func Test_functionInvokeForKernel_legacy(t *testing.T) {
 			return "libruntime"
 		}).Reset()
 
-		p := gomonkey.ApplyFunc(needDownGrade, func() bool {
+		p := gomonkey.ApplyFunc((*kernelRequestHandler).needDownGrade, func(_ *kernelRequestHandler,
+			schedulerInfo *types.InstanceInfo) bool {
 			return false
 		})
 		newKernelRequestHandler(ctx, funcSpec).invoke()
 		p.Reset()
 		convey.So(getreq.InstanceID, convey.ShouldEqual, "")
 		getreq.SchedulerID = ""
-		defer gomonkey.ApplyFunc(needDownGrade, func() bool {
+		defer gomonkey.ApplyFunc((*kernelRequestHandler).needDownGrade, func(_ *kernelRequestHandler,
+			schedulerInfo *types.InstanceInfo) bool {
 			return true
 		}).Reset()
 
@@ -906,6 +924,74 @@ func Test_kernelRequestHandler_accessFaaSSchedulerWithLibRuntime(t *testing.T) {
 		convey.Convey("test access scheduler type", func() {
 			res := k.accessFaaSSchedulerWithLibRuntime()
 			convey.So(res, convey.ShouldBeFalse)
+		})
+	})
+}
+
+func TestKernelRequestHandlerSetRingName(t *testing.T) {
+	convey.Convey("Test kernelRequestHandler setRingName", t, func() {
+		const testRingRatioDeviation = 500
+		convey.Convey("success", func() {
+			reqHeader := make(map[string]string)
+			session := &types.InstanceSessionConfig{
+				SessionID:   "session-0",
+				SessionTTL:  10,
+				Concurrency: 10,
+			}
+			byteSession, err := json.Marshal(session)
+			convey.So(err, convey.ShouldBeNil)
+			reqHeader[httpconstant.HeaderInstanceSession] = string(byteSession)
+			k := &kernelRequestHandler{
+				logger: log.GetLogger().With(zap.Any("traceId", "123456")),
+				ctx: &types2.InvokeProcessContext{
+					InvokeTimeout: 10,
+					ReqHeader:     reqHeader,
+					RequestID:     "request-green",
+				},
+			}
+
+			value := `{"blue-ratio":"50%"}`
+			event := &etcd3.Event{Value: []byte(value)}
+			leaseadaptor.SetBlueRatio(event, log.GetLogger())
+			err = k.setRingName()
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(k.ringName, convey.ShouldEqual, constant.BlueRing)
+		})
+		convey.Convey("test 10000 request", func() {
+			value := `{"blue-ratio":"50%"}`
+			event := &etcd3.Event{Value: []byte(value)}
+			leaseadaptor.SetBlueRatio(event, log.GetLogger())
+			blueCount := 0
+			greenCount := 0
+			for i := 0; i < 10000; i++ {
+				reqHeader := make(map[string]string)
+				session := &types.InstanceSessionConfig{
+					SessionID:   uuid.New().String(),
+					SessionTTL:  10,
+					Concurrency: 10,
+				}
+				byteSession, err := json.Marshal(session)
+				convey.So(err, convey.ShouldBeNil)
+				reqHeader[httpconstant.HeaderInstanceSession] = string(byteSession)
+
+				k := &kernelRequestHandler{
+					logger: log.GetLogger().With(zap.Any("traceId", "123456")),
+					ctx: &types2.InvokeProcessContext{
+						InvokeTimeout: 10,
+						ReqHeader:     reqHeader,
+						RequestID:     uuid.New().String(),
+					},
+				}
+				k.setRingName()
+				if k.ringName == constant.BlueRing {
+					blueCount++
+				} else {
+					greenCount++
+				}
+			}
+			if !(math.Abs(float64(blueCount-greenCount)) < testRingRatioDeviation) {
+				t.Errorf("blueCount: %d, greenCount: %d", blueCount, greenCount)
+			}
 		})
 	})
 }

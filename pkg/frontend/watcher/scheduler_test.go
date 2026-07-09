@@ -48,6 +48,7 @@ func TestStartWatchScheduler(t *testing.T) {
 			}
 		}()
 		startWatchScheduler(make(chan struct{}))
+		startWatchBlueScheduler(make(chan struct{}))
 	})
 }
 
@@ -61,6 +62,14 @@ func TestSchedulerFilter(t *testing.T) {
 			Key: "/sn/instance/business/yrk/tenant/0/function/scheduler/version/latest/defaultaz/requestID/3f079541-15fc-4009-8c41-50b2b2936772",
 		}
 		So(schedulerFilter(event), ShouldBeTrue)
+		event = &etcd3.Event{
+			Key: "/sn/faas-scheduler-b/instances/cluster001/7.218.100.25/faas-scheduler-59ddbc4b75-8xdjf",
+		}
+		So(blueSchedulerFilter(event), ShouldBeFalse)
+		event = &etcd3.Event{
+			Key: "/sn/faas-scheduler/instances/cluster001/7.218.100.25/faas-scheduler-59ddbc4b75-8xdjf",
+		}
+		So(blueSchedulerFilter(event), ShouldBeTrue)
 	})
 }
 
@@ -124,6 +133,15 @@ func TestSchedulerHandler(t *testing.T) {
 	Convey("Test function scheduler Handler", t, func() {
 		for _, event := range events {
 			schedulerHandler(&event)
+		}
+		So(atomic.LoadInt32(&founded), ShouldEqual, 1)
+		So(atomic.LoadInt32(&missed), ShouldEqual, 1)
+	})
+	Convey("Test blue scheduler Handler", t, func() {
+		atomic.StoreInt32(&founded, 0)
+		atomic.StoreInt32(&missed, 0)
+		for _, event := range events {
+			blueSchedulerHandler(&event)
 		}
 		So(atomic.LoadInt32(&founded), ShouldEqual, 1)
 		So(atomic.LoadInt32(&missed), ShouldEqual, 1)

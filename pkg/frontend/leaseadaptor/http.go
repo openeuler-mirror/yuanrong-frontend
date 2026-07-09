@@ -247,14 +247,15 @@ func QuerySession(funcKey, sessionID, traceID string) (*types.InstanceAllocation
 }
 
 // 不用关心是否成功
-func doReleaseInvoke(funcKey string, leaseId string, option *types.AcquireOption, report *InstanceReport) {
-	logger := log.GetLogger().With(zap.Any("leaseId", leaseId))
+func (ip *LeasePool) doReleaseInvoke(funcKey string, leaseId string, option *types.AcquireOption,
+	report *InstanceReport) {
+	logger := log.GetLogger().With(zap.Any("leaseId", leaseId), zap.Any("ringName", option.RingName))
 	args, err := createReleaseArgs(leaseId, option, report)
 	if err != nil {
 		logger.Warnf("create release args failed, abort release, err: %s", err.Error())
 		return
 	}
-	schedulerInfo, err := schedulerproxy.Proxy.Get(funcKey, logger)
+	schedulerInfo, err := getProxyManagerByRing(option.RingName).Get(funcKey, logger)
 	if err != nil {
 		logger.Errorf("can not get scheduler, err: %s", err.Error())
 		return

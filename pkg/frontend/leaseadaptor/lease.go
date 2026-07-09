@@ -38,6 +38,7 @@ func newInstanceLease(info *types.InstanceAllocationInfo, acquireOption *types.A
 		beginRelease:           atomic.Bool{},
 		schedulerInstanceId:    "",
 		reacquire:              false,
+		ringName:               acquireOption.RingName,
 		RWMutex:                sync.RWMutex{},
 	}
 	lease.available.Store(true)
@@ -57,6 +58,7 @@ type InstanceLease struct {
 
 	schedulerInstanceId string
 	reacquire           bool
+	ringName            string
 	sync.RWMutex
 }
 

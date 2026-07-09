@@ -76,10 +76,10 @@ func TestCreateAcquireArgs(t *testing.T) {
 
 		Convey("enableSessionCtx=true writes sessionCtxID to extraData", func() {
 			option := &commontypes.AcquireOption{
-				TraceID:         "trace-123",
-				ResourceSpecs:   map[string]int64{"CPU": 1, "memory": 5},
+				TraceID:          "trace-123",
+				ResourceSpecs:    map[string]int64{"CPU": 1, "memory": 5},
 				EnableSessionCtx: true,
-				SessionCtxID:    "useraaa",
+				SessionCtxID:     "useraaa",
 			}
 
 			args, err := createAcquireArgs(option, "test-func")
@@ -94,10 +94,10 @@ func TestCreateAcquireArgs(t *testing.T) {
 
 		Convey("enableSessionCtx=false does not write sessionCtxID", func() {
 			option := &commontypes.AcquireOption{
-				TraceID:         "trace-123",
-				ResourceSpecs:   map[string]int64{"CPU": 1, "memory": 5},
+				TraceID:          "trace-123",
+				ResourceSpecs:    map[string]int64{"CPU": 1, "memory": 5},
 				EnableSessionCtx: false,
-				SessionCtxID:    "useraaa",
+				SessionCtxID:     "useraaa",
 			}
 
 			args, err := createAcquireArgs(option, "test-func")
@@ -111,10 +111,10 @@ func TestCreateAcquireArgs(t *testing.T) {
 
 		Convey("enableSessionCtx=true with empty sessionCtxID writes empty string", func() {
 			option := &commontypes.AcquireOption{
-				TraceID:         "trace-123",
-				ResourceSpecs:   map[string]int64{"CPU": 1, "memory": 5},
+				TraceID:          "trace-123",
+				ResourceSpecs:    map[string]int64{"CPU": 1, "memory": 5},
 				EnableSessionCtx: true,
-				SessionCtxID:    "",
+				SessionCtxID:     "",
 			}
 
 			args, err := createAcquireArgs(option, "test-func")
@@ -243,7 +243,8 @@ func TestDoReleaseInvoke(t *testing.T) {
 			}).Reset()
 
 			So(func() {
-				doReleaseInvoke("test-func", "lease-123", &commontypes.AcquireOption{}, &InstanceReport{})
+				leasePool := LeasePool{}
+				leasePool.doReleaseInvoke("test-func", "lease-123", &commontypes.AcquireOption{}, &InstanceReport{})
 			}, ShouldNotPanic)
 		})
 
@@ -262,7 +263,10 @@ func TestDoReleaseInvoke(t *testing.T) {
 				return nil
 			}).Reset()
 
-			doReleaseInvoke("test-func", "lease-123", &commontypes.AcquireOption{}, &InstanceReport{})
+			leasePool := LeasePool{}
+
+			leasePool.doReleaseInvoke("test-func", "lease-123", &commontypes.AcquireOption{}, &InstanceReport{})
+
 			So(called, ShouldBeTrue)
 		})
 	})
@@ -276,7 +280,8 @@ func TestDoBatchRetainInvoke(t *testing.T) {
 			}).Reset()
 
 			So(func() {
-				doReleaseInvoke("test-func", "lease-123", &commontypes.AcquireOption{}, &InstanceReport{})
+				leasePool := LeasePool{}
+				leasePool.doReleaseInvoke("test-func", "lease-123", &commontypes.AcquireOption{}, &InstanceReport{})
 			}, ShouldNotPanic)
 		})
 

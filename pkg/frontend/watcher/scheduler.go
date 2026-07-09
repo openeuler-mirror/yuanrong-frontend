@@ -57,3 +57,33 @@ func schedulerHandler(event *etcd3.Event) {
 		logger.Warnf("unsupported event, type is %d", event.Type)
 	}
 }
+
+func startWatchBlueScheduler(stopCh <-chan struct{}) {
+	etcdClient := etcd3.GetRouterEtcdClient()
+	watcher := etcd3.NewEtcdWatcher(constant.SchedulerBlueHashPrefix, blueSchedulerFilter, blueSchedulerHandler,
+		stopCh, etcdClient)
+	watcher.StartWatch()
+}
+
+func blueSchedulerFilter(event *etcd3.Event) bool {
+	return !strings.Contains(event.Key, constant.SchedulerBlueHashPrefix)
+}
+
+func blueSchedulerHandler(event *etcd3.Event) {
+	logger := log.GetLogger().With(zap.Any("eventType", event.Type), zap.Any("eventKey", event.Key),
+		zap.Any("revisionId", event.Rev))
+	logger.Infof("recv blue scheduler event type")
+	if event.Type == etcd3.SYNCED {
+		return
+	}
+	switch event.Type {
+	case etcd3.SYNCED:
+		logger.Infof("faaSFrontend scheduler ready to receive etcd kv")
+	case etcd3.PUT:
+		schedulerproxy.BlueEventManager.ProcessUpdate(event, logger)
+	case etcd3.DELETE:
+		schedulerproxy.BlueEventManager.ProcessDelete(event, logger)
+	default:
+		logger.Warnf("unsupported event, type is %d", event.Type)
+	}
+}

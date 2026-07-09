@@ -35,7 +35,7 @@ func TestInterfaceLogger(t *testing.T) {
 	})
 	defer patch.Reset()
 	cfg := InterfaceEncoderConfig{ModuleName: "WorkerManager"}
-	interfaceLog, err := NewInterfaceLogger("", "worker-manager-interface", cfg)
+	interfaceLog, err := NewInterfaceLogger("worker-manager-interface", cfg)
 	interfaceLog.Write("123")
 	assert.Empty(t, err)
 	assert.NotEmpty(t, interfaceLog)

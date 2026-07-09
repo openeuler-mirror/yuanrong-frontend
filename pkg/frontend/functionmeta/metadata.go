@@ -226,8 +226,10 @@ func ProcessDelete(etcdKey string, ETCDType string) error {
 	}
 	sf.Remove(functionKey)
 	schedulerproxy.Proxy.DeleteBalancer(functionKey)
+	schedulerproxy.BlueProxy.DeleteBalancer(functionKey)
 	log.GetLogger().Infof("delete function balancer :%s, type: %s", functionKey, ETCDType)
 	leaseadaptor.GetInstanceManager().ClearFuncLeasePools(functionKey)
+	leaseadaptor.GetBlueInstanceManager().ClearFuncLeasePools(functionKey)
 	return nil
 }
 

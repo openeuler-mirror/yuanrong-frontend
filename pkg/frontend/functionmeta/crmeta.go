@@ -57,7 +57,9 @@ func ProcessDeleteFromCr(functionKey string) error {
 	subject.PublishEvent(subscriber.Delete, spec)
 	sf.Remove(functionKey)
 	schedulerproxy.Proxy.DeleteBalancer(functionKey)
+	schedulerproxy.BlueProxy.DeleteBalancer(functionKey)
 	log.GetLogger().Infof("delete function balancer :%s, from cr", functionKey)
 	leaseadaptor.GetInstanceManager().ClearFuncLeasePools(functionKey)
+	leaseadaptor.GetBlueInstanceManager().ClearFuncLeasePools(functionKey)
 	return nil
 }

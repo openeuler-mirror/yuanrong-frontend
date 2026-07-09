@@ -65,6 +65,7 @@ func makeAcquireOption(ctx *types.InvokeProcessContext, funcSpec *commontypes.Fu
 		PoolLabel:           util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderPoolLabel),
 		InvokeTag:           convertInvokeTag(ctx),
 		InstanceLabel:       util.PeekIgnoreCase(ctx.ReqHeader, httpconstant.HeaderInstanceLabel),
+		RingName:            ctx.RingName,
 		EnableSessionCtx:    funcSpec.ExtendedMetaData.EnableSessionCtx,
 	}
 

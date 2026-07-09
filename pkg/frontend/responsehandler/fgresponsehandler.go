@@ -68,6 +68,9 @@ func (f *FGResponseHandler) SetResponseFromInvocation(ctx *types.InvokeProcessCo
 // SetResponseFromFrontend -
 func (f *FGResponseHandler) SetResponseFromFrontend(ctx *types.InvokeProcessContext,
 	innerCode int, message interface{}) {
+	if ctx.RespHeader == nil {
+		ctx.RespHeader = make(map[string]string)
+	}
 	if len(ctx.RespHeader) > 0 {
 		return
 	}
