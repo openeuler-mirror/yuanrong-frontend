@@ -37,6 +37,23 @@ var gInstanceScheduler = &FunctionInstancesMap{
 
 var routeOnlyInstances sync.Map // key: instanceID, value: *types.InstanceSpecification
 
+// RouteOnlyInstanceSnapshot is a payload-free, read-only view of the minimal
+// route hint maintained by the frontend-proxy path. It is intentionally not an
+// authentication or full instance-lifecycle record.
+type RouteOnlyInstanceSnapshot struct {
+	InstanceID      string `json:"instanceID"`
+	Function        string `json:"function,omitempty"`
+	FunctionProxyID string `json:"functionProxyID,omitempty"`
+	Present         bool   `json:"present"`
+}
+
+// RouteOnlyInstanceChange captures the observable before/after state of a
+// normal route-hint removal without exposing request payloads.
+type RouteOnlyInstanceChange struct {
+	Before RouteOnlyInstanceSnapshot `json:"before"`
+	After  RouteOnlyInstanceSnapshot `json:"after"`
+}
+
 var subject = subscriber.NewSubject()
 
 // GetInstanceSubject -
@@ -137,12 +154,41 @@ func RecordRouteOnlyInstance(funcKey, instanceID, functionProxyAddress string) {
 	})
 }
 
+// SnapshotRouteOnlyInstance returns a payload-free view without mutating the
+// route cache. Absence is represented explicitly with the requested instance.
+func SnapshotRouteOnlyInstance(instanceID string) RouteOnlyInstanceSnapshot {
+	snapshot := RouteOnlyInstanceSnapshot{InstanceID: instanceID}
+	if instanceID == "" {
+		return snapshot
+	}
+	value, ok := routeOnlyInstances.Load(instanceID)
+	if !ok {
+		return snapshot
+	}
+	instance, _ := value.(*types.InstanceSpecification)
+	if instance == nil {
+		return snapshot
+	}
+	snapshot.Function = instance.Function
+	snapshot.FunctionProxyID = instance.FunctionProxyID
+	snapshot.Present = true
+	return snapshot
+}
+
+// RemoveRouteOnlyInstanceWithSnapshot removes a normal route-only hint and
+// returns payload-free evidence of the state transition.
+func RemoveRouteOnlyInstanceWithSnapshot(instanceID string) RouteOnlyInstanceChange {
+	change := RouteOnlyInstanceChange{Before: SnapshotRouteOnlyInstance(instanceID)}
+	if instanceID != "" {
+		routeOnlyInstances.Delete(instanceID)
+	}
+	change.After = SnapshotRouteOnlyInstance(instanceID)
+	return change
+}
+
 // RemoveRouteOnlyInstance clears route-only metadata after frontend-proxy kill.
 func RemoveRouteOnlyInstance(instanceID string) {
-	if instanceID == "" {
-		return
-	}
-	routeOnlyInstances.Delete(instanceID)
+	_ = RemoveRouteOnlyInstanceWithSnapshot(instanceID)
 }
 
 func (g *FunctionInstancesMap) addInstance(funcKey string, instance *types.InstanceSpecification,

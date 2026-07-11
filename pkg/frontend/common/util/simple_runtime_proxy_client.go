@@ -19,6 +19,7 @@ package util
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -42,12 +43,18 @@ import (
 	"frontend/pkg/common/faas_common/grpc/pb/common"
 	"frontend/pkg/common/faas_common/grpc/pb/core"
 	"frontend/pkg/common/faas_common/grpc/pb/frontend_proxy"
+	"frontend/pkg/common/faas_common/logger/log"
 	commontypes "frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/instancemanager"
 )
 
 var frontendProxyRequestSeq atomic.Uint64
+
+var (
+	frontendRouteLifecycleObserverMu sync.RWMutex
+	frontendRouteLifecycleObserver   func(frontendRouteLifecycleEvent)
+)
 
 const (
 	frontendProxyRouteKey                             = "YR_ROUTE"
@@ -67,6 +74,47 @@ type grpcFrontendProxyInvokeClient struct {
 type grpcFrontendProxyLifecycleClient struct {
 	client           frontend_proxy.FrontendProxyServiceClient
 	frontendClientID string
+}
+
+type frontendRouteLifecycleEvent struct {
+	Operation          string `json:"operation"`
+	Outcome            string `json:"outcome"`
+	CleanupOutcome     string `json:"cleanupOutcome"`
+	RequestID          string `json:"requestID"`
+	TraceID            string `json:"traceID,omitempty"`
+	InstanceID         string `json:"instanceID"`
+	OwningProxyID      string `json:"owningProxyID,omitempty"`
+	RoutePresentBefore bool   `json:"routePresentBefore"`
+	RoutePresentAfter  bool   `json:"routePresentAfter"`
+	ReplayAttempted    bool   `json:"replayAttempted"`
+}
+
+func observeFrontendRouteLifecycle(req simpleRuntimeKillRequest, outcome string,
+	change instancemanager.RouteOnlyInstanceChange,
+) {
+	event := frontendRouteLifecycleEvent{
+		Operation:          "kill",
+		Outcome:            outcome,
+		CleanupOutcome:     "route-hint-cleared",
+		RequestID:          req.requestID,
+		TraceID:            firstNonEmpty(req.options.TraceID, req.options.CustomExtensions[traceParentExtensionKey]),
+		InstanceID:         req.instanceID,
+		OwningProxyID:      change.Before.FunctionProxyID,
+		RoutePresentBefore: change.Before.Present,
+		RoutePresentAfter:  change.After.Present,
+		ReplayAttempted:    false,
+	}
+	if encoded, err := json.Marshal(event); err == nil {
+		log.GetLogger().Infof("frontend_route_lifecycle %s", encoded)
+	} else {
+		log.GetLogger().Warnf("failed to encode frontend route lifecycle event: %v", err)
+	}
+	frontendRouteLifecycleObserverMu.RLock()
+	observer := frontendRouteLifecycleObserver
+	frontendRouteLifecycleObserverMu.RUnlock()
+	if observer != nil {
+		observer(event)
+	}
 }
 
 func newGRPCFrontendProxyInvokeClient(client frontend_proxy.FrontendProxyServiceClient,
@@ -265,7 +313,8 @@ func (c *grpcFrontendProxyLifecycleClient) KillInstance(req simpleRuntimeKillReq
 	if killResp.GetCode() != common.ErrorCode_ERR_NONE {
 		return frontendProxyBusinessError("kill", killResp.GetCode(), killResp.GetMessage())
 	}
-	instancemanager.RemoveRouteOnlyInstance(req.instanceID)
+	change := instancemanager.RemoveRouteOnlyInstanceWithSnapshot(req.instanceID)
+	observeFrontendRouteLifecycle(req, "success", change)
 	return nil
 }
 
@@ -470,7 +519,8 @@ func (c *routingFrontendProxyLifecycleClient) KillInstance(req simpleRuntimeKill
 			// A stale owner response is a refresh hint, not permission to replay a
 			// kill whose dispatch outcome may be unknown. Drop only the local
 			// route-only hint so a later caller can resolve fresh watcher state.
-			instancemanager.RemoveRouteOnlyInstance(req.instanceID)
+			change := instancemanager.RemoveRouteOnlyInstanceWithSnapshot(req.instanceID)
+			observeFrontendRouteLifecycle(req, "route-stale", change)
 		}
 		evictFrontendProxyClientOnError(c.clientFactory, address, err)
 		return err

@@ -781,10 +781,17 @@ func TestGRPCFrontendProxyLifecycleClientClearsRouteOnlyCacheAfterKill(t *testin
 		},
 	}
 	client := newGRPCFrontendProxyLifecycleClient(fakeService, "frontend-1")
+	var event frontendRouteLifecycleEvent
+	restoreObserver := setFrontendRouteLifecycleObserverForTest(func(got frontendRouteLifecycleEvent) {
+		event = got
+	})
+	defer restoreObserver()
 
 	err = client.KillInstance(simpleRuntimeKillRequest{
 		instanceID: instanceID,
 		tenantID:   "tenant",
+		requestID:  "kill-correlation-id",
+		options:    api.InvokeOptions{TraceID: "trace-kill-cleanup"},
 	})
 
 	require.NoError(t, err)
@@ -794,6 +801,19 @@ func TestGRPCFrontendProxyLifecycleClientClearsRouteOnlyCacheAfterKill(t *testin
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), frontendProxyRouteKey)
+	require.Equal(t, "kill", event.Operation)
+	require.Equal(t, "success", event.Outcome)
+	require.Equal(t, "route-hint-cleared", event.CleanupOutcome)
+	require.Equal(t, "kill-correlation-id", event.RequestID)
+	require.Equal(t, "trace-kill-cleanup", event.TraceID)
+	require.Equal(t, instanceID, event.InstanceID)
+	require.Equal(t, "proxy-node-killed", event.OwningProxyID)
+	require.True(t, event.RoutePresentBefore)
+	require.False(t, event.RoutePresentAfter)
+	require.False(t, event.ReplayAttempted)
+	encoded, marshalErr := json.Marshal(event)
+	require.NoError(t, marshalErr)
+	require.NotContains(t, string(encoded), "payload")
 }
 
 func TestGRPCFrontendProxyLifecycleClientReturnsCreateError(t *testing.T) {
@@ -1577,8 +1597,18 @@ func TestRoutingFrontendProxyLifecycleClientRouteStaleDropsRouteHintWithoutRepla
 		clientFactory:    factory,
 		frontendClientID: "frontend-test",
 	}
+	var event frontendRouteLifecycleEvent
+	restoreObserver := setFrontendRouteLifecycleObserverForTest(func(got frontendRouteLifecycleEvent) {
+		event = got
+	})
+	defer restoreObserver()
 
-	err := client.KillInstance(simpleRuntimeKillRequest{instanceID: instanceID, tenantID: "tenant"})
+	err := client.KillInstance(simpleRuntimeKillRequest{
+		instanceID: instanceID,
+		tenantID:   "tenant",
+		requestID:  "kill-route-stale-correlation",
+		options:    api.InvokeOptions{TraceID: "trace-kill-route-stale"},
+	})
 
 	require.Error(t, err)
 	require.Equal(t, 1, fakeService.calls, "route refresh must never replay kill automatically")
@@ -1588,6 +1618,27 @@ func TestRoutingFrontendProxyLifecycleClientRouteStaleDropsRouteHintWithoutRepla
 		instanceID: instanceID,
 	})
 	require.Error(t, resolveErr, "stale route-only owner must be dropped for later fresh resolution")
+	require.Equal(t, "route-stale", event.Outcome)
+	require.Equal(t, "route-hint-cleared", event.CleanupOutcome)
+	require.Equal(t, "kill-route-stale-correlation", event.RequestID)
+	require.Equal(t, "trace-kill-route-stale", event.TraceID)
+	require.Equal(t, instanceID, event.InstanceID)
+	require.Equal(t, "proxy-stale-owner", event.OwningProxyID)
+	require.True(t, event.RoutePresentBefore)
+	require.False(t, event.RoutePresentAfter)
+	require.False(t, event.ReplayAttempted)
+}
+
+func setFrontendRouteLifecycleObserverForTest(observer func(frontendRouteLifecycleEvent)) func() {
+	frontendRouteLifecycleObserverMu.Lock()
+	previous := frontendRouteLifecycleObserver
+	frontendRouteLifecycleObserver = observer
+	frontendRouteLifecycleObserverMu.Unlock()
+	return func() {
+		frontendRouteLifecycleObserverMu.Lock()
+		frontendRouteLifecycleObserver = previous
+		frontendRouteLifecycleObserverMu.Unlock()
+	}
 }
 
 func TestRoutingFrontendProxyInvokeClientRawPropagatesTraceParent(t *testing.T) {

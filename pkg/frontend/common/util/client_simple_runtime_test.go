@@ -447,7 +447,8 @@ func TestClientSimpleRuntimeKillRawUsesLifecycleClientWhenFrontendProxyBackendEn
 	})
 	require.NoError(t, err)
 
-	got, err := runtime.KillRaw(killReq, api.RawRequestOption{TraceParent: "traceparent-kill"})
+	traceParent := "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01"
+	got, err := runtime.KillRaw(killReq, api.RawRequestOption{TraceParent: traceParent})
 
 	require.NoError(t, err)
 	killResp := &core.KillResponse{}
@@ -459,8 +460,15 @@ func TestClientSimpleRuntimeKillRawUsesLifecycleClientWhenFrontendProxyBackendEn
 	require.Equal(t, []byte("kill-payload"), lifecycle.killReq.payload)
 	require.NotEqual(t, "raw-kill-request", lifecycle.killReq.requestID)
 	require.Contains(t, lifecycle.killReq.requestID, "frontend-proxy-kill-")
-	require.Equal(t, "traceparent-kill", lifecycle.killReq.options.CustomExtensions[traceParentExtensionKey])
+	require.Equal(t, "123e4567e89b12d3a456426614174000", lifecycle.killReq.options.TraceID)
+	require.Equal(t, traceParent, lifecycle.killReq.options.CustomExtensions[traceParentExtensionKey])
 	require.Nil(t, control.killRawReq.payload)
+}
+
+func TestTraceIDFromTraceParentRejectsInvalidOrZeroTrace(t *testing.T) {
+	require.Empty(t, traceIDFromTraceParent("not-a-traceparent"))
+	require.Empty(t, traceIDFromTraceParent("00-00000000000000000000000000000000-0123456789abcdef-01"))
+	require.Empty(t, traceIDFromTraceParent("00-not-hex-not-hex-not-hex-not-hex-0123456789abcdef-01"))
 }
 
 func TestClientSimpleRuntimeKillRawContextPropagatesCancellation(t *testing.T) {

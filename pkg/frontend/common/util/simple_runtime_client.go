@@ -18,7 +18,9 @@ package util
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -29,6 +31,17 @@ import (
 	"frontend/pkg/common/faas_common/grpc/pb/core"
 	"frontend/pkg/common/faas_common/logger/log"
 )
+
+func traceIDFromTraceParent(traceParent string) string {
+	parts := strings.Split(traceParent, "-")
+	if len(parts) != 4 || len(parts[1]) != 32 {
+		return ""
+	}
+	if _, err := hex.DecodeString(parts[1]); err != nil || parts[1] == strings.Repeat("0", 32) {
+		return ""
+	}
+	return parts[1]
+}
 
 var _ invokerLibruntime = (*clientSimpleRuntime)(nil)
 
@@ -339,9 +352,12 @@ func (c *clientSimpleRuntime) KillRawContext(ctx context.Context, killReqRaw []b
 			signal:     int(killReq.GetSignal()),
 			payload:    killReq.GetPayload(),
 			requestID:  newFrontendProxyLifecycleCorrelationID("kill"),
-			options: api.InvokeOptions{CustomExtensions: map[string]string{
-				traceParentExtensionKey: option.TraceParent,
-			}},
+			options: api.InvokeOptions{
+				TraceID: traceIDFromTraceParent(option.TraceParent),
+				CustomExtensions: map[string]string{
+					traceParentExtensionKey: option.TraceParent,
+				},
+			},
 		}); err != nil {
 			return nil, err
 		}
