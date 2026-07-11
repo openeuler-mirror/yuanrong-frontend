@@ -17,6 +17,7 @@
 package util
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -39,11 +40,13 @@ type simpleRuntimeInvokeRequest struct {
 }
 
 type simpleRuntimeRawInvokeRequest struct {
+	ctx     context.Context
 	invoke  []byte
 	options api.RawRequestOption
 }
 
 type simpleRuntimeRawCreateRequest struct {
+	ctx     context.Context
 	create  []byte
 	options api.RawRequestOption
 }
@@ -56,6 +59,7 @@ type simpleRuntimeCreateRequest struct {
 }
 
 type simpleRuntimeKillRequest struct {
+	ctx        context.Context
 	instanceID string
 	tenantID   string
 	signal     int
@@ -283,13 +287,19 @@ func (c *clientSimpleRuntime) KillInstance(
 }
 
 func (c *clientSimpleRuntime) CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
+	return c.CreateInstanceRawContext(context.Background(), createReqRaw, option)
+}
+
+func (c *clientSimpleRuntime) CreateInstanceRawContext(ctx context.Context, createReqRaw []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
 	// Raw create is a two-phase contract: the HTTP/POSIX caller expects the final
 	// runtime NotifyRequest-compatible result, not the immediate scheduler
 	// CreateResponse. The frontend-proxy path is eligible only after proxy create
 	// carries the ready CallResult; explicit legacy fallback remains the rollback
 	// lane for actor/old stream semantics.
 	if !c.legacyFallback && c.lifecycleClient != nil {
-		return c.lifecycleClient.CreateInstanceRaw(simpleRuntimeRawCreateRequest{create: createReqRaw, options: option})
+		return c.lifecycleClient.CreateInstanceRaw(simpleRuntimeRawCreateRequest{ctx: ctx, create: createReqRaw, options: option})
 	}
 	if c.legacyFallback && c.control != nil {
 		return c.control.CreateInstanceRaw(createReqRaw, option)
@@ -298,24 +308,37 @@ func (c *clientSimpleRuntime) CreateInstanceRaw(createReqRaw []byte, option api.
 }
 
 func (c *clientSimpleRuntime) InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
+	return c.InvokeByInstanceIdRawContext(context.Background(), invokeReqRaw, option)
+}
+
+func (c *clientSimpleRuntime) InvokeByInstanceIdRawContext(ctx context.Context, invokeReqRaw []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
 	if c.proxyClient == nil {
 		return nil, c.unsupported("InvokeByInstanceIdRaw")
 	}
-	return c.proxyClient.InvokeByInstanceIDRaw(simpleRuntimeRawInvokeRequest{invoke: invokeReqRaw, options: option})
+	return c.proxyClient.InvokeByInstanceIDRaw(simpleRuntimeRawInvokeRequest{ctx: ctx, invoke: invokeReqRaw, options: option})
 }
 
 func (c *clientSimpleRuntime) KillRaw(killReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
+	return c.KillRawContext(context.Background(), killReqRaw, option)
+}
+
+func (c *clientSimpleRuntime) KillRawContext(ctx context.Context, killReqRaw []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
 	if !c.legacyFallback && c.lifecycleClient != nil {
 		killReq := &core.KillRequest{}
 		if err := proto.Unmarshal(killReqRaw, killReq); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal frontend proxy kill request: %w", err)
 		}
 		if err := c.lifecycleClient.KillInstance(simpleRuntimeKillRequest{
+			ctx:        ctx,
 			instanceID: killReq.GetInstanceID(),
 			tenantID:   c.currentTenantID(),
 			signal:     int(killReq.GetSignal()),
 			payload:    killReq.GetPayload(),
-			requestID:  killReq.GetRequestID(),
+			requestID:  newFrontendProxyLifecycleCorrelationID("kill"),
 			options: api.InvokeOptions{CustomExtensions: map[string]string{
 				traceParentExtensionKey: option.TraceParent,
 			}},

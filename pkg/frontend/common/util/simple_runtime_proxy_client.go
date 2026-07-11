@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -188,12 +189,11 @@ func (c *grpcFrontendProxyLifecycleClient) CreateInstanceRaw(req simpleRuntimeRa
 	if err := proto.Unmarshal(req.create, createReq); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal frontend proxy create request: %w", err)
 	}
-	requestID := firstNonEmpty(createReq.GetRequestID(), fmt.Sprintf("frontend-proxy-create-%d", frontendProxyRequestSeq.Add(1)))
-	if createReq.RequestID == "" {
-		createReq.RequestID = requestID
-	}
+	externalRequestID := createReq.GetRequestID()
+	requestID := newFrontendProxyLifecycleCorrelationID("create")
+	createReq.RequestID = requestID
 	applyRawRequestOptionsToCreate(createReq, req.options)
-	ctx, cancel := rawSimpleRuntimeContext(req.options)
+	ctx, cancel := rawSimpleRuntimeContext(req.ctx, req.options)
 	defer cancel()
 	resp, err := c.client.CreateInstance(ctx, &frontend_proxy.CreateInstanceRequest{
 		Context: rawFrontendRequestContext(
@@ -230,7 +230,7 @@ func (c *grpcFrontendProxyLifecycleClient) CreateInstanceRaw(req simpleRuntimeRa
 			instancemanager.RecordRouteOnlyInstance(createReq.GetFunction(), instanceID, routeAddress)
 		}
 	}
-	return marshalRuntimeNotifyFromCallResult(callResult)
+	return marshalRuntimeNotifyFromCallResultWithRequestID(callResult, firstNonEmpty(externalRequestID, requestID))
 }
 
 func (c *grpcFrontendProxyLifecycleClient) KillInstance(req simpleRuntimeKillRequest) error {
@@ -238,7 +238,7 @@ func (c *grpcFrontendProxyLifecycleClient) KillInstance(req simpleRuntimeKillReq
 		return fmt.Errorf("frontend proxy grpc client is nil")
 	}
 	requestID := firstNonEmpty(req.requestID, fmt.Sprintf("frontend-proxy-kill-%d", frontendProxyRequestSeq.Add(1)))
-	ctx, cancel := simpleRuntimeInvokeContext(req.options)
+	ctx, cancel := simpleRuntimeInvokeContextWithParent(req.ctx, req.options)
 	defer cancel()
 	resp, err := c.client.KillInstance(ctx, &frontend_proxy.KillInstanceRequest{
 		Context: frontendRequestContextFromInvokeOptions(c.frontendClientID, req.tenantID, requestID, req.options),
@@ -277,16 +277,21 @@ func (c *grpcFrontendProxyInvokeClient) InvokeByInstanceIDRaw(req simpleRuntimeR
 	if err := proto.Unmarshal(req.invoke, invokeReq); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal frontend proxy invoke request: %w", err)
 	}
-	requestID := firstNonEmpty(invokeReq.GetRequestID(), fmt.Sprintf("frontend-proxy-invoke-%d", frontendProxyRequestSeq.Add(1)))
-	if invokeReq.RequestID == "" {
-		invokeReq.RequestID = requestID
-	}
+	externalRequestID := invokeReq.GetRequestID()
+	requestID := newFrontendProxyLifecycleCorrelationID("invoke")
+	invokeReq.RequestID = requestID
 	applyRawRequestOptionsToInvoke(invokeReq, req.options)
-	ctx, cancel := rawSimpleRuntimeContext(req.options)
+	ctx, cancel := rawSimpleRuntimeContext(req.ctx, req.options)
 	defer cancel()
 	resp, err := c.client.InvokeInstance(ctx, &frontend_proxy.InvokeInstanceRequest{
-		Context: rawFrontendRequestContext(c.frontendClientID, requestID, invokeReq.GetTraceID(), req.options),
-		Invoke:  invokeReq,
+		Context: rawFrontendRequestContext(
+			c.frontendClientID,
+			requestID,
+			invokeReq.GetTraceID(),
+			req.options,
+			tenantIDFromInvokeRequest(invokeReq),
+		),
+		Invoke: invokeReq,
 	})
 	if err != nil {
 		return nil, err
@@ -295,7 +300,7 @@ func (c *grpcFrontendProxyInvokeClient) InvokeByInstanceIDRaw(req simpleRuntimeR
 		return nil, fmt.Errorf("frontend proxy invoke response is nil")
 	}
 	if callResult := resp.GetCallResult(); callResult != nil {
-		return marshalRuntimeNotifyFromCallResult(callResult)
+		return marshalRuntimeNotifyFromCallResultWithRequestID(callResult, firstNonEmpty(externalRequestID, requestID))
 	}
 	if err := checkFrontendProxyStatus("invoke", resp.GetStatus()); err != nil {
 		return nil, err
@@ -461,6 +466,12 @@ func (c *routingFrontendProxyLifecycleClient) KillInstance(req simpleRuntimeKill
 		return err
 	}
 	if err := newGRPCFrontendProxyLifecycleClient(serviceClient, c.frontendClientID).KillInstance(req); err != nil {
+		if isFrontendProxyRouteStaleStatus(err) {
+			// A stale owner response is a refresh hint, not permission to replay a
+			// kill whose dispatch outcome may be unknown. Drop only the local
+			// route-only hint so a later caller can resolve fresh watcher state.
+			instancemanager.RemoveRouteOnlyInstance(req.instanceID)
+		}
 		evictFrontendProxyClientOnError(c.clientFactory, address, err)
 		return err
 	}
@@ -810,15 +821,29 @@ func (p *frontendProxyGRPCClientPool) EvictAddress(address string) {
 }
 
 func simpleRuntimeInvokeContext(options api.InvokeOptions) (context.Context, context.CancelFunc) {
+	return simpleRuntimeInvokeContextWithParent(context.Background(), options)
+}
+
+func simpleRuntimeInvokeContextWithParent(parent context.Context, options api.InvokeOptions) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	timeout := defaultFrontendProxyTimeout
 	if options.Timeout > 0 {
 		timeout = time.Duration(options.Timeout) * time.Second
 	}
-	return context.WithTimeout(context.Background(), timeout)
+	return context.WithTimeout(parent, timeout)
 }
 
-func rawSimpleRuntimeContext(api.RawRequestOption) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), defaultFrontendProxyTimeout)
+func rawSimpleRuntimeContext(parent context.Context, _ api.RawRequestOption) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, defaultFrontendProxyTimeout)
+}
+
+func newFrontendProxyLifecycleCorrelationID(operation string) string {
+	return fmt.Sprintf("frontend-proxy-%s-%s", operation, uuid.NewString())
 }
 
 func frontendRequestContextFromInvokeOptions(frontendClientID, tenantID, requestID string,
@@ -897,6 +922,17 @@ func tenantIDFromCreateRequest(createReq *core.CreateRequest) string {
 	return ""
 }
 
+func tenantIDFromInvokeRequest(invokeReq *core.InvokeRequest) string {
+	if invokeReq == nil {
+		return ""
+	}
+	function := strings.Trim(invokeReq.GetFunction(), "/")
+	if idx := strings.Index(function, "/"); idx > 0 {
+		return function[:idx]
+	}
+	return ""
+}
+
 func checkFrontendProxyStatus(operation string, status *frontend_proxy.FrontendProxyStatus) error {
 	if status == nil || status.GetCode() == common.ErrorCode_ERR_NONE {
 		return nil
@@ -910,6 +946,11 @@ func isFrontendProxyCreatePreDispatchStatus(err error) bool {
 		return false
 	}
 	return statusErr.operation == "create" && statusErr.retryReason == frontendProxyControlNotWired
+}
+
+func isFrontendProxyRouteStaleStatus(err error) bool {
+	var statusErr *frontendProxyStatusErr
+	return errors.As(err, &statusErr) && statusErr.retryable && statusErr.retryReason == "route-stale"
 }
 
 type frontendProxyStatusErr struct {
@@ -971,10 +1012,14 @@ func frontendProxyBusinessError(operation string, code common.ErrorCode, message
 }
 
 func marshalRuntimeNotifyFromCallResult(callResult *core.CallResult) ([]byte, error) {
+	return marshalRuntimeNotifyFromCallResultWithRequestID(callResult, callResult.GetRequestID())
+}
+
+func marshalRuntimeNotifyFromCallResultWithRequestID(callResult *core.CallResult, requestID string) ([]byte, error) {
 	var out []byte
-	if callResult.GetRequestID() != "" {
+	if requestID != "" {
 		out = protowire.AppendTag(out, 1, protowire.BytesType)
-		out = protowire.AppendString(out, callResult.GetRequestID())
+		out = protowire.AppendString(out, requestID)
 	}
 	out = protowire.AppendTag(out, 2, protowire.VarintType)
 	out = protowire.AppendVarint(out, uint64(callResult.GetCode()))

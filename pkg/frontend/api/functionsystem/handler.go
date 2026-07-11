@@ -137,7 +137,7 @@ func CreateHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
-	resp, err := util.NewClient().CreateInstanceRaw(body, buildRawRequestOption(spanCtx))
+	resp, err := util.CreateInstanceRawWithContext(spanCtx, util.NewClient(), body, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance create response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -196,7 +196,7 @@ func InvokeHandler(ctx *gin.Context) {
 		return
 	}
 	functionName = "unknown"
-	notify, err := util.NewClient().InvokeInstanceRaw(body, buildRawRequestOption(spanCtx))
+	notify, err := util.InvokeInstanceRawWithContext(spanCtx, util.NewClient(), body, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance invoke response, msg: %s", notify)
 	if err != nil {
 		httpCode = http.StatusBadRequest
@@ -252,7 +252,7 @@ func KillHandler(ctx *gin.Context) {
 		SetCtxResponse(ctx, nil, httpCode)
 		return
 	}
-	resp, err := util.NewClient().KillRaw(body, buildRawRequestOption(spanCtx))
+	resp, err := util.KillRawWithContext(spanCtx, util.NewClient(), body, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance kill response, msg: %s", resp)
 	if err != nil {
 		httpCode = http.StatusBadRequest

@@ -20,6 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +51,12 @@ type fakeFrontendProxyServiceClient struct {
 	createResp *frontend_proxy.CreateInstanceResponse
 	killReq    *frontend_proxy.KillInstanceRequest
 	killResp   *frontend_proxy.KillInstanceResponse
+	invokeCtx  context.Context
+	createCtx  context.Context
+	killCtx    context.Context
+	invokeFn   func(context.Context, *frontend_proxy.InvokeInstanceRequest) (*frontend_proxy.InvokeInstanceResponse, error)
+	createFn   func(context.Context, *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error)
+	killFn     func(context.Context, *frontend_proxy.KillInstanceRequest) (*frontend_proxy.KillInstanceResponse, error)
 	err        error
 	calls      int
 }
@@ -83,6 +92,10 @@ func (f *fakeFrontendProxyServiceClient) InvokeInstance(ctx context.Context, in 
 ) (*frontend_proxy.InvokeInstanceResponse, error) {
 	f.calls++
 	f.req = in
+	f.invokeCtx = ctx
+	if f.invokeFn != nil {
+		return f.invokeFn(ctx, in)
+	}
 	return f.resp, f.err
 }
 
@@ -91,6 +104,10 @@ func (f *fakeFrontendProxyServiceClient) CreateInstance(ctx context.Context, in 
 ) (*frontend_proxy.CreateInstanceResponse, error) {
 	f.calls++
 	f.createReq = in
+	f.createCtx = ctx
+	if f.createFn != nil {
+		return f.createFn(ctx, in)
+	}
 	return f.createResp, f.err
 }
 
@@ -99,6 +116,10 @@ func (f *fakeFrontendProxyServiceClient) KillInstance(ctx context.Context, in *f
 ) (*frontend_proxy.KillInstanceResponse, error) {
 	f.calls++
 	f.killReq = in
+	f.killCtx = ctx
+	if f.killFn != nil {
+		return f.killFn(ctx, in)
+	}
 	return f.killResp, f.err
 }
 
@@ -221,6 +242,30 @@ func TestMemoryFrontendProxyDiscoveryGetNextEndpointRoundRobinsCandidates(t *tes
 
 	require.NotEqual(t, first.NodeID, second.NodeID)
 	require.Equal(t, first.NodeID, third.NodeID)
+}
+
+func TestFrontendProxyLifecycleCorrelationIDProcessHelper(t *testing.T) {
+	if os.Getenv("FRONTEND_PROXY_CORRELATION_ID_HELPER") != "1" {
+		return
+	}
+	fmt.Print(newFrontendProxyLifecycleCorrelationID("raw"))
+	os.Exit(0)
+}
+
+func TestRequestIDsUniqueAcrossIsolatedFrontendProcesses(t *testing.T) {
+	generate := func() string {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestFrontendProxyLifecycleCorrelationIDProcessHelper$")
+		cmd.Env = append(os.Environ(), "FRONTEND_PROXY_CORRELATION_ID_HELPER=1")
+		output, err := cmd.Output()
+		require.NoError(t, err)
+		return strings.TrimSpace(string(output))
+	}
+
+	first := generate()
+	second := generate()
+	require.Contains(t, first, "frontend-proxy-raw-")
+	require.Contains(t, second, "frontend-proxy-raw-")
+	require.NotEqual(t, first, second)
 }
 
 func TestMemoryFrontendProxyDiscoveryReplaceSnapshotPrunesRemovedSuspectAddress(t *testing.T) {
@@ -504,7 +549,7 @@ func TestGRPCFrontendProxyLifecycleClientCreateInstanceRawReturnsReadyNotify(t *
 	callResult := &core.CallResult{
 		Code:       common.ErrorCode_ERR_NONE,
 		Message:    "ready",
-		RequestID:  "raw-create-request",
+		RequestID:  "internal-result-request",
 		InstanceID: "instance-created-raw",
 		SmallObjects: []*common.SmallObject{{
 			Id:    "ready-object",
@@ -529,16 +574,110 @@ func TestGRPCFrontendProxyLifecycleClientCreateInstanceRawReturnsReadyNotify(t *
 	})
 
 	require.NoError(t, err)
-	expected, err := marshalRuntimeNotifyFromCallResult(callResult)
-	require.NoError(t, err)
-	require.Equal(t, expected, got)
+	require.Equal(t, "raw-create-request", string(consumeProtoBytesField(t, got, 1)))
 	require.NotNil(t, fakeService.createReq)
 	require.Equal(t, "frontend-raw", fakeService.createReq.Context.FrontendClientID)
 	require.Equal(t, "tenant-a", fakeService.createReq.Context.TenantID)
-	require.Equal(t, "raw-create-request", fakeService.createReq.Context.RequestID)
+	require.NotEqual(t, "raw-create-request", fakeService.createReq.Context.RequestID)
+	require.Equal(t, fakeService.createReq.Context.RequestID, fakeService.createReq.Create.RequestID)
 	require.Equal(t, "trace-raw-create", fakeService.createReq.Context.TraceID)
 	require.Equal(t, "frontend", fakeService.createReq.Create.CreateOptions["source"])
 	require.Equal(t, "traceparent-raw", fakeService.createReq.Create.CreateOptions[traceParentExtensionKey])
+}
+
+func TestExternalRawRequestIDPreservedAcrossInternalCorrelationMapping(t *testing.T) {
+	const externalRequestID = "caller-business-request"
+	fakeService := &fakeFrontendProxyServiceClient{}
+	fakeService.createFn = func(_ context.Context, req *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+		return createResponseWithUnknownReadyCallResult(t, &core.CallResult{
+			Code:       common.ErrorCode_ERR_NONE,
+			RequestID:  req.GetContext().GetRequestID(),
+			InstanceID: "instance-external-id",
+		}), nil
+	}
+	client := newGRPCFrontendProxyLifecycleClient(fakeService, "frontend-raw")
+	rawCreate, err := proto.Marshal(&core.CreateRequest{
+		Function:  "tenant-a/raw-function/$latest",
+		RequestID: externalRequestID,
+	})
+	require.NoError(t, err)
+
+	notify, err := client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{create: rawCreate})
+
+	require.NoError(t, err)
+	require.NotEqual(t, externalRequestID, fakeService.createReq.GetContext().GetRequestID())
+	require.Equal(t, fakeService.createReq.GetContext().GetRequestID(), fakeService.createReq.GetCreate().GetRequestID())
+	require.Equal(t, externalRequestID, string(consumeProtoBytesField(t, notify, 1)))
+}
+
+func TestRawCreateWithoutCallerRequestIDReturnsGeneratedInternalCorrelation(t *testing.T) {
+	fakeService := &fakeFrontendProxyServiceClient{}
+	fakeService.createFn = func(_ context.Context, req *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+		return createResponseWithUnknownReadyCallResult(t, &core.CallResult{
+			Code:       common.ErrorCode_ERR_NONE,
+			RequestID:  req.GetContext().GetRequestID(),
+			InstanceID: "instance-generated-id",
+		}), nil
+	}
+	client := newGRPCFrontendProxyLifecycleClient(fakeService, "frontend-raw")
+	rawCreate, err := proto.Marshal(&core.CreateRequest{Function: "tenant-a/raw-function/$latest"})
+	require.NoError(t, err)
+
+	notify, err := client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{create: rawCreate})
+
+	require.NoError(t, err)
+	internalRequestID := fakeService.createReq.GetContext().GetRequestID()
+	require.NotEmpty(t, internalRequestID)
+	require.Equal(t, internalRequestID, fakeService.createReq.GetCreate().GetRequestID())
+	require.Equal(t, internalRequestID, string(consumeProtoBytesField(t, notify, 1)))
+}
+
+func TestCallerRawIDReusedAfterCancelCannotCaptureLateResult(t *testing.T) {
+	const externalRequestID = "reused-caller-request"
+	internalIDs := make([]string, 0, 2)
+	fakeService := &fakeFrontendProxyServiceClient{}
+	fakeService.createFn = func(_ context.Context, req *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+		internalIDs = append(internalIDs, req.GetContext().GetRequestID())
+		return createResponseWithUnknownReadyCallResult(t, &core.CallResult{
+			Code:       common.ErrorCode_ERR_NONE,
+			RequestID:  req.GetContext().GetRequestID(),
+			InstanceID: "instance-reuse",
+		}), nil
+	}
+	client := newGRPCFrontendProxyLifecycleClient(fakeService, "frontend-raw")
+	rawCreate, err := proto.Marshal(&core.CreateRequest{
+		Function:  "tenant-a/raw-function/$latest",
+		RequestID: externalRequestID,
+	})
+	require.NoError(t, err)
+
+	first, err := client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{create: rawCreate})
+	require.NoError(t, err)
+	second, err := client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{create: rawCreate})
+	require.NoError(t, err)
+
+	require.Len(t, internalIDs, 2)
+	require.NotEqual(t, internalIDs[0], internalIDs[1], "reused external IDs must never reuse an internal ticket")
+	require.Equal(t, externalRequestID, string(consumeProtoBytesField(t, first, 1)))
+	require.Equal(t, externalRequestID, string(consumeProtoBytesField(t, second, 1)))
+}
+
+func TestRawCreateContextCancellationReachesGRPCClient(t *testing.T) {
+	fakeService := &fakeFrontendProxyServiceClient{}
+	fakeService.createFn = func(ctx context.Context, _ *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	client := newGRPCFrontendProxyLifecycleClient(fakeService, "frontend-raw")
+	rawCreate, err := proto.Marshal(&core.CreateRequest{Function: "tenant-a/raw-function/$latest"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{ctx: ctx, create: rawCreate})
+
+	require.Equal(t, context.Canceled, err)
+	require.Equal(t, context.Canceled, fakeService.createCtx.Err())
 }
 
 func TestMarshalRuntimeNotifyFromCallResultPreservesExternalGwClientInstanceID(t *testing.T) {
@@ -1347,6 +1486,108 @@ func TestRoutingFrontendProxyInvokeClientRawBackfillsGeneratedRequestID(t *testi
 	require.NotNil(t, fakeService.req)
 	require.NotEmpty(t, fakeService.req.Context.RequestID)
 	require.Equal(t, fakeService.req.Context.RequestID, fakeService.req.Invoke.RequestID)
+}
+
+func TestRawInvokePreservesExternalRequestIDWithUniqueInternalCorrelation(t *testing.T) {
+	const externalRequestID = "external-invoke-request"
+	fakeService := &fakeFrontendProxyServiceClient{}
+	fakeService.invokeFn = func(_ context.Context, req *frontend_proxy.InvokeInstanceRequest) (*frontend_proxy.InvokeInstanceResponse, error) {
+		return &frontend_proxy.InvokeInstanceResponse{
+			Status: &frontend_proxy.FrontendProxyStatus{Code: common.ErrorCode_ERR_NONE},
+			CallResult: &core.CallResult{
+				Code:      common.ErrorCode_ERR_NONE,
+				RequestID: req.GetContext().GetRequestID(),
+			},
+		}, nil
+	}
+	client := newGRPCFrontendProxyInvokeClient(fakeService, "frontend-raw")
+	rawInvoke, err := proto.Marshal(&core.InvokeRequest{
+		Function:   "tenant/function/$latest",
+		InstanceID: "instance-raw",
+		RequestID:  externalRequestID,
+	})
+	require.NoError(t, err)
+
+	notify, err := client.InvokeByInstanceIDRaw(simpleRuntimeRawInvokeRequest{invoke: rawInvoke})
+
+	require.NoError(t, err)
+	require.NotEqual(t, externalRequestID, fakeService.req.GetContext().GetRequestID())
+	require.Equal(t, fakeService.req.GetContext().GetRequestID(), fakeService.req.GetInvoke().GetRequestID())
+	require.Equal(t, "tenant", fakeService.req.GetContext().GetTenantID())
+	require.Equal(t, "tenant/function/$latest", fakeService.req.GetInvoke().GetFunction())
+	require.Equal(t, externalRequestID, string(consumeProtoBytesField(t, notify, 1)))
+}
+
+func TestRawInvokeWithoutCallerRequestIDReturnsGeneratedInternalCorrelation(t *testing.T) {
+	fakeService := &fakeFrontendProxyServiceClient{}
+	fakeService.invokeFn = func(_ context.Context, req *frontend_proxy.InvokeInstanceRequest) (*frontend_proxy.InvokeInstanceResponse, error) {
+		return &frontend_proxy.InvokeInstanceResponse{
+			Status: &frontend_proxy.FrontendProxyStatus{Code: common.ErrorCode_ERR_NONE},
+			CallResult: &core.CallResult{
+				Code:      common.ErrorCode_ERR_NONE,
+				RequestID: req.GetContext().GetRequestID(),
+			},
+		}, nil
+	}
+	client := newGRPCFrontendProxyInvokeClient(fakeService, "frontend-raw")
+	rawInvoke, err := proto.Marshal(&core.InvokeRequest{
+		Function:   "tenant/function/$latest",
+		InstanceID: "instance-raw",
+	})
+	require.NoError(t, err)
+
+	notify, err := client.InvokeByInstanceIDRaw(simpleRuntimeRawInvokeRequest{invoke: rawInvoke})
+
+	require.NoError(t, err)
+	internalRequestID := fakeService.req.GetContext().GetRequestID()
+	require.NotEmpty(t, internalRequestID)
+	require.Equal(t, internalRequestID, fakeService.req.GetInvoke().GetRequestID())
+	require.Equal(t, "tenant", fakeService.req.GetContext().GetTenantID())
+	require.Equal(t, "tenant/function/$latest", fakeService.req.GetInvoke().GetFunction())
+	require.Equal(t, internalRequestID, string(consumeProtoBytesField(t, notify, 1)))
+}
+
+func TestRoutingFrontendProxyLifecycleClientRouteStaleDropsRouteHintWithoutReplay(t *testing.T) {
+	discovery := newMemoryFrontendProxyDiscovery()
+	discovery.ReplaceSnapshot([]frontendProxyEndpoint{{
+		NodeID:       "proxy-stale-owner",
+		Address:      "10.0.0.31:22769",
+		Capabilities: map[string]bool{frontendProxyCapabilityKill: true, frontendProxyCapabilityInvoke: true},
+	}})
+	restoreDiscovery := setFrontendProxyDiscoveryForTest(discovery)
+	defer restoreDiscovery()
+
+	function := "tenant/route-stale-function/$latest"
+	instanceID := "instance-route-stale-kill"
+	instancemanager.RecordRouteOnlyInstance(function, instanceID, "proxy-stale-owner")
+	defer instancemanager.RemoveRouteOnlyInstance(instanceID)
+
+	fakeService := &fakeFrontendProxyServiceClient{
+		killResp: &frontend_proxy.KillInstanceResponse{
+			Status: &frontend_proxy.FrontendProxyStatus{
+				Code:        common.ErrorCode_ERR_INSTANCE_NOT_FOUND,
+				Message:     "frontend proxy is not the owning proxy for this instance",
+				Retryable:   true,
+				RetryReason: "route-stale",
+			},
+		},
+	}
+	factory := &fakeFrontendProxyClientFactory{client: fakeService}
+	client := &routingFrontendProxyLifecycleClient{
+		clientFactory:    factory,
+		frontendClientID: "frontend-test",
+	}
+
+	err := client.KillInstance(simpleRuntimeKillRequest{instanceID: instanceID, tenantID: "tenant"})
+
+	require.Error(t, err)
+	require.Equal(t, 1, fakeService.calls, "route refresh must never replay kill automatically")
+	require.Empty(t, factory.evicted, "typed stale-route status must not evict a healthy proxy connection")
+	_, resolveErr := (defaultFrontendProxyRouteResolver{}).ResolveFrontendProxyAddress(simpleRuntimeInvokeRequest{
+		funcMeta:   api.FunctionMeta{FuncID: function, Api: api.FaaSApi},
+		instanceID: instanceID,
+	})
+	require.Error(t, resolveErr, "stale route-only owner must be dropped for later fresh resolution")
 }
 
 func TestRoutingFrontendProxyInvokeClientRawPropagatesTraceParent(t *testing.T) {

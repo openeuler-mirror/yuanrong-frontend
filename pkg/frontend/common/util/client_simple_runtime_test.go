@@ -17,6 +17,7 @@
 package util
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -456,9 +457,25 @@ func TestClientSimpleRuntimeKillRawUsesLifecycleClientWhenFrontendProxyBackendEn
 	require.Equal(t, "tenant-raw-kill", lifecycle.killReq.tenantID)
 	require.Equal(t, 9, lifecycle.killReq.signal)
 	require.Equal(t, []byte("kill-payload"), lifecycle.killReq.payload)
-	require.Equal(t, "raw-kill-request", lifecycle.killReq.requestID)
+	require.NotEqual(t, "raw-kill-request", lifecycle.killReq.requestID)
+	require.Contains(t, lifecycle.killReq.requestID, "frontend-proxy-kill-")
 	require.Equal(t, "traceparent-kill", lifecycle.killReq.options.CustomExtensions[traceParentExtensionKey])
 	require.Nil(t, control.killRawReq.payload)
+}
+
+func TestClientSimpleRuntimeKillRawContextPropagatesCancellation(t *testing.T) {
+	lifecycle := &fakeFrontendProxyLifecycleClient{}
+	runtime := newClientSimpleRuntimeWithProxyClient(nil)
+	runtime.lifecycleClient = lifecycle
+	killReq, err := proto.Marshal(&core.KillRequest{InstanceID: "instance-raw-kill", RequestID: "external-kill"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = runtime.KillRawContext(ctx, killReq, api.RawRequestOption{})
+
+	require.NoError(t, err)
+	require.Equal(t, context.Canceled, lifecycle.killReq.ctx.Err())
 }
 
 func TestClientSimpleRuntimeKillRawDoesNotUseControlFallbackUnlessEnabled(t *testing.T) {

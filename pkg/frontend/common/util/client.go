@@ -19,6 +19,7 @@ package util
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
@@ -460,13 +461,60 @@ func (c *defaultClient) InvokeByName(req InvokeRequest) ([]byte, error) {
 }
 
 func (c *defaultClient) CreateInstanceRaw(createReq []byte, option api.RawRequestOption) ([]byte, error) {
-	resp, err := c.clientLibruntime.CreateInstanceRaw(createReq, option)
-	return resp, err
+	return c.CreateInstanceRawContext(context.Background(), createReq, option)
+}
+
+func (c *defaultClient) CreateInstanceRawContext(ctx context.Context, createReq []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
+	if contextual, ok := c.clientLibruntime.(interface {
+		CreateInstanceRawContext(context.Context, []byte, api.RawRequestOption) ([]byte, error)
+	}); ok {
+		return contextual.CreateInstanceRawContext(ctx, createReq, option)
+	}
+	return c.clientLibruntime.CreateInstanceRaw(createReq, option)
+}
+
+// CreateInstanceRawWithContext preserves the existing Client interface while
+// allowing Go-native raw lifecycle backends to inherit the caller context.
+// Legacy clients keep their established context-free rollback behavior.
+func CreateInstanceRawWithContext(ctx context.Context, client Client, createReq []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
+	if contextual, ok := client.(interface {
+		CreateInstanceRawContext(context.Context, []byte, api.RawRequestOption) ([]byte, error)
+	}); ok {
+		return contextual.CreateInstanceRawContext(ctx, createReq, option)
+	}
+	return client.CreateInstanceRaw(createReq, option)
 }
 
 func (c *defaultClient) InvokeInstanceRaw(invokeReq []byte, option api.RawRequestOption) ([]byte, error) {
-	notify, err := c.clientLibruntime.InvokeByInstanceIdRaw(invokeReq, option)
-	return notify, err
+	return c.InvokeInstanceRawContext(context.Background(), invokeReq, option)
+}
+
+func (c *defaultClient) InvokeInstanceRawContext(ctx context.Context, invokeReq []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
+	if contextual, ok := c.clientLibruntime.(interface {
+		InvokeByInstanceIdRawContext(context.Context, []byte, api.RawRequestOption) ([]byte, error)
+	}); ok {
+		return contextual.InvokeByInstanceIdRawContext(ctx, invokeReq, option)
+	}
+	return c.clientLibruntime.InvokeByInstanceIdRaw(invokeReq, option)
+}
+
+// InvokeInstanceRawWithContext is the context-bearing raw invoke seam used by
+// HTTP and websocket entrypoints without widening the legacy Client contract.
+func InvokeInstanceRawWithContext(ctx context.Context, client Client, invokeReq []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
+	if contextual, ok := client.(interface {
+		InvokeInstanceRawContext(context.Context, []byte, api.RawRequestOption) ([]byte, error)
+	}); ok {
+		return contextual.InvokeInstanceRawContext(ctx, invokeReq, option)
+	}
+	return client.InvokeInstanceRaw(invokeReq, option)
 }
 
 func (c *defaultClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
@@ -505,8 +553,31 @@ func (c *defaultClient) CreateRuntimeInstance(
 }
 
 func (c *defaultClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
-	resp, err := c.clientLibruntime.KillRaw(killReq, option)
-	return resp, err
+	return c.KillRawContext(context.Background(), killReq, option)
+}
+
+func (c *defaultClient) KillRawContext(ctx context.Context, killReq []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
+	if contextual, ok := c.clientLibruntime.(interface {
+		KillRawContext(context.Context, []byte, api.RawRequestOption) ([]byte, error)
+	}); ok {
+		return contextual.KillRawContext(ctx, killReq, option)
+	}
+	return c.clientLibruntime.KillRaw(killReq, option)
+}
+
+// KillRawWithContext is the context-bearing raw kill seam. The compatibility
+// fallback remains explicit when the selected backend has no contextual API.
+func KillRawWithContext(ctx context.Context, client Client, killReq []byte,
+	option api.RawRequestOption,
+) ([]byte, error) {
+	if contextual, ok := client.(interface {
+		KillRawContext(context.Context, []byte, api.RawRequestOption) ([]byte, error)
+	}); ok {
+		return contextual.KillRawContext(ctx, killReq, option)
+	}
+	return client.KillRaw(killReq, option)
 }
 
 func (c *defaultClient) IsHealth() bool {
