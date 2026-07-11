@@ -17,6 +17,7 @@
 package util
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -31,7 +32,9 @@ const (
 type frontendProxyEndpoint struct {
 	NodeID       string
 	Address      string
+	Version      string
 	Capabilities map[string]bool
+	Health       string
 }
 
 // FrontendProxyEndpoint is the discovery record consumed by the Go-native
@@ -51,6 +54,10 @@ type frontendProxySuspectMarker interface {
 
 type frontendProxySuspectChecker interface {
 	IsSuspectAddress(address string) bool
+}
+
+type frontendProxyDiscoveryRefresher interface {
+	Refresh(ctx context.Context) error
 }
 
 var defaultFrontendProxyDiscovery = newMemoryFrontendProxyDiscovery()
@@ -103,6 +110,16 @@ func MarkFrontendProxyEndpointSuspect(address string) {
 		return
 	}
 	marker.MarkSuspectAddress(address, defaultFrontendProxySuspectTTL)
+}
+
+func refreshFrontendProxyDiscoveryBestEffort() bool {
+	refresher, ok := currentFrontendProxyDiscovery().(frontendProxyDiscoveryRefresher)
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return refresher.Refresh(ctx) == nil
 }
 
 func frontendProxyAddressIsSuspect(address string) bool {

@@ -17,6 +17,7 @@
 package util
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -52,6 +53,7 @@ const (
 	frontendProxyCreateSourceKey                      = "source"
 	frontendProxyCreateSource                         = "frontend"
 	frontendProxyControlNotWired                      = "control-path-not-wired"
+	simpleRuntimeFaaSMetaPrefix                       = "0000000000000000"
 	defaultFrontendProxyTimeout                       = 60 * time.Second
 	createReadyCallResultFieldNumber protowire.Number = 4
 )
@@ -100,7 +102,7 @@ func (c *grpcFrontendProxyInvokeClient) InvokeByInstanceID(req simpleRuntimeInvo
 		},
 		Invoke: &core.InvokeRequest{
 			Function:      req.funcMeta.FuncID,
-			Args:          convertSimpleRuntimeArgs(req.args),
+			Args:          convertSimpleRuntimeInvokeArgs(req.funcMeta, req.args),
 			InstanceID:    req.instanceID,
 			RequestID:     requestID,
 			TraceID:       req.options.TraceID,
@@ -127,7 +129,7 @@ func (c *grpcFrontendProxyInvokeClient) InvokeByInstanceID(req simpleRuntimeInvo
 	if len(smallObjects) == 0 {
 		return nil, fmt.Errorf("frontend proxy invoke call result has no small object payload")
 	}
-	return smallObjects[0].GetValue(), nil
+	return normalizeSimpleRuntimeInvokePayload(req.funcMeta, smallObjects[0].GetValue()), nil
 }
 
 func (c *grpcFrontendProxyLifecycleClient) CreateInstance(req simpleRuntimeCreateRequest) (string, error) {
@@ -547,6 +549,16 @@ func resolveFrontendProxyAddressFromRouteWithCapability(route string, capability
 }
 
 func resolveFrontendProxyEndpointByNode(nodeID string, capability string) (frontendProxyEndpoint, bool) {
+	if endpoint, ok := lookupFrontendProxyEndpointByNode(nodeID, capability); ok {
+		return endpoint, true
+	}
+	if refreshFrontendProxyDiscoveryBestEffort() {
+		return lookupFrontendProxyEndpointByNode(nodeID, capability)
+	}
+	return frontendProxyEndpoint{}, false
+}
+
+func lookupFrontendProxyEndpointByNode(nodeID string, capability string) (frontendProxyEndpoint, bool) {
 	discovery := currentFrontendProxyDiscovery()
 	if discovery == nil {
 		return frontendProxyEndpoint{}, false
@@ -559,6 +571,16 @@ func resolveFrontendProxyEndpointByNode(nodeID string, capability string) (front
 }
 
 func resolveSoleFrontendProxyEndpoint(capability string) (frontendProxyEndpoint, bool) {
+	if endpoint, ok := lookupSoleFrontendProxyEndpoint(capability); ok {
+		return endpoint, true
+	}
+	if refreshFrontendProxyDiscoveryBestEffort() {
+		return lookupSoleFrontendProxyEndpoint(capability)
+	}
+	return frontendProxyEndpoint{}, false
+}
+
+func lookupSoleFrontendProxyEndpoint(capability string) (frontendProxyEndpoint, bool) {
 	discovery := currentFrontendProxyDiscovery()
 	if discovery == nil {
 		return frontendProxyEndpoint{}, false
@@ -571,6 +593,16 @@ func resolveSoleFrontendProxyEndpoint(capability string) (frontendProxyEndpoint,
 }
 
 func resolveNextFrontendProxyEndpoint(capability string) (frontendProxyEndpoint, bool) {
+	if endpoint, ok := lookupNextFrontendProxyEndpoint(capability); ok {
+		return endpoint, true
+	}
+	if refreshFrontendProxyDiscoveryBestEffort() {
+		return lookupNextFrontendProxyEndpoint(capability)
+	}
+	return frontendProxyEndpoint{}, false
+}
+
+func lookupNextFrontendProxyEndpoint(capability string) (frontendProxyEndpoint, bool) {
 	discovery := currentFrontendProxyDiscovery()
 	if discovery == nil {
 		return frontendProxyEndpoint{}, false
@@ -974,6 +1006,14 @@ func marshalRuntimeNotifyFromCallResult(callResult *core.CallResult) ([]byte, er
 		out = protowire.AppendTag(out, 7, protowire.BytesType)
 		out = protowire.AppendBytes(out, payload)
 	}
+	// The raw frontend create response is consumed by the external libruntime
+	// GwClient, whose NotifyRequest wire contract uses field 8 for instanceID.
+	// Do not replace this with functionsystem's internal readyInstance message:
+	// that is a different NotifyRequest definition on a different boundary.
+	if callResult.GetInstanceID() != "" {
+		out = protowire.AppendTag(out, 8, protowire.BytesType)
+		out = protowire.AppendString(out, callResult.GetInstanceID())
+	}
 	return out, nil
 }
 
@@ -1022,7 +1062,7 @@ func typedCreateReadyCallResultFromResponse(resp *frontend_proxy.CreateInstanceR
 		return nil, true, fmt.Errorf("frontend proxy create callResult field has invalid kind %s", field.Kind())
 	}
 	if !message.Has(field) {
-		return nil, true, nil
+		return nil, false, nil
 	}
 	payload, err := proto.Marshal(message.Get(field).Message().Interface())
 	if err != nil {
@@ -1061,6 +1101,105 @@ func convertSimpleRuntimeArgs(args []api.Arg) []*common.Arg {
 		})
 	}
 	return converted
+}
+
+func convertSimpleRuntimeInvokeArgs(funcMeta api.FunctionMeta, args []api.Arg) []*common.Arg {
+	converted := convertSimpleRuntimeArgs(args)
+	if funcMeta.Api == api.PosixApi {
+		return converted
+	}
+	if simpleRuntimeInvokeArgsNeedFaaSPrefix(funcMeta.Api) {
+		converted = prefixSimpleRuntimeFaaSInvokeArgs(converted)
+	}
+	metadata := buildSimpleRuntimeInvokeMetadata(funcMeta)
+	withMetadata := make([]*common.Arg, 0, len(converted)+1)
+	withMetadata = append(withMetadata, &common.Arg{
+		Type:  common.Arg_VALUE,
+		Value: metadata,
+	})
+	withMetadata = append(withMetadata, converted...)
+	return withMetadata
+}
+
+func simpleRuntimeInvokeArgsNeedFaaSPrefix(apiType api.ApiType) bool {
+	return apiType == api.FaaSApi || apiType == api.ServeApi
+}
+
+func normalizeSimpleRuntimeInvokePayload(funcMeta api.FunctionMeta, payload []byte) []byte {
+	if !simpleRuntimeInvokeArgsNeedFaaSPrefix(funcMeta.Api) {
+		return payload
+	}
+	prefix := []byte(simpleRuntimeFaaSMetaPrefix)
+	if !bytes.HasPrefix(payload, prefix) {
+		return payload
+	}
+	return payload[len(prefix):]
+}
+
+func prefixSimpleRuntimeFaaSInvokeArgs(args []*common.Arg) []*common.Arg {
+	prefixed := make([]*common.Arg, 0, len(args))
+	for _, arg := range args {
+		if arg == nil {
+			prefixed = append(prefixed, nil)
+			continue
+		}
+		next := proto.Clone(arg).(*common.Arg)
+		if next.GetType() == common.Arg_VALUE && !bytes.HasPrefix(next.GetValue(), []byte(simpleRuntimeFaaSMetaPrefix)) {
+			next.Value = append([]byte(simpleRuntimeFaaSMetaPrefix), next.GetValue()...)
+		}
+		prefixed = append(prefixed, next)
+	}
+	return prefixed
+}
+
+func buildSimpleRuntimeInvokeMetadata(funcMeta api.FunctionMeta) []byte {
+	var metadata []byte
+	metadata = appendProtoVarint(metadata, 1, uint64(1)) // libruntime.InvokeFunction
+	metadata = appendProtoBytes(metadata, 2, buildSimpleRuntimeFunctionMeta(funcMeta))
+	metadata = appendProtoBytes(metadata, 4, buildSimpleRuntimeInvocationMeta())
+	return metadata
+}
+
+func buildSimpleRuntimeFunctionMeta(funcMeta api.FunctionMeta) []byte {
+	var payload []byte
+	payload = appendProtoString(payload, 1, funcMeta.AppName)
+	payload = appendProtoString(payload, 2, funcMeta.ModuleName)
+	payload = appendProtoString(payload, 3, funcMeta.FuncName)
+	payload = appendProtoString(payload, 4, funcMeta.ClassName)
+	payload = appendProtoVarint(payload, 5, uint64(funcMeta.Language))
+	payload = appendProtoString(payload, 7, funcMeta.Sig)
+	payload = appendProtoVarint(payload, 8, uint64(funcMeta.Api))
+	if funcMeta.Name != nil {
+		payload = appendProtoString(payload, 9, *funcMeta.Name)
+	}
+	if funcMeta.Namespace != nil {
+		payload = appendProtoString(payload, 10, *funcMeta.Namespace)
+	}
+	payload = appendProtoString(payload, 11, funcMeta.FuncID)
+	return payload
+}
+
+func buildSimpleRuntimeInvocationMeta() []byte {
+	var payload []byte
+	payload = appendProtoString(payload, 1, currentFrontendClientID())
+	return payload
+}
+
+func appendProtoString(payload []byte, field protowire.Number, value string) []byte {
+	if value == "" {
+		return payload
+	}
+	return appendProtoBytes(payload, field, []byte(value))
+}
+
+func appendProtoBytes(payload []byte, field protowire.Number, value []byte) []byte {
+	payload = protowire.AppendTag(payload, field, protowire.BytesType)
+	return protowire.AppendBytes(payload, value)
+}
+
+func appendProtoVarint(payload []byte, field protowire.Number, value uint64) []byte {
+	payload = protowire.AppendTag(payload, field, protowire.VarintType)
+	return protowire.AppendVarint(payload, value)
 }
 
 func convertSimpleRuntimeInvokeOptions(options api.InvokeOptions) *core.InvokeOptions {

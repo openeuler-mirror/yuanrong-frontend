@@ -136,6 +136,44 @@ func consumeProtoFieldCounts(t *testing.T, payload []byte) map[protowire.Number]
 	return counts
 }
 
+func consumeProtoBytesField(t *testing.T, payload []byte, target protowire.Number) []byte {
+	t.Helper()
+	for len(payload) > 0 {
+		number, wireType, n := protowire.ConsumeTag(payload)
+		require.GreaterOrEqual(t, n, 0, "consume proto tag failed: %v", protowire.ParseError(n))
+		payload = payload[n:]
+		if number == target {
+			require.Equal(t, protowire.BytesType, wireType)
+			value, n := protowire.ConsumeBytes(payload)
+			require.GreaterOrEqual(t, n, 0, "consume proto bytes field %d failed: %v", number, protowire.ParseError(n))
+			return value
+		}
+		n = protowire.ConsumeFieldValue(number, wireType, payload)
+		require.GreaterOrEqual(t, n, 0, "consume proto field %d failed: %v", number, protowire.ParseError(n))
+		payload = payload[n:]
+	}
+	return nil
+}
+
+func consumeProtoVarintField(t *testing.T, payload []byte, target protowire.Number) uint64 {
+	t.Helper()
+	for len(payload) > 0 {
+		number, wireType, n := protowire.ConsumeTag(payload)
+		require.GreaterOrEqual(t, n, 0, "consume proto tag failed: %v", protowire.ParseError(n))
+		payload = payload[n:]
+		if number == target {
+			require.Equal(t, protowire.VarintType, wireType)
+			value, n := protowire.ConsumeVarint(payload)
+			require.GreaterOrEqual(t, n, 0, "consume proto varint field %d failed: %v", number, protowire.ParseError(n))
+			return value
+		}
+		n = protowire.ConsumeFieldValue(number, wireType, payload)
+		require.GreaterOrEqual(t, n, 0, "consume proto field %d failed: %v", number, protowire.ParseError(n))
+		payload = payload[n:]
+	}
+	return 0
+}
+
 func addInstanceRouteForTest(t *testing.T, functionKey, instanceID, functionProxyID string) func() {
 	t.Helper()
 	function := functionKey
@@ -147,7 +185,8 @@ func addInstanceRouteForTest(t *testing.T, functionKey, instanceID, functionProx
 		Function:        function,
 		FunctionProxyID: functionProxyID,
 		CreateOptions: map[string]string{
-			faasconstant.FunctionKeyNote: functionKey,
+			faasconstant.FunctionKeyNote:  functionKey,
+			faasconstant.ResourceSpecNote: `{"cpu":100,"memory":100}`,
 		},
 		InstanceStatus: commontypes.InstanceStatus{
 			Code: int32(faasconstant.KernelInstanceStatusRunning),
@@ -258,10 +297,98 @@ func TestGRPCFrontendProxyInvokeClientBuildsRequestAndReturnsSmallObjectPayload(
 	require.Equal(t, "trace-1", fakeService.req.Invoke.TraceID)
 	require.NotEmpty(t, fakeService.req.Invoke.RequestID)
 	require.Equal(t, common.Arg_VALUE, fakeService.req.Invoke.Args[0].Type)
-	require.Equal(t, []byte("arg-value"), fakeService.req.Invoke.Args[0].Value)
-	require.Equal(t, []string{"nested-1"}, fakeService.req.Invoke.Args[0].NestedRefs)
+	require.Equal(t, uint64(1), consumeProtoVarintField(t, fakeService.req.Invoke.Args[0].Value, 1))
+	functionMeta := consumeProtoBytesField(t, fakeService.req.Invoke.Args[0].Value, 2)
+	require.Equal(t, "func-key", string(consumeProtoBytesField(t, functionMeta, 11)))
+	require.Equal(t, uint64(api.FaaSApi), consumeProtoVarintField(t, functionMeta, 8))
+	invocationMeta := consumeProtoBytesField(t, fakeService.req.Invoke.Args[0].Value, 4)
+	require.NotEmpty(t, consumeProtoBytesField(t, invocationMeta, 1))
+	require.Equal(t, common.Arg_VALUE, fakeService.req.Invoke.Args[1].Type)
+	require.Equal(t, []byte(simpleRuntimeFaaSMetaPrefix+"arg-value"), fakeService.req.Invoke.Args[1].Value)
+	require.Equal(t, []string{"nested-1"}, fakeService.req.Invoke.Args[1].NestedRefs)
 	require.Equal(t, "value-a", fakeService.req.Invoke.InvokeOptions.CustomTag["tag-a"])
 	require.Equal(t, "proxy-a", fakeService.req.Invoke.InvokeOptions.CustomTag["YR_ROUTE"])
+}
+
+func TestGRPCFrontendProxyInvokeClientStripsFaaSResultMetaPrefix(t *testing.T) {
+	payload := []byte(simpleRuntimeFaaSMetaPrefix + `{"body":"ok","innerCode":"0"}`)
+	fakeService := &fakeFrontendProxyServiceClient{
+		resp: &frontend_proxy.InvokeInstanceResponse{
+			Status: &frontend_proxy.FrontendProxyStatus{Code: common.ErrorCode_ERR_NONE},
+			CallResult: &core.CallResult{
+				Code: common.ErrorCode_ERR_NONE,
+				SmallObjects: []*common.SmallObject{{
+					Id:    "return-object-1",
+					Value: payload,
+				}},
+			},
+		},
+	}
+	client := newGRPCFrontendProxyInvokeClient(fakeService, "frontend-1")
+
+	got, err := client.InvokeByInstanceID(simpleRuntimeInvokeRequest{
+		funcMeta:   api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+		instanceID: "instance-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []byte(`{"body":"ok","innerCode":"0"}`), got)
+	require.Same(t, &payload[len(simpleRuntimeFaaSMetaPrefix)], &got[0])
+}
+
+func TestGRPCFrontendProxyInvokeClientKeepsPosixResultMetaPrefix(t *testing.T) {
+	payload := []byte(simpleRuntimeFaaSMetaPrefix + `{"body":"ok","innerCode":"0"}`)
+	fakeService := &fakeFrontendProxyServiceClient{
+		resp: &frontend_proxy.InvokeInstanceResponse{
+			Status: &frontend_proxy.FrontendProxyStatus{Code: common.ErrorCode_ERR_NONE},
+			CallResult: &core.CallResult{
+				Code: common.ErrorCode_ERR_NONE,
+				SmallObjects: []*common.SmallObject{{
+					Id:    "return-object-1",
+					Value: payload,
+				}},
+			},
+		},
+	}
+	client := newGRPCFrontendProxyInvokeClient(fakeService, "frontend-1")
+
+	got, err := client.InvokeByInstanceID(simpleRuntimeInvokeRequest{
+		funcMeta:   api.FunctionMeta{FuncID: "func-key", Api: api.PosixApi},
+		instanceID: "instance-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, payload, got)
+	require.Same(t, &payload[0], &got[0])
+}
+
+func TestConvertSimpleRuntimeInvokeArgsPrefixesFaaSUserValuesOnly(t *testing.T) {
+	args := []api.Arg{
+		{Type: api.Value, Data: []byte(`{"body":{}}`), NestedObjectIDs: []string{"nested-1"}},
+		{Type: api.ArgType(common.Arg_OBJECT_REF), Data: []byte("object-ref-1")},
+	}
+
+	got := convertSimpleRuntimeInvokeArgs(api.FunctionMeta{FuncID: "faas-func", Api: api.FaaSApi}, args)
+
+	require.Len(t, got, 3)
+	require.Equal(t, common.Arg_VALUE, got[0].Type, "metadata arg must remain first")
+	require.Equal(t, common.Arg_VALUE, got[1].Type)
+	require.Equal(t, []byte(simpleRuntimeFaaSMetaPrefix+`{"body":{}}`), got[1].Value)
+	require.Equal(t, []string{"nested-1"}, got[1].NestedRefs)
+	require.Equal(t, common.Arg_OBJECT_REF, got[2].Type)
+	require.Equal(t, []byte("object-ref-1"), got[2].Value)
+	require.Equal(t, []byte(`{"body":{}}`), args[0].Data, "prefixing must not mutate caller-owned args")
+}
+
+func TestConvertSimpleRuntimeInvokeArgsKeepsPosixArgsUnwrapped(t *testing.T) {
+	got := convertSimpleRuntimeInvokeArgs(api.FunctionMeta{FuncID: "posix-func", Api: api.PosixApi}, []api.Arg{{
+		Type: api.Value,
+		Data: []byte(`{"body":{}}`),
+	}})
+
+	require.Len(t, got, 1)
+	require.Equal(t, common.Arg_VALUE, got[0].Type)
+	require.Equal(t, []byte(`{"body":{}}`), got[0].Value)
 }
 
 func TestGRPCFrontendProxyLifecycleClientBuildsCreateRequestAndReturnsInstanceID(t *testing.T) {
@@ -414,12 +541,13 @@ func TestGRPCFrontendProxyLifecycleClientCreateInstanceRawReturnsReadyNotify(t *
 	require.Equal(t, "traceparent-raw", fakeService.createReq.Create.CreateOptions[traceParentExtensionKey])
 }
 
-func TestMarshalRuntimeNotifyFromCallResultMatchesRuntimeNotifyWireContract(t *testing.T) {
+func TestMarshalRuntimeNotifyFromCallResultPreservesExternalGwClientInstanceID(t *testing.T) {
+	const instanceID = "instance-required-by-external-gwclient"
 	got, err := marshalRuntimeNotifyFromCallResult(&core.CallResult{
 		Code:       common.ErrorCode_ERR_NONE,
 		Message:    "ready",
 		RequestID:  "raw-create-request",
-		InstanceID: "must-not-be-encoded-as-notify-field-8",
+		InstanceID: instanceID,
 		SmallObjects: []*common.SmallObject{{
 			Id:    "ready-object",
 			Value: []byte("ready-payload"),
@@ -443,7 +571,9 @@ func TestMarshalRuntimeNotifyFromCallResultMatchesRuntimeNotifyWireContract(t *t
 		4: 1,
 		5: 1,
 		7: 1,
+		8: 1,
 	}, consumeProtoFieldCounts(t, got))
+	require.Equal(t, instanceID, string(consumeProtoBytesField(t, got, 8)))
 }
 
 func TestGRPCFrontendProxyLifecycleClientRecordsCreatedInstanceRoute(t *testing.T) {

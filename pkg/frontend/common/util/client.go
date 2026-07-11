@@ -110,9 +110,20 @@ func SetAPIClientRuntimeBackendWithOptions(backendType int, rt invokerLibruntime
 	if backendType == constant.BackendTypeFrontendProxy {
 		clientLibruntime = newClientSimpleRuntimeWithProxyClientControlAndFallback(
 			newRoutingFrontendProxyInvokeClient(), rt, opts.EnableLegacyFallback)
+		setFrontendProxyMasterDiscoveryFromRuntime(rt)
 		return
 	}
 	clientLibruntime = rt
+}
+
+func setFrontendProxyMasterDiscoveryFromRuntime(rt invokerLibruntime) {
+	provider := newFrontendProxyMasterProvider(newFrontendProxyMasterHTTPSource(func() string {
+		if rt == nil {
+			return ""
+		}
+		return rt.GetActiveMasterAddr()
+	}, nil))
+	setFrontendProxyDiscovery(provider)
 }
 
 // InvokeRequest -

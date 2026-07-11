@@ -17,6 +17,9 @@
 package util
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -732,6 +735,43 @@ func TestSetAPIClientRuntimeBackendSelectsSimpleRuntimeWithoutLegacyFallback(t *
 	require.NotNil(t, runtime.control)
 	require.NotNil(t, runtime.lifecycleClient)
 	require.False(t, runtime.legacyFallback)
+}
+
+func TestSetAPIClientRuntimeBackendUsesMasterBackedFrontendProxyDiscovery(t *testing.T) {
+	original := clientLibruntime
+	t.Cleanup(func() {
+		clientLibruntime = original
+	})
+	restoreDiscovery := setFrontendProxyDiscoveryForTest(newMemoryFrontendProxyDiscovery())
+	t.Cleanup(restoreDiscovery)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, frontendProxyMasterEndpointPath, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"count": 1,
+			"endpoints": [
+				{
+					"nodeID": "proxy-node-a",
+					"address": "10.0.0.11:19090",
+					"capabilities": ["faas.create", "faas.invoke", "faas.kill"],
+					"version": "phase3",
+					"health": "healthy"
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	SetAPIClientRuntimeBackend(constant.BackendTypeFrontendProxy, &fakeInvokerLibruntime{
+		activeMaster: strings.TrimPrefix(server.URL, "http://"),
+	})
+
+	endpoint, ok := resolveNextFrontendProxyEndpoint(frontendProxyCapabilityCreate)
+
+	require.True(t, ok)
+	require.Equal(t, "proxy-node-a", endpoint.NodeID)
+	require.Equal(t, "10.0.0.11:19090", endpoint.Address)
 }
 
 func TestSetAPIClientRuntimeBackendCanEnableExplicitLegacyFallback(t *testing.T) {
