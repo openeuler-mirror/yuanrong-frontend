@@ -894,6 +894,11 @@ func evictFrontendProxyClientOnError(factory frontendProxyServiceClientFactory, 
 		evictor.EvictAddress(address)
 	}
 	MarkFrontendProxyEndpointSuspect(address)
+	// A transport failure is also a discovery-staleness signal. Refresh the
+	// snapshot for the next request, but never replay the current request: its
+	// dispatch outcome may be unknown. Without this refresh, an owning-node
+	// route can remain pinned to an obsolete process-mode port until restart.
+	refreshFrontendProxyDiscoveryBestEffort()
 }
 
 func (p *frontendProxyGRPCClientPool) EvictAddress(address string) {

@@ -904,6 +904,49 @@ func TestRoutingFrontendProxyLifecycleCreateDoesNotReplayAfterDispatchedError(t 
 	require.Equal(t, 0, secondService.calls)
 }
 
+func TestTransportErrorRefreshesStaleFrontendProxySnapshotWithoutReplay(t *testing.T) {
+	source := &fakeFrontendProxyEndpointSource{endpoints: []FrontendProxyEndpoint{{
+		NodeID:       "proxy-owner",
+		Address:      "10.0.0.11:22769",
+		Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+	}}}
+	provider := newFrontendProxyMasterProvider(source)
+	require.NoError(t, provider.Refresh(context.Background()))
+	restore := setFrontendProxyDiscoveryForTest(provider)
+	defer restore()
+
+	// Master has converged to the replacement process port before the stale
+	// cached address reports its transport failure.
+	source.endpoints = []FrontendProxyEndpoint{{
+		NodeID:       "proxy-owner",
+		Address:      "10.0.0.11:25111",
+		Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+	}}
+	factory := &fakeFrontendProxyClientFactory{client: &fakeFrontendProxyServiceClient{
+		err: errors.New("dial tcp 10.0.0.11:22769: connect: connection refused"),
+	}}
+	client := &routingFrontendProxyInvokeClient{
+		resolver:         defaultFrontendProxyRouteResolver{},
+		clientFactory:    factory,
+		frontendClientID: "frontend-test",
+	}
+
+	_, err := client.InvokeByInstanceID(simpleRuntimeInvokeRequest{
+		funcMeta:   api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+		instanceID: "instance-stale-endpoint",
+		options: api.InvokeOptions{CreateOpt: map[string]string{
+			frontendProxyRouteKey: "proxy-owner",
+		}},
+	})
+
+	require.Error(t, err)
+	require.Equal(t, []string{"10.0.0.11:22769"}, factory.evicted)
+	require.Equal(t, 2, source.calls)
+	endpoint, ok := provider.GetByNode("proxy-owner", frontendProxyCapabilityInvoke)
+	require.True(t, ok)
+	require.Equal(t, "10.0.0.11:25111", endpoint.Address)
+}
+
 func TestRoutingFrontendProxyLifecycleCreateRetriesNextCandidateOnControlPathNotWired(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
