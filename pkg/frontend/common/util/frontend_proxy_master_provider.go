@@ -58,6 +58,13 @@ func (p *frontendProxyMasterProvider) GetByNode(nodeID string, capability string
 	return p.discovery.GetByNode(nodeID, capability)
 }
 
+func (p *frontendProxyMasterProvider) GetByHost(host string, capability string) (frontendProxyEndpoint, bool) {
+	if p == nil || p.discovery == nil {
+		return frontendProxyEndpoint{}, false
+	}
+	return p.discovery.GetByHost(host, capability)
+}
+
 func (p *frontendProxyMasterProvider) GetSoleEndpoint(capability string) (frontendProxyEndpoint, bool) {
 	if p == nil || p.discovery == nil {
 		return frontendProxyEndpoint{}, false

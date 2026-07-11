@@ -751,7 +751,48 @@ func proxyAddressFromInstanceForCapability(instance *commontypes.InstanceSpecifi
 	if frontendProxyNodeExistsInDiscovery(instance.FunctionProxyID) {
 		return ""
 	}
+	// Some scheduler allocation responses do not carry RouteAddress, while the
+	// instance watcher still provides the runtime address. Match that runtime's
+	// node IP against the published proxy discovery endpoint instead of guessing
+	// the legacy static gRPC port. Process-mode proxy ports are dynamic.
+	if endpoint, ok := resolveFrontendProxyEndpointByRuntimeHost(instance.RuntimeAddress, capability); ok {
+		return endpoint.Address
+	}
+	if frontendProxyRuntimeHostExists(instance.RuntimeAddress) {
+		return ""
+	}
 	return proxyAddressFromInstanceRuntimeAddress(instance)
+}
+
+func frontendProxyRuntimeHostExists(runtimeAddress string) bool {
+	host, _, err := net.SplitHostPort(runtimeAddress)
+	if err != nil || host == "" {
+		return false
+	}
+	discovery, ok := currentFrontendProxyDiscovery().(frontendProxyDiscoveryByHost)
+	if !ok {
+		return false
+	}
+	_, found := discovery.GetByHost(host, "")
+	return found
+}
+
+func resolveFrontendProxyEndpointByRuntimeHost(runtimeAddress string, capability string) (frontendProxyEndpoint, bool) {
+	host, _, err := net.SplitHostPort(runtimeAddress)
+	if err != nil || host == "" {
+		return frontendProxyEndpoint{}, false
+	}
+	discovery, ok := currentFrontendProxyDiscovery().(frontendProxyDiscoveryByHost)
+	if !ok {
+		return frontendProxyEndpoint{}, false
+	}
+	if endpoint, found := discovery.GetByHost(host, capability); found {
+		return endpoint, true
+	}
+	if refreshFrontendProxyDiscoveryBestEffort() {
+		return discovery.GetByHost(host, capability)
+	}
+	return frontendProxyEndpoint{}, false
 }
 
 func frontendProxyNodeExistsInDiscovery(nodeID string) bool {

@@ -1943,6 +1943,44 @@ func TestProxyAddressFromInstancePrefersFunctionProxyIDDiscovery(t *testing.T) {
 	require.Equal(t, "10.0.0.12:22769", address)
 }
 
+func TestProxyAddressFromInstanceUsesPublishedEndpointForRuntimeHostWhenOwnerRouteIsEmpty(t *testing.T) {
+	discovery := newMemoryFrontendProxyDiscovery()
+	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
+		{
+			NodeID:       "proxy-runtime-node",
+			Address:      "10.244.0.9:28440",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
+	})
+	restore := setFrontendProxyDiscoveryForTest(discovery)
+	defer restore()
+
+	address := proxyAddressFromInstance(&commontypes.InstanceSpecification{
+		RuntimeAddress: "10.244.0.9:32568",
+	})
+
+	require.Equal(t, "10.244.0.9:28440", address)
+}
+
+func TestProxyAddressFromInstanceDoesNotBypassPublishedRuntimeHostCapability(t *testing.T) {
+	discovery := newMemoryFrontendProxyDiscovery()
+	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
+		{
+			NodeID:       "proxy-runtime-node",
+			Address:      "10.244.0.9:28440",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
+	})
+	restore := setFrontendProxyDiscoveryForTest(discovery)
+	defer restore()
+
+	address := proxyAddressFromInstance(&commontypes.InstanceSpecification{
+		RuntimeAddress: "10.244.0.9:32568",
+	})
+
+	require.Empty(t, address)
+}
+
 func TestProxyAddressFromInstanceRuntimeAddressFallbackSkipsSuspectAddress(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.MarkSuspectAddress("10.244.0.9:22773", time.Minute)

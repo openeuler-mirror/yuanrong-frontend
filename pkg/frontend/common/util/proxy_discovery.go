@@ -18,6 +18,7 @@ package util
 
 import (
 	"context"
+	"net"
 	"sync"
 	"time"
 )
@@ -58,6 +59,10 @@ type frontendProxySuspectChecker interface {
 
 type frontendProxyDiscoveryRefresher interface {
 	Refresh(ctx context.Context) error
+}
+
+type frontendProxyDiscoveryByHost interface {
+	GetByHost(host string, capability string) (frontendProxyEndpoint, bool)
 }
 
 var defaultFrontendProxyDiscovery = newMemoryFrontendProxyDiscovery()
@@ -254,6 +259,36 @@ func (d *memoryFrontendProxyDiscovery) GetByNode(nodeID string, capability strin
 		return frontendProxyEndpoint{}, false
 	}
 	return endpoint, true
+}
+
+func (d *memoryFrontendProxyDiscovery) GetByHost(host string, capability string) (frontendProxyEndpoint, bool) {
+	if d == nil || host == "" {
+		return frontendProxyEndpoint{}, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	var matched frontendProxyEndpoint
+	count := 0
+	for _, endpoint := range d.endpoints {
+		endpointHost, _, err := net.SplitHostPort(endpoint.Address)
+		if err != nil || endpointHost != host {
+			continue
+		}
+		if capability != "" && (endpoint.Capabilities == nil || !endpoint.Capabilities[capability]) {
+			continue
+		}
+		if d.isSuspectAddressLocked(endpoint.Address, now) {
+			continue
+		}
+		matched = endpoint
+		count++
+		if count > 1 {
+			return frontendProxyEndpoint{}, false
+		}
+	}
+	return matched, count == 1
 }
 
 func (d *memoryFrontendProxyDiscovery) MarkSuspectAddress(address string, ttl time.Duration) {
