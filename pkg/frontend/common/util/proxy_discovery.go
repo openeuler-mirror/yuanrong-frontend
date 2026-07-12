@@ -84,6 +84,11 @@ func setFrontendProxyDiscovery(discovery frontendProxyDiscovery) {
 	frontendProxyDiscoveryState.discovery = discovery
 }
 
+func resetFrontendProxyDiscovery() {
+	defaultFrontendProxyDiscovery.ReplaceSnapshot(nil)
+	setFrontendProxyDiscovery(defaultFrontendProxyDiscovery)
+}
+
 func setFrontendProxyDiscoveryForTest(discovery frontendProxyDiscovery) func() {
 	frontendProxyDiscoveryState.Lock()
 	old := frontendProxyDiscoveryState.discovery

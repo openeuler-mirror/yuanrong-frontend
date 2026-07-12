@@ -202,8 +202,15 @@ func SignalHandlerLibruntime(signal int, payload []byte) error {
 }
 
 func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct{}) error {
-	util.SetAPIClientRuntimeBackendWithOptions(config.GetConfig().FunctionInvokeBackend, rt,
-		util.RuntimeBackendOptions{EnableLegacyFallback: config.GetConfig().FunctionInvokeLegacyFallback})
+	runtimeOptions := util.RuntimeBackendOptions{
+		FrontendProxyAddress: config.GetConfig().FrontendProxyAddress,
+		EnableProxyDiscovery: config.GetConfig().EnableFrontendProxyDiscovery,
+		EnableLegacyFallback: config.GetConfig().FunctionInvokeLegacyFallback,
+	}
+	if err := util.ValidateRuntimeBackendOptions(config.GetConfig().FunctionInvokeBackend, runtimeOptions); err != nil {
+		return fmt.Errorf("invalid runtime backend config: %w", err)
+	}
+	util.SetAPIClientRuntimeBackendWithOptions(config.GetConfig().FunctionInvokeBackend, rt, runtimeOptions)
 	schedulerproxy.Proxy.RTAPI = rt
 	shutdown := func() {}
 	go tracer.InitCommonTracer(shutdown, "frontend")

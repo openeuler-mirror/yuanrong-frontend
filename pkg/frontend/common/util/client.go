@@ -93,6 +93,12 @@ func SetAPIClientLibruntime(rt invokerLibruntime) {
 // RuntimeBackendOptions controls staged compatibility behavior behind the
 // existing invokerLibruntime seam.
 type RuntimeBackendOptions struct {
+	// FrontendProxyAddress is the fixed endpoint used by the Go-native
+	// single-proxy mode. It is ignored when discovery is enabled.
+	FrontendProxyAddress string
+	// EnableProxyDiscovery upgrades the Go-native backend from a configured
+	// single proxy to FunctionMaster-backed multi-proxy selection.
+	EnableProxyDiscovery bool
 	// EnableLegacyFallback allows unsupported Go-native methods to call the old
 	// libruntime control path. Keep this false for the target frontend-proxy path
 	// so create/kill/acquire gaps fail fast instead of silently looking complete.
@@ -111,10 +117,48 @@ func SetAPIClientRuntimeBackendWithOptions(backendType int, rt invokerLibruntime
 	if backendType == constant.BackendTypeFrontendProxy {
 		clientLibruntime = newClientSimpleRuntimeWithProxyClientControlAndFallback(
 			newRoutingFrontendProxyInvokeClient(), rt, opts.EnableLegacyFallback)
-		setFrontendProxyMasterDiscoveryFromRuntime(rt)
+		if opts.EnableProxyDiscovery {
+			setFrontendProxyMasterDiscoveryFromRuntime(rt)
+		} else {
+			setConfiguredSingleFrontendProxyDiscovery(opts.FrontendProxyAddress)
+		}
 		return
 	}
+	resetFrontendProxyDiscovery()
 	clientLibruntime = rt
+}
+
+// ValidateRuntimeBackendOptions rejects feature combinations whose dependency
+// direction would otherwise be silently ignored.
+func ValidateRuntimeBackendOptions(backendType int, opts RuntimeBackendOptions) error {
+	if backendType != constant.BackendTypeKernel && backendType != constant.BackendTypeFrontendProxy {
+		return fmt.Errorf("unsupported function invoke backend %d", backendType)
+	}
+	if backendType != constant.BackendTypeFrontendProxy && opts.EnableProxyDiscovery {
+		return fmt.Errorf("frontend proxy discovery requires the Go-native frontend proxy backend")
+	}
+	if backendType == constant.BackendTypeFrontendProxy && !opts.EnableProxyDiscovery &&
+		!isHostPort(opts.FrontendProxyAddress) {
+		return fmt.Errorf("Go-native single-proxy mode requires a valid frontend proxy address")
+	}
+	return nil
+}
+
+func setConfiguredSingleFrontendProxyDiscovery(address string) {
+	discovery := newMemoryFrontendProxyDiscovery()
+	if isHostPort(address) {
+		discovery.ReplaceSnapshot([]FrontendProxyEndpoint{{
+			NodeID:  address,
+			Address: address,
+			Capabilities: map[string]bool{
+				frontendProxyCapabilityCreate: true,
+				frontendProxyCapabilityInvoke: true,
+				frontendProxyCapabilityKill:   true,
+			},
+			Health: "healthy",
+		}})
+	}
+	setFrontendProxyDiscovery(discovery)
 }
 
 func setFrontendProxyMasterDiscoveryFromRuntime(rt invokerLibruntime) {

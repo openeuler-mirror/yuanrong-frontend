@@ -33,8 +33,8 @@ export CGO_ENABLED=1
 export GOPROXY=https://goproxy.cn,direct
 export GOWORK=off
 mkdir -p ${OUTPUT_DIR}
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 export PATH=$(go env GOPATH)/bin:$PATH
 # remove hard coded cert file in net/http
 [ -f "${TEST_CERT_PATH}" ] && rm -f "${TEST_CERT_PATH}"
@@ -94,7 +94,7 @@ go build -tags "${BUILD_TAG_FUNCTION}" -buildmode=plugin -ldflags "${FLAGS}" \
 
 chmod -R 500 ${SO_PATH}
 cd "${TAR_OUT_DIR}/${MODULE_NAME}"
-zip -r "${MODULE_NAME}.zip" "${MODULE_NAME}" "${MODULE_NAME}.so"
+zip -r "${MODULE_NAME}.zip" *
 
 cp "${PROJECT_DIR}/build/function_meta.json" "${TAR_OUT_DIR}/${MODULE_NAME}/${MODULE_NAME}_meta.json"
 

@@ -69,8 +69,16 @@ func main() {
 		logAndPrintError(fmt.Sprintf("init module config error: %s", err.Error()))
 		return
 	}
-	util.SetAPIClientRuntimeBackendWithOptions(config.GetConfig().FunctionInvokeBackend, nil,
-		util.RuntimeBackendOptions{EnableLegacyFallback: config.GetConfig().FunctionInvokeLegacyFallback})
+	runtimeOptions := util.RuntimeBackendOptions{
+		FrontendProxyAddress: config.GetConfig().FrontendProxyAddress,
+		EnableProxyDiscovery: config.GetConfig().EnableFrontendProxyDiscovery,
+		EnableLegacyFallback: config.GetConfig().FunctionInvokeLegacyFallback,
+	}
+	if err = util.ValidateRuntimeBackendOptions(config.GetConfig().FunctionInvokeBackend, runtimeOptions); err != nil {
+		logAndPrintError(fmt.Sprintf("invalid runtime backend config: %s", err.Error()))
+		return
+	}
+	util.SetAPIClientRuntimeBackendWithOptions(config.GetConfig().FunctionInvokeBackend, nil, runtimeOptions)
 	// Fix Critical #4: Load async invocation config
 	asyncinvocation.LoadConfigFromMain(config.GetConfig())
 	urnutils.SetSeparator(config.GetConfig().FunctionNameSeparator)

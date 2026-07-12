@@ -754,13 +754,18 @@ func TestClientSimpleRuntimeNoReturnUnsupportedMethodsDoNotPanic(t *testing.T) {
 
 func TestSetAPIClientRuntimeBackendKeepsOldPathByDefault(t *testing.T) {
 	original := clientLibruntime
+	restoreDiscovery := setFrontendProxyDiscoveryForTest(newMemoryFrontendProxyDiscovery())
 	t.Cleanup(func() {
 		clientLibruntime = original
+		restoreDiscovery()
 	})
+	setConfiguredSingleFrontendProxyDiscovery("10.0.0.21:22773")
 
 	oldRuntime := &fakeInvokerLibruntime{}
 	SetAPIClientRuntimeBackend(constant.BackendTypeKernel, oldRuntime)
 	require.Same(t, oldRuntime, clientLibruntime)
+	_, ok := resolveNextFrontendProxyEndpoint(frontendProxyCapabilityInvoke)
+	require.False(t, ok)
 }
 
 func TestClientSimpleRuntimeDoesNotUseControlFallbackUnlessEnabled(t *testing.T) {
@@ -918,15 +923,54 @@ func TestSetAPIClientRuntimeBackendUsesMasterBackedFrontendProxyDiscovery(t *tes
 	}))
 	defer server.Close()
 
-	SetAPIClientRuntimeBackend(constant.BackendTypeFrontendProxy, &fakeInvokerLibruntime{
+	SetAPIClientRuntimeBackendWithOptions(constant.BackendTypeFrontendProxy, &fakeInvokerLibruntime{
 		activeMaster: strings.TrimPrefix(server.URL, "http://"),
-	})
+	}, RuntimeBackendOptions{EnableProxyDiscovery: true})
 
 	endpoint, ok := resolveNextFrontendProxyEndpoint(frontendProxyCapabilityCreate)
 
 	require.True(t, ok)
 	require.Equal(t, "proxy-node-a", endpoint.NodeID)
 	require.Equal(t, "10.0.0.11:19090", endpoint.Address)
+}
+
+func TestSetAPIClientRuntimeBackendUsesConfiguredSingleProxyWithoutDiscovery(t *testing.T) {
+	originalClient := clientLibruntime
+	t.Cleanup(func() {
+		clientLibruntime = originalClient
+		resetFrontendProxyDiscovery()
+	})
+
+	SetAPIClientRuntimeBackendWithOptions(constant.BackendTypeFrontendProxy,
+		&fakeInvokerLibruntime{activeMaster: "127.0.0.1:1"}, RuntimeBackendOptions{
+			FrontendProxyAddress: "10.0.0.21:22773",
+		})
+
+	endpoint, ok := resolveNextFrontendProxyEndpoint(frontendProxyCapabilityCreate)
+	require.True(t, ok)
+	require.Equal(t, "10.0.0.21:22773", endpoint.Address)
+	_, hasRefresh := currentFrontendProxyDiscovery().(frontendProxyDiscoveryRefresher)
+	require.False(t, hasRefresh)
+}
+
+func TestValidateRuntimeBackendOptionsRejectsDiscoveryWithoutGoNative(t *testing.T) {
+	err := ValidateRuntimeBackendOptions(constant.BackendTypeKernel,
+		RuntimeBackendOptions{EnableProxyDiscovery: true})
+	require.EqualError(t, err, "frontend proxy discovery requires the Go-native frontend proxy backend")
+}
+
+func TestValidateRuntimeBackendOptionsAcceptsZeroValueKernelOptions(t *testing.T) {
+	require.NoError(t, ValidateRuntimeBackendOptions(constant.BackendTypeKernel, RuntimeBackendOptions{}))
+}
+
+func TestValidateRuntimeBackendOptionsRejectsUnknownBackend(t *testing.T) {
+	err := ValidateRuntimeBackendOptions(99, RuntimeBackendOptions{})
+	require.EqualError(t, err, "unsupported function invoke backend 99")
+}
+
+func TestValidateRuntimeBackendOptionsRejectsMissingSingleProxyAddress(t *testing.T) {
+	err := ValidateRuntimeBackendOptions(constant.BackendTypeFrontendProxy, RuntimeBackendOptions{})
+	require.EqualError(t, err, "Go-native single-proxy mode requires a valid frontend proxy address")
 }
 
 func TestSetAPIClientRuntimeBackendCanEnableExplicitLegacyFallback(t *testing.T) {

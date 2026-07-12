@@ -108,6 +108,7 @@ type Config struct {
 	StateDisable                 bool                       `json:"stateDisable"  valid:"optional"`
 	BusinessType                 int                        `json:"businessType"`
 	FunctionInvokeBackend        int                        `json:"functionInvokeBackend" valid:"optional"`
+	EnableFrontendProxyDiscovery bool                       `json:"enableFrontendProxyDiscovery" valid:"optional"`
 	FunctionInvokeLegacyFallback bool                       `json:"functionInvokeLegacyFallback" valid:"optional"`
 	FrontendProxyAddress         string                     `json:"frontendProxyAddress" valid:"optional"`
 	SccConfig                    crypto.SccConfig           `json:"sccConfig" valid:"optional"`
