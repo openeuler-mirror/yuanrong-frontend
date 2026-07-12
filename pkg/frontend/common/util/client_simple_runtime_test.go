@@ -281,7 +281,11 @@ func TestDefaultClientUsesSingleInvokerLibruntimeSeam(t *testing.T) {
 	require.Equal(t, "func-key", librt.invokeByFunctionNameReq.funcMeta.FuncID)
 	require.Equal(t, "sig", librt.invokeByFunctionNameReq.funcMeta.Sig)
 
-	created, err := client.CreateInstanceByLibRt(api.FunctionMeta{FuncID: "sandbox-func"}, []api.Arg{{Type: api.Value}}, api.InvokeOptions{TraceID: "trace-create"})
+	created, err := client.CreateInstanceByLibRt(
+		api.FunctionMeta{FuncID: "sandbox-func"},
+		[]api.Arg{{Type: api.Value}},
+		api.InvokeOptions{TraceID: "trace-create"},
+	)
 	require.NoError(t, err)
 	require.Equal(t, "instance-created", created)
 	require.Equal(t, "sandbox-func", librt.createReq.funcMeta.FuncID)
@@ -776,7 +780,9 @@ func TestClientSimpleRuntimeDoesNotUseControlFallbackUnlessEnabled(t *testing.T)
 	require.Error(t, err)
 	require.Empty(t, control.createReq.funcMeta.FuncID)
 
-	_, err = runtime.AcquireInstance("state-1", api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}, api.InvokeOptions{})
+	_, err = runtime.AcquireInstance(
+		"state-1", api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}, api.InvokeOptions{},
+	)
 	require.Error(t, err)
 	require.Empty(t, control.acquireReq.funcMeta.FuncID)
 

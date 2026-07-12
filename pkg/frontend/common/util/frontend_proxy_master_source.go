@@ -26,7 +26,10 @@ import (
 	"time"
 )
 
-const frontendProxyMasterEndpointPath = "/instance-manager/frontend-proxy-endpoints"
+const (
+	frontendProxyMasterEndpointPath = "/instance-manager/frontend-proxy-endpoints"
+	frontendProxyMasterTimeout      = 5 * time.Second
+)
 
 type frontendProxyMasterHTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -49,7 +52,10 @@ type frontendProxyMasterEndpointRecord struct {
 	Health       string   `json:"health"`
 }
 
-func newFrontendProxyMasterHTTPSource(masterAddr func() string, client frontendProxyMasterHTTPDoer) *frontendProxyMasterHTTPSource {
+func newFrontendProxyMasterHTTPSource(
+	masterAddr func() string,
+	client frontendProxyMasterHTTPDoer,
+) *frontendProxyMasterHTTPSource {
 	if client == nil {
 		client = newFrontendProxyMasterHTTPClient()
 	}
@@ -67,12 +73,14 @@ func newFrontendProxyMasterHTTPClient() *http.Client {
 	// 502s and breaks discovery.  Disable proxy lookup for this client only.
 	transport.Proxy = nil
 	return &http.Client{
-		Timeout:   5 * time.Second,
+		Timeout:   frontendProxyMasterTimeout,
 		Transport: transport,
 	}
 }
 
-func (s *frontendProxyMasterHTTPSource) ListFrontendProxyEndpoints(ctx context.Context) ([]FrontendProxyEndpoint, error) {
+func (s *frontendProxyMasterHTTPSource) ListFrontendProxyEndpoints(
+	ctx context.Context,
+) ([]FrontendProxyEndpoint, error) {
 	if s == nil || s.masterAddr == nil {
 		return nil, fmt.Errorf("function master address is empty")
 	}
@@ -91,7 +99,10 @@ func (s *frontendProxyMasterHTTPSource) ListFrontendProxyEndpoints(ctx context.C
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read function master error response: %w", readErr)
+		}
 		return nil, fmt.Errorf("function master returned status %d for frontend proxy endpoints: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
 	}

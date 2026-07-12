@@ -71,7 +71,9 @@ type fakeFrontendProxyClientFactory struct {
 	evicted      []string
 }
 
-func (f *fakeFrontendProxyClientFactory) ClientForAddress(address string) (frontend_proxy.FrontendProxyServiceClient, error) {
+func (f *fakeFrontendProxyClientFactory) ClientForAddress(
+	address string,
+) (frontend_proxy.FrontendProxyServiceClient, error) {
 	f.address = address
 	f.addresses = append(f.addresses, address)
 	if err := f.errByAddress[address]; err != nil {
@@ -123,7 +125,10 @@ func (f *fakeFrontendProxyServiceClient) KillInstance(ctx context.Context, in *f
 	return f.killResp, f.err
 }
 
-func createResponseWithUnknownReadyCallResult(t *testing.T, callResult *core.CallResult) *frontend_proxy.CreateInstanceResponse {
+func createResponseWithUnknownReadyCallResult(
+	t *testing.T,
+	callResult *core.CallResult,
+) *frontend_proxy.CreateInstanceResponse {
 	t.Helper()
 	payload, err := proto.Marshal(callResult)
 	require.NoError(t, err)
@@ -229,8 +234,14 @@ func addInstanceRouteForTest(t *testing.T, functionKey, instanceID, functionProx
 func TestMemoryFrontendProxyDiscoveryGetNextEndpointRoundRobinsCandidates(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-node-a", Address: "10.0.0.8:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
-		{NodeID: "proxy-node-b", Address: "10.0.0.9:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
+		{
+			NodeID: "proxy-node-a", Address: "10.0.0.8:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
+		{
+			NodeID: "proxy-node-b", Address: "10.0.0.9:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
 	})
 
 	first, ok := discovery.GetNextEndpoint(frontendProxyCapabilityInvoke)
@@ -646,7 +657,9 @@ func TestGRPCFrontendProxyLifecycleClientCreateInstanceRawReturnsReadyNotify(t *
 func TestExternalRawRequestIDPreservedAcrossInternalCorrelationMapping(t *testing.T) {
 	const externalRequestID = "caller-business-request"
 	fakeService := &fakeFrontendProxyServiceClient{}
-	fakeService.createFn = func(_ context.Context, req *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+	fakeService.createFn = func(
+		_ context.Context, req *frontend_proxy.CreateInstanceRequest,
+	) (*frontend_proxy.CreateInstanceResponse, error) {
 		return createResponseWithUnknownReadyCallResult(t, &core.CallResult{
 			Code:       common.ErrorCode_ERR_NONE,
 			RequestID:  req.GetContext().GetRequestID(),
@@ -670,7 +683,9 @@ func TestExternalRawRequestIDPreservedAcrossInternalCorrelationMapping(t *testin
 
 func TestRawCreateWithoutCallerRequestIDReturnsGeneratedInternalCorrelation(t *testing.T) {
 	fakeService := &fakeFrontendProxyServiceClient{}
-	fakeService.createFn = func(_ context.Context, req *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+	fakeService.createFn = func(
+		_ context.Context, req *frontend_proxy.CreateInstanceRequest,
+	) (*frontend_proxy.CreateInstanceResponse, error) {
 		return createResponseWithUnknownReadyCallResult(t, &core.CallResult{
 			Code:       common.ErrorCode_ERR_NONE,
 			RequestID:  req.GetContext().GetRequestID(),
@@ -694,7 +709,9 @@ func TestCallerRawIDReusedAfterCancelCannotCaptureLateResult(t *testing.T) {
 	const externalRequestID = "reused-caller-request"
 	internalIDs := make([]string, 0, 2)
 	fakeService := &fakeFrontendProxyServiceClient{}
-	fakeService.createFn = func(_ context.Context, req *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+	fakeService.createFn = func(
+		_ context.Context, req *frontend_proxy.CreateInstanceRequest,
+	) (*frontend_proxy.CreateInstanceResponse, error) {
 		internalIDs = append(internalIDs, req.GetContext().GetRequestID())
 		return createResponseWithUnknownReadyCallResult(t, &core.CallResult{
 			Code:       common.ErrorCode_ERR_NONE,
@@ -722,7 +739,9 @@ func TestCallerRawIDReusedAfterCancelCannotCaptureLateResult(t *testing.T) {
 
 func TestRawCreateContextCancellationReachesGRPCClient(t *testing.T) {
 	fakeService := &fakeFrontendProxyServiceClient{}
-	fakeService.createFn = func(ctx context.Context, _ *frontend_proxy.CreateInstanceRequest) (*frontend_proxy.CreateInstanceResponse, error) {
+	fakeService.createFn = func(
+		ctx context.Context, _ *frontend_proxy.CreateInstanceRequest,
+	) (*frontend_proxy.CreateInstanceResponse, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -897,8 +916,14 @@ func TestGRPCFrontendProxyLifecycleClientReturnsCreateError(t *testing.T) {
 func TestRoutingFrontendProxyLifecycleClientSelectsCreateCapabilityEndpoint(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-invoke-only", Address: "10.0.0.10:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
-		{NodeID: "proxy-create", Address: "10.0.0.11:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
+		{
+			NodeID: "proxy-invoke-only", Address: "10.0.0.10:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
+		{
+			NodeID: "proxy-create", Address: "10.0.0.11:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
 	})
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
@@ -929,8 +954,14 @@ func TestRoutingFrontendProxyLifecycleClientSelectsCreateCapabilityEndpoint(t *t
 func TestRoutingFrontendProxyLifecycleCreateDoesNotReplayAfterDispatchedError(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-create-a", Address: "10.0.0.11:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
-		{NodeID: "proxy-create-b", Address: "10.0.0.12:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
+		{
+			NodeID: "proxy-create-a", Address: "10.0.0.11:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
+		{
+			NodeID: "proxy-create-b", Address: "10.0.0.12:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
 	})
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
@@ -951,7 +982,9 @@ func TestRoutingFrontendProxyLifecycleCreateDoesNotReplayAfterDispatchedError(t 
 		frontendClientID: "frontend-test",
 	}
 
-	_, err := client.CreateInstance(simpleRuntimeCreateRequest{funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}})
+	_, err := client.CreateInstance(simpleRuntimeCreateRequest{
+		funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+	})
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "create dispatched but transport failed")
@@ -1008,8 +1041,14 @@ func TestTransportErrorRefreshesStaleFrontendProxySnapshotWithoutReplay(t *testi
 func TestRoutingFrontendProxyLifecycleCreateRetriesNextCandidateOnControlPathNotWired(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-create-stale", Address: "10.0.0.11:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
-		{NodeID: "proxy-create-ready", Address: "10.0.0.12:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
+		{
+			NodeID: "proxy-create-stale", Address: "10.0.0.11:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
+		{
+			NodeID: "proxy-create-ready", Address: "10.0.0.12:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
 	})
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
@@ -1038,7 +1077,9 @@ func TestRoutingFrontendProxyLifecycleCreateRetriesNextCandidateOnControlPathNot
 		frontendClientID: "frontend-test",
 	}
 
-	got, err := client.CreateInstance(simpleRuntimeCreateRequest{funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}})
+	got, err := client.CreateInstance(simpleRuntimeCreateRequest{
+		funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+	})
 
 	require.NoError(t, err)
 	require.Equal(t, "instance-created", got)
@@ -1051,8 +1092,14 @@ func TestRoutingFrontendProxyLifecycleCreateRetriesNextCandidateOnControlPathNot
 func TestRoutingFrontendProxyLifecycleCreateRawSelectsCreateCapabilityEndpoint(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-invoke-only", Address: "10.0.0.10:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
-		{NodeID: "proxy-create", Address: "10.0.0.11:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
+		{
+			NodeID: "proxy-invoke-only", Address: "10.0.0.10:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
+		{
+			NodeID: "proxy-create", Address: "10.0.0.11:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
 	})
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
@@ -1110,7 +1157,9 @@ func TestRoutingFrontendProxyLifecycleCreateDoesNotMarkEndpointSuspectOnCreateBu
 		frontendClientID: "frontend-test",
 	}
 
-	_, err := client.CreateInstance(simpleRuntimeCreateRequest{funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}})
+	_, err := client.CreateInstance(simpleRuntimeCreateRequest{
+		funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+	})
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid create request")
@@ -1122,8 +1171,14 @@ func TestRoutingFrontendProxyLifecycleCreateDoesNotMarkEndpointSuspectOnCreateBu
 func TestRoutingFrontendProxyLifecycleCreateRetriesNextCandidateOnClientFactoryError(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-create-a", Address: "10.0.0.11:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
-		{NodeID: "proxy-create-b", Address: "10.0.0.12:22769", Capabilities: map[string]bool{frontendProxyCapabilityCreate: true}},
+		{
+			NodeID: "proxy-create-a", Address: "10.0.0.11:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
+		{
+			NodeID: "proxy-create-b", Address: "10.0.0.12:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityCreate: true},
+		},
 	})
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
@@ -1145,7 +1200,9 @@ func TestRoutingFrontendProxyLifecycleCreateRetriesNextCandidateOnClientFactoryE
 		frontendClientID: "frontend-test",
 	}
 
-	got, err := client.CreateInstance(simpleRuntimeCreateRequest{funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}})
+	got, err := client.CreateInstance(simpleRuntimeCreateRequest{
+		funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+	})
 
 	require.NoError(t, err)
 	require.Equal(t, "instance-created", got)
@@ -1175,7 +1232,9 @@ func TestRoutingFrontendProxyLifecycleCreateMarksEndpointSuspectOnClientFactoryE
 		frontendClientID: "frontend-test",
 	}
 
-	_, err := client.CreateInstance(simpleRuntimeCreateRequest{funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi}})
+	_, err := client.CreateInstance(simpleRuntimeCreateRequest{
+		funcMeta: api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
+	})
 
 	require.Error(t, err)
 	require.Equal(t, []string{"10.0.0.11:22769"}, factory.addresses)
@@ -1399,7 +1458,9 @@ func TestDefaultFrontendProxyRouteResolverPrefersInstanceCacheOverRequestRoute(t
 	defer restoreDiscovery()
 	restoreInstance := addInstanceRouteForTest(t, "func-key", "instance-owned-stale-route", "proxy-b")
 	defer restoreInstance()
-	require.NotNil(t, instancemanager.GetGlobalInstanceScheduler().GetInstanceByID("func-key", "instance-owned-stale-route"))
+	require.NotNil(t, instancemanager.GetGlobalInstanceScheduler().GetInstanceByID(
+		"func-key", "instance-owned-stale-route",
+	))
 
 	address, err := (defaultFrontendProxyRouteResolver{}).ResolveFrontendProxyAddress(simpleRuntimeInvokeRequest{
 		funcMeta:   api.FunctionMeta{FuncID: "func-key", Api: api.FaaSApi},
@@ -1612,7 +1673,9 @@ func TestRoutingFrontendProxyInvokeClientRawBackfillsGeneratedRequestID(t *testi
 func TestRawInvokePreservesExternalRequestIDWithUniqueInternalCorrelation(t *testing.T) {
 	const externalRequestID = "external-invoke-request"
 	fakeService := &fakeFrontendProxyServiceClient{}
-	fakeService.invokeFn = func(_ context.Context, req *frontend_proxy.InvokeInstanceRequest) (*frontend_proxy.InvokeInstanceResponse, error) {
+	fakeService.invokeFn = func(
+		_ context.Context, req *frontend_proxy.InvokeInstanceRequest,
+	) (*frontend_proxy.InvokeInstanceResponse, error) {
 		return &frontend_proxy.InvokeInstanceResponse{
 			Status: &frontend_proxy.FrontendProxyStatus{Code: common.ErrorCode_ERR_NONE},
 			CallResult: &core.CallResult{
@@ -1641,7 +1704,9 @@ func TestRawInvokePreservesExternalRequestIDWithUniqueInternalCorrelation(t *tes
 
 func TestRawInvokeWithoutCallerRequestIDReturnsGeneratedInternalCorrelation(t *testing.T) {
 	fakeService := &fakeFrontendProxyServiceClient{}
-	fakeService.invokeFn = func(_ context.Context, req *frontend_proxy.InvokeInstanceRequest) (*frontend_proxy.InvokeInstanceResponse, error) {
+	fakeService.invokeFn = func(
+		_ context.Context, req *frontend_proxy.InvokeInstanceRequest,
+	) (*frontend_proxy.InvokeInstanceResponse, error) {
 		return &frontend_proxy.InvokeInstanceResponse{
 			Status: &frontend_proxy.FrontendProxyStatus{Code: common.ErrorCode_ERR_NONE},
 			CallResult: &core.CallResult{
@@ -1791,12 +1856,20 @@ func TestRoutingFrontendProxyInvokeClientRawPropagatesTraceParent(t *testing.T) 
 func TestRoutingFrontendProxyInvokeClientRawPrefersCachedOwningRouteOverRequestRoute(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-stale", Address: "10.0.0.8:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
-		{NodeID: "proxy-owner", Address: "10.0.0.9:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
+		{
+			NodeID: "proxy-stale", Address: "10.0.0.8:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
+		{
+			NodeID: "proxy-owner", Address: "10.0.0.9:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
 	})
 	restoreDiscovery := setFrontendProxyDiscoveryForTest(discovery)
 	defer restoreDiscovery()
-	cleanupInstance := addInstanceRouteForTest(t, "tenant/func-key-route-stale/$latest", "instance-route-stale", "proxy-owner")
+	cleanupInstance := addInstanceRouteForTest(
+		t, "tenant/func-key-route-stale/$latest", "instance-route-stale", "proxy-owner",
+	)
 	defer cleanupInstance()
 
 	invokeReq := &core.InvokeRequest{
@@ -2226,7 +2299,8 @@ func TestDefaultFrontendProxyRouteResolverDoesNotBypassCapabilityWithRuntimeAddr
 	value, err := json.Marshal(insSpec)
 	require.NoError(t, err)
 	event := &etcd3.Event{
-		Key:   "/sn/instance/business/yrk/tenant/tenant/function/func-capability/version/$latest/defaultaz/request/" + instanceID,
+		Key: "/sn/instance/business/yrk/tenant/tenant/function/func-capability/version/" +
+			"$latest/defaultaz/request/" + instanceID,
 		Value: value,
 	}
 	instancemanager.ProcessInstanceUpdate(event)
@@ -2284,7 +2358,10 @@ func TestGRPCFrontendProxyLifecycleClientBuildsKillRequest(t *testing.T) {
 func TestRoutingFrontendProxyLifecycleClientSelectsKillCapabilityEndpoint(t *testing.T) {
 	discovery := newMemoryFrontendProxyDiscovery()
 	discovery.ReplaceSnapshot([]frontendProxyEndpoint{
-		{NodeID: "proxy-invoke-only", Address: "10.0.0.10:22769", Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true}},
+		{
+			NodeID: "proxy-invoke-only", Address: "10.0.0.10:22769",
+			Capabilities: map[string]bool{frontendProxyCapabilityInvoke: true},
+		},
 		{NodeID: "proxy-kill", Address: "10.0.0.12:22769", Capabilities: map[string]bool{frontendProxyCapabilityKill: true}},
 	})
 	restore := setFrontendProxyDiscoveryForTest(discovery)

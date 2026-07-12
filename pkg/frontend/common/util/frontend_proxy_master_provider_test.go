@@ -31,7 +31,9 @@ type fakeFrontendProxyEndpointSource struct {
 	calls     int
 }
 
-func (f *fakeFrontendProxyEndpointSource) ListFrontendProxyEndpoints(ctx context.Context) ([]FrontendProxyEndpoint, error) {
+func (f *fakeFrontendProxyEndpointSource) ListFrontendProxyEndpoints(
+	ctx context.Context,
+) ([]FrontendProxyEndpoint, error) {
 	f.calls++
 	if f.err != nil {
 		return nil, f.err

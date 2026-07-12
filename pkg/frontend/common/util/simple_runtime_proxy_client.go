@@ -44,7 +44,7 @@ import (
 	"frontend/pkg/common/faas_common/grpc/pb/core"
 	"frontend/pkg/common/faas_common/grpc/pb/frontend_proxy"
 	"frontend/pkg/common/faas_common/logger/log"
-	commontypes "frontend/pkg/common/faas_common/types"
+	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/instancemanager"
 )
@@ -68,7 +68,25 @@ const (
 	frontendProxyControlNotWired                      = "control-path-not-wired"
 	simpleRuntimeFaaSMetaPrefix                       = "0000000000000000"
 	defaultFrontendProxyTimeout                       = 60 * time.Second
+	frontendProxyKeepaliveTimeout                     = 10 * time.Second
 	createReadyCallResultFieldNumber protowire.Number = 4
+	runtimeNotifyRequestIDField      protowire.Number = 1
+	runtimeNotifyCodeField           protowire.Number = 2
+	runtimeNotifyMessageField        protowire.Number = 3
+	runtimeNotifySmallObjectField    protowire.Number = 4
+	runtimeNotifyStackTraceField     protowire.Number = 5
+	runtimeNotifyRuntimeInfoField    protowire.Number = 7
+	runtimeNotifyInstanceIDField     protowire.Number = 8
+	functionMetaAppNameField         protowire.Number = 1
+	functionMetaModuleNameField      protowire.Number = 2
+	functionMetaFunctionNameField    protowire.Number = 3
+	functionMetaClassNameField       protowire.Number = 4
+	functionMetaLanguageField        protowire.Number = 5
+	functionMetaSignatureField       protowire.Number = 7
+	functionMetaAPIField             protowire.Number = 8
+	functionMetaNameField            protowire.Number = 9
+	functionMetaNamespaceField       protowire.Number = 10
+	functionMetaIDField              protowire.Number = 11
 )
 
 type grpcFrontendProxyInvokeClient struct {
@@ -686,7 +704,7 @@ func resolveProxyAddressByInstance(req simpleRuntimeInvokeRequest) string {
 	if req.instanceID == "" {
 		return ""
 	}
-	var instance *commontypes.InstanceSpecification
+	var instance *types.InstanceSpecification
 	if req.funcMeta.FuncID != "" {
 		instance = instancemanager.GetGlobalInstanceScheduler().GetInstanceByID(req.funcMeta.FuncID, req.instanceID)
 	}
@@ -700,7 +718,7 @@ func resolveProxyAddressByKill(req simpleRuntimeKillRequest) string {
 	if req.instanceID == "" {
 		return ""
 	}
-	var instance *commontypes.InstanceSpecification
+	var instance *types.InstanceSpecification
 	if instance == nil {
 		instance = instancemanager.GetGlobalInstanceScheduler().GetInstanceByIDAcrossFunctions(req.instanceID)
 	}
@@ -718,7 +736,7 @@ func resolveProxyAddressByRawInvoke(req *core.InvokeRequest) string {
 	if req == nil || req.GetInstanceID() == "" {
 		return ""
 	}
-	var instance *commontypes.InstanceSpecification
+	var instance *types.InstanceSpecification
 	if req.GetFunction() != "" {
 		instance = instancemanager.GetGlobalInstanceScheduler().GetInstanceByID(req.GetFunction(), req.GetInstanceID())
 	}
@@ -733,11 +751,11 @@ func isHostPort(address string) bool {
 	return err == nil && strings.TrimSpace(host) != "" && strings.TrimSpace(port) != ""
 }
 
-func proxyAddressFromInstance(instance *commontypes.InstanceSpecification) string {
+func proxyAddressFromInstance(instance *types.InstanceSpecification) string {
 	return proxyAddressFromInstanceForCapability(instance, frontendProxyCapabilityInvoke)
 }
 
-func proxyAddressFromInstanceForCapability(instance *commontypes.InstanceSpecification, capability string) string {
+func proxyAddressFromInstanceForCapability(instance *types.InstanceSpecification, capability string) string {
 	if instance == nil {
 		return ""
 	}
@@ -814,7 +832,7 @@ func frontendProxyNodeExistsInDiscovery(nodeID string) bool {
 	return ok
 }
 
-func proxyAddressFromInstanceRuntimeAddress(instance *commontypes.InstanceSpecification) string {
+func proxyAddressFromInstanceRuntimeAddress(instance *types.InstanceSpecification) string {
 	if instance == nil || instance.RuntimeAddress == "" {
 		return ""
 	}
@@ -860,7 +878,9 @@ func newFrontendProxyGRPCClientPool() *frontendProxyGRPCClientPool {
 	return &frontendProxyGRPCClientPool{conns: make(map[string]*grpc.ClientConn)}
 }
 
-func (p *frontendProxyGRPCClientPool) ClientForAddress(address string) (frontend_proxy.FrontendProxyServiceClient, error) {
+func (p *frontendProxyGRPCClientPool) ClientForAddress(
+	address string,
+) (frontend_proxy.FrontendProxyServiceClient, error) {
 	if strings.TrimSpace(address) == "" {
 		return nil, fmt.Errorf("frontend proxy address is empty")
 	}
@@ -874,7 +894,7 @@ func (p *frontendProxyGRPCClientPool) ClientForAddress(address string) (frontend
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:    time.Hour,
-			Timeout: 10 * time.Second,
+				Timeout: frontendProxyKeepaliveTimeout,
 		}),
 	)
 	if err != nil {
@@ -927,7 +947,10 @@ func simpleRuntimeInvokeContext(options api.InvokeOptions) (context.Context, con
 	return simpleRuntimeInvokeContextWithParent(context.Background(), options)
 }
 
-func simpleRuntimeInvokeContextWithParent(parent context.Context, options api.InvokeOptions) (context.Context, context.CancelFunc) {
+func simpleRuntimeInvokeContextWithParent(
+	parent context.Context,
+	options api.InvokeOptions,
+) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -1118,16 +1141,19 @@ func marshalRuntimeNotifyFromCallResult(callResult *core.CallResult) ([]byte, er
 	return marshalRuntimeNotifyFromCallResultWithRequestID(callResult, callResult.GetRequestID())
 }
 
-func marshalRuntimeNotifyFromCallResultWithRequestID(callResult *core.CallResult, requestID string) ([]byte, error) {
+func marshalRuntimeNotifyFromCallResultWithRequestID(
+	callResult *core.CallResult,
+	requestID string,
+) ([]byte, error) {
 	var out []byte
 	if requestID != "" {
-		out = protowire.AppendTag(out, 1, protowire.BytesType)
+		out = protowire.AppendTag(out, runtimeNotifyRequestIDField, protowire.BytesType)
 		out = protowire.AppendString(out, requestID)
 	}
-	out = protowire.AppendTag(out, 2, protowire.VarintType)
+	out = protowire.AppendTag(out, runtimeNotifyCodeField, protowire.VarintType)
 	out = protowire.AppendVarint(out, uint64(callResult.GetCode()))
 	if callResult.GetMessage() != "" {
-		out = protowire.AppendTag(out, 3, protowire.BytesType)
+		out = protowire.AppendTag(out, runtimeNotifyMessageField, protowire.BytesType)
 		out = protowire.AppendString(out, callResult.GetMessage())
 	}
 	for _, smallObject := range callResult.GetSmallObjects() {
@@ -1135,7 +1161,7 @@ func marshalRuntimeNotifyFromCallResultWithRequestID(callResult *core.CallResult
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal frontend proxy invoke small object: %w", err)
 		}
-		out = protowire.AppendTag(out, 4, protowire.BytesType)
+		out = protowire.AppendTag(out, runtimeNotifySmallObjectField, protowire.BytesType)
 		out = protowire.AppendBytes(out, payload)
 	}
 	for _, stackTraceInfo := range callResult.GetStackTraceInfos() {
@@ -1143,7 +1169,7 @@ func marshalRuntimeNotifyFromCallResultWithRequestID(callResult *core.CallResult
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal frontend proxy create stack trace info: %w", err)
 		}
-		out = protowire.AppendTag(out, 5, protowire.BytesType)
+		out = protowire.AppendTag(out, runtimeNotifyStackTraceField, protowire.BytesType)
 		out = protowire.AppendBytes(out, payload)
 	}
 	if runtimeInfo := callResult.GetRuntimeInfo(); runtimeInfo != nil {
@@ -1151,7 +1177,7 @@ func marshalRuntimeNotifyFromCallResultWithRequestID(callResult *core.CallResult
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal frontend proxy create runtime info: %w", err)
 		}
-		out = protowire.AppendTag(out, 7, protowire.BytesType)
+		out = protowire.AppendTag(out, runtimeNotifyRuntimeInfoField, protowire.BytesType)
 		out = protowire.AppendBytes(out, payload)
 	}
 	// The raw frontend create response is consumed by the external libruntime
@@ -1159,7 +1185,7 @@ func marshalRuntimeNotifyFromCallResultWithRequestID(callResult *core.CallResult
 	// Do not replace this with functionsystem's internal readyInstance message:
 	// that is a different NotifyRequest definition on a different boundary.
 	if callResult.GetInstanceID() != "" {
-		out = protowire.AppendTag(out, 8, protowire.BytesType)
+		out = protowire.AppendTag(out, runtimeNotifyInstanceIDField, protowire.BytesType)
 		out = protowire.AppendString(out, callResult.GetInstanceID())
 	}
 	return out, nil
@@ -1200,7 +1226,9 @@ func createReadyCallResultFromResponse(resp *frontend_proxy.CreateInstanceRespon
 	return nil, nil
 }
 
-func typedCreateReadyCallResultFromResponse(resp *frontend_proxy.CreateInstanceResponse) (*core.CallResult, bool, error) {
+func typedCreateReadyCallResultFromResponse(
+	resp *frontend_proxy.CreateInstanceResponse,
+) (*core.CallResult, bool, error) {
 	message := resp.ProtoReflect()
 	field := message.Descriptor().Fields().ByName(protoreflect.Name("callResult"))
 	if field == nil {
@@ -1379,27 +1407,27 @@ func acquireSimpleRuntimeValueBuffer(required int) ([]byte, *sync.Pool) {
 func buildSimpleRuntimeInvokeMetadata(funcMeta api.FunctionMeta) []byte {
 	var metadata []byte
 	metadata = appendProtoVarint(metadata, 1, uint64(1)) // libruntime.InvokeFunction
-	metadata = appendProtoBytes(metadata, 2, buildSimpleRuntimeFunctionMeta(funcMeta))
-	metadata = appendProtoBytes(metadata, 4, buildSimpleRuntimeInvocationMeta())
+	metadata = appendProtoBytes(metadata, functionMetaModuleNameField, buildSimpleRuntimeFunctionMeta(funcMeta))
+	metadata = appendProtoBytes(metadata, functionMetaClassNameField, buildSimpleRuntimeInvocationMeta())
 	return metadata
 }
 
 func buildSimpleRuntimeFunctionMeta(funcMeta api.FunctionMeta) []byte {
 	var payload []byte
-	payload = appendProtoString(payload, 1, funcMeta.AppName)
-	payload = appendProtoString(payload, 2, funcMeta.ModuleName)
-	payload = appendProtoString(payload, 3, funcMeta.FuncName)
-	payload = appendProtoString(payload, 4, funcMeta.ClassName)
-	payload = appendProtoVarint(payload, 5, uint64(funcMeta.Language))
-	payload = appendProtoString(payload, 7, funcMeta.Sig)
-	payload = appendProtoVarint(payload, 8, uint64(funcMeta.Api))
+	payload = appendProtoString(payload, functionMetaAppNameField, funcMeta.AppName)
+	payload = appendProtoString(payload, functionMetaModuleNameField, funcMeta.ModuleName)
+	payload = appendProtoString(payload, functionMetaFunctionNameField, funcMeta.FuncName)
+	payload = appendProtoString(payload, functionMetaClassNameField, funcMeta.ClassName)
+	payload = appendProtoVarint(payload, functionMetaLanguageField, uint64(funcMeta.Language))
+	payload = appendProtoString(payload, functionMetaSignatureField, funcMeta.Sig)
+	payload = appendProtoVarint(payload, functionMetaAPIField, uint64(funcMeta.Api))
 	if funcMeta.Name != nil {
-		payload = appendProtoString(payload, 9, *funcMeta.Name)
+		payload = appendProtoString(payload, functionMetaNameField, *funcMeta.Name)
 	}
 	if funcMeta.Namespace != nil {
-		payload = appendProtoString(payload, 10, *funcMeta.Namespace)
+		payload = appendProtoString(payload, functionMetaNamespaceField, *funcMeta.Namespace)
 	}
-	payload = appendProtoString(payload, 11, funcMeta.FuncID)
+	payload = appendProtoString(payload, functionMetaIDField, funcMeta.FuncID)
 	return payload
 }
 

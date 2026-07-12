@@ -32,9 +32,11 @@ import (
 	"frontend/pkg/common/faas_common/logger/log"
 )
 
+const traceParentPartCount = 4
+
 func traceIDFromTraceParent(traceParent string) string {
 	parts := strings.Split(traceParent, "-")
-	if len(parts) != 4 || len(parts[1]) != 32 {
+	if len(parts) != traceParentPartCount || len(parts[1]) != 32 {
 		return ""
 	}
 	if _, err := hex.DecodeString(parts[1]); err != nil || parts[1] == strings.Repeat("0", 32) {
@@ -260,7 +262,12 @@ func (c *clientSimpleRuntime) AcquireInstance(state string, funcMeta api.Functio
 	return api.InstanceAllocation{}, c.unsupported("AcquireInstance")
 }
 
-func (c *clientSimpleRuntime) ReleaseInstance(allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions) {
+func (c *clientSimpleRuntime) ReleaseInstance(
+	allocation api.InstanceAllocation,
+	stateID string,
+	abnormal bool,
+	option api.InvokeOptions,
+) {
 	// See AcquireInstance: the current FaaS HTTP path releases through
 	// leaseadaptor/function scheduler. This old seam is only a legacy fallback
 	// hook, not the final release implementation for frontend-proxy mode.
@@ -268,8 +275,11 @@ func (c *clientSimpleRuntime) ReleaseInstance(allocation api.InstanceAllocation,
 		c.control.ReleaseInstance(allocation, stateID, abnormal, option)
 		return
 	}
-	log.GetLogger().Warnf("clientSimpleRuntime.ReleaseInstance is not implemented in the Go-native frontend runtime path, "+
-		"skip release for instanceID(%s), stateID(%s), abnormal(%t)", allocation.InstanceID, stateID, abnormal)
+	log.GetLogger().Warnf(
+		"clientSimpleRuntime.ReleaseInstance is not implemented in the Go-native frontend runtime path, "+
+			"skip release for instanceID(%s), stateID(%s), abnormal(%t)",
+		allocation.InstanceID, stateID, abnormal,
+	)
 }
 
 func (c *clientSimpleRuntime) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
@@ -319,12 +329,16 @@ func (c *clientSimpleRuntime) CreateInstanceRawContext(ctx context.Context, crea
 	// carries the ready CallResult; explicit legacy fallback remains the rollback
 	// lane for actor/old stream semantics.
 	if !c.legacyFallback && c.lifecycleClient != nil {
-		return c.lifecycleClient.CreateInstanceRaw(simpleRuntimeRawCreateRequest{ctx: ctx, create: createReqRaw, options: option})
+		return c.lifecycleClient.CreateInstanceRaw(simpleRuntimeRawCreateRequest{
+			ctx: ctx, create: createReqRaw, options: option,
+		})
 	}
 	if c.legacyFallback && c.control != nil {
 		return c.control.CreateInstanceRaw(createReqRaw, option)
 	}
-	return nil, fmt.Errorf("raw create requires frontend-proxy lifecycle client or explicit legacy libruntime control fallback")
+	return nil, fmt.Errorf(
+		"raw create requires frontend-proxy lifecycle client or explicit legacy libruntime control fallback",
+	)
 }
 
 func (c *clientSimpleRuntime) InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
@@ -337,7 +351,9 @@ func (c *clientSimpleRuntime) InvokeByInstanceIdRawContext(ctx context.Context, 
 	if c.proxyClient == nil {
 		return nil, c.unsupported("InvokeByInstanceIdRaw")
 	}
-	return c.proxyClient.InvokeByInstanceIDRaw(simpleRuntimeRawInvokeRequest{ctx: ctx, invoke: invokeReqRaw, options: option})
+	return c.proxyClient.InvokeByInstanceIDRaw(simpleRuntimeRawInvokeRequest{
+		ctx: ctx, invoke: invokeReqRaw, options: option,
+	})
 }
 
 func (c *clientSimpleRuntime) KillRaw(killReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
@@ -385,8 +401,10 @@ func (c *clientSimpleRuntime) LoadState(string) ([]byte, error) {
 }
 
 func (c *clientSimpleRuntime) Exit(code int, message string) {
-	log.GetLogger().Warnf("clientSimpleRuntime.Exit is not implemented in the Go-native frontend runtime path, code(%d), message(%s)",
-		code, message)
+	log.GetLogger().Warnf(
+		"clientSimpleRuntime.Exit is not implemented in the Go-native frontend runtime path, code(%d), message(%s)",
+		code, message,
+	)
 }
 
 func (c *clientSimpleRuntime) KVSet(string, []byte, api.SetParam) error {
@@ -467,7 +485,9 @@ func (c *clientSimpleRuntime) GIncreaseRef(objectIDs []string, remoteClientID ..
 	}
 	failed := c.missingLocalObjects(objectIDs)
 	if len(failed) > 0 {
-		return failed, fmt.Errorf("clientSimpleRuntime.GIncreaseRef only supports local simple-runtime objects, failed: %v", failed)
+		return failed, fmt.Errorf(
+			"clientSimpleRuntime.GIncreaseRef only supports local simple-runtime objects, failed: %v", failed,
+		)
 	}
 	return nil, nil
 }
@@ -593,7 +613,7 @@ func (c *clientSimpleRuntime) isLocalObjectID(objectID string) bool {
 	return ok
 }
 
-func (c *clientSimpleRuntime) classifyObjectIDs(objectIDs []string) (allLocal bool, mixed bool) {
+func (c *clientSimpleRuntime) classifyObjectIDs(objectIDs []string) (bool, bool) {
 	if len(objectIDs) == 0 {
 		return true, false
 	}

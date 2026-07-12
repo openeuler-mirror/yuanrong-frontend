@@ -114,6 +114,7 @@ func SetAPIClientRuntimeBackend(backendType int, rt invokerLibruntime) {
 	SetAPIClientRuntimeBackendWithOptions(backendType, rt, RuntimeBackendOptions{})
 }
 
+// SetAPIClientRuntimeBackendWithOptions selects the runtime backend and configures optional discovery behavior.
 func SetAPIClientRuntimeBackendWithOptions(backendType int, rt invokerLibruntime, opts RuntimeBackendOptions) {
 	if backendType == constant.BackendTypeFrontendProxy {
 		clientLibruntime = newClientSimpleRuntimeWithProxyClientControlAndFallback(
@@ -140,7 +141,7 @@ func ValidateRuntimeBackendOptions(backendType int, opts RuntimeBackendOptions) 
 	}
 	if backendType == constant.BackendTypeFrontendProxy && !opts.EnableProxyDiscovery &&
 		!isHostPort(opts.FrontendProxyAddress) {
-		return fmt.Errorf("Go-native single-proxy mode requires a valid frontend proxy address")
+		return fmt.Errorf("go-native single-proxy mode requires a valid frontend proxy address")
 	}
 	return nil
 }

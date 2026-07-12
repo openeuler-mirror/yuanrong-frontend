@@ -28,6 +28,7 @@ const (
 	frontendProxyCapabilityCreate  = "faas.create"
 	frontendProxyCapabilityKill    = "faas.kill"
 	defaultFrontendProxySuspectTTL = 30 * time.Second
+	frontendProxyRefreshTimeout    = 5 * time.Second
 )
 
 type frontendProxyEndpoint struct {
@@ -102,15 +103,18 @@ func setFrontendProxyDiscoveryForTest(discovery frontendProxyDiscovery) func() {
 	}
 }
 
+// ReplaceFrontendProxyDiscoverySnapshot atomically replaces the process-wide discovery snapshot.
 func ReplaceFrontendProxyDiscoverySnapshot(endpoints []FrontendProxyEndpoint) {
 	defaultFrontendProxyDiscovery.ReplaceSnapshot(endpoints)
 	setFrontendProxyDiscovery(defaultFrontendProxyDiscovery)
 }
 
+// LookupFrontendProxyEndpoint resolves a healthy endpoint by owner node and capability.
 func LookupFrontendProxyEndpoint(nodeID string, capability string) (FrontendProxyEndpoint, bool) {
 	return resolveFrontendProxyEndpointByNode(nodeID, capability)
 }
 
+// MarkFrontendProxyEndpointSuspect temporarily removes an unhealthy address from candidate selection.
 func MarkFrontendProxyEndpointSuspect(address string) {
 	if address == "" {
 		return
@@ -127,7 +131,7 @@ func refreshFrontendProxyDiscoveryBestEffort() bool {
 	if !ok {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), frontendProxyRefreshTimeout)
 	defer cancel()
 	return refresher.Refresh(ctx) == nil
 }
