@@ -33,15 +33,23 @@ import (
 	"google.golang.org/protobuf/proto"
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
-	faasconstant "frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/etcd3"
 	"frontend/pkg/common/faas_common/grpc/pb/common"
 	"frontend/pkg/common/faas_common/grpc/pb/core"
 	"frontend/pkg/common/faas_common/grpc/pb/frontend_proxy"
-	commontypes "frontend/pkg/common/faas_common/types"
+	"frontend/pkg/common/faas_common/types"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/instancemanager"
-	"frontend/pkg/frontend/types"
+)
+
+const (
+	testFunctionSegmentCount   = 3
+	testConvertedArgumentCount = 3
+	testBenchmarkPayloadBytes  = 64 << 10
+	testLargePayloadBytes      = 1 << 20
+	testCorrelationCount       = 2
+	testRefreshCallCount       = 2
 )
 
 type fakeFrontendProxyServiceClient struct {
@@ -203,19 +211,19 @@ func consumeProtoVarintField(t *testing.T, payload []byte, target protowire.Numb
 func addInstanceRouteForTest(t *testing.T, functionKey, instanceID, functionProxyID string) func() {
 	t.Helper()
 	function := functionKey
-	if len(strings.Split(functionKey, "/")) != 3 {
+	if len(strings.Split(functionKey, "/")) != testFunctionSegmentCount {
 		function = "tenant/" + functionKey + "/$latest"
 	}
-	insSpec := &commontypes.InstanceSpecification{
+	insSpec := &types.InstanceSpecification{
 		InstanceID:      instanceID,
 		Function:        function,
 		FunctionProxyID: functionProxyID,
 		CreateOptions: map[string]string{
-			faasconstant.FunctionKeyNote:  functionKey,
-			faasconstant.ResourceSpecNote: `{"cpu":100,"memory":100}`,
+			constant.FunctionKeyNote:  functionKey,
+			constant.ResourceSpecNote: `{"cpu":100,"memory":100}`,
 		},
-		InstanceStatus: commontypes.InstanceStatus{
-			Code: int32(faasconstant.KernelInstanceStatusRunning),
+		InstanceStatus: types.InstanceStatus{
+			Code: int32(constant.KernelInstanceStatusRunning),
 			Msg:  "running",
 		},
 	}
@@ -260,7 +268,6 @@ func TestFrontendProxyLifecycleCorrelationIDProcessHelper(t *testing.T) {
 		return
 	}
 	fmt.Print(newFrontendProxyLifecycleCorrelationID("raw"))
-	os.Exit(0)
 }
 
 func TestRequestIDsUniqueAcrossIsolatedFrontendProcesses(t *testing.T) {
@@ -308,6 +315,33 @@ func TestMemoryFrontendProxyDiscoveryGetByNodeSkipsSuspectEndpoint(t *testing.T)
 	require.False(t, ok)
 }
 
+func requireFaaSInvokeRequest(t *testing.T, fakeService *fakeFrontendProxyServiceClient, payload, got []byte) {
+	t.Helper()
+	require.Equal(t, payload, got)
+	require.Same(t, &payload[0], &got[0])
+	require.NotNil(t, fakeService.req)
+	require.Equal(t, "frontend-1", fakeService.req.Context.FrontendClientID)
+	require.Equal(t, "tenant-1", fakeService.req.Context.TenantID)
+	require.NotEmpty(t, fakeService.req.Context.RequestID)
+	require.Equal(t, "trace-1", fakeService.req.Context.TraceID)
+	require.Equal(t, "func-key", fakeService.req.Invoke.Function)
+	require.Equal(t, "instance-1", fakeService.req.Invoke.InstanceID)
+	require.Equal(t, "trace-1", fakeService.req.Invoke.TraceID)
+	require.NotEmpty(t, fakeService.req.Invoke.RequestID)
+	require.Equal(t, common.Arg_VALUE, fakeService.req.Invoke.Args[0].Type)
+	require.Equal(t, uint64(1), consumeProtoVarintField(t, fakeService.req.Invoke.Args[0].Value, 1))
+	functionMeta := consumeProtoBytesField(t, fakeService.req.Invoke.Args[0].Value, 2)
+	require.Equal(t, "func-key", string(consumeProtoBytesField(t, functionMeta, functionMetaIDField)))
+	require.Equal(t, uint64(api.FaaSApi), consumeProtoVarintField(t, functionMeta, functionMetaAPIField))
+	invocationMeta := consumeProtoBytesField(t, fakeService.req.Invoke.Args[0].Value, 4)
+	require.NotEmpty(t, consumeProtoBytesField(t, invocationMeta, 1))
+	require.Equal(t, common.Arg_VALUE, fakeService.req.Invoke.Args[1].Type)
+	require.Equal(t, []byte(simpleRuntimeFaaSMetaPrefix+"arg-value"), fakeService.req.Invoke.Args[1].Value)
+	require.Equal(t, []string{"nested-1"}, fakeService.req.Invoke.Args[1].NestedRefs)
+	require.Equal(t, "value-a", fakeService.req.Invoke.InvokeOptions.CustomTag["tag-a"])
+	require.Equal(t, "proxy-a", fakeService.req.Invoke.InvokeOptions.CustomTag["YR_ROUTE"])
+}
+
 func TestGRPCFrontendProxyInvokeClientBuildsRequestAndReturnsSmallObjectPayload(t *testing.T) {
 	payload := []byte("proxy-small-result")
 	fakeService := &fakeFrontendProxyServiceClient{
@@ -341,29 +375,7 @@ func TestGRPCFrontendProxyInvokeClientBuildsRequestAndReturnsSmallObjectPayload(
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, payload, got)
-	require.Same(t, &payload[0], &got[0])
-	require.NotNil(t, fakeService.req)
-	require.Equal(t, "frontend-1", fakeService.req.Context.FrontendClientID)
-	require.Equal(t, "tenant-1", fakeService.req.Context.TenantID)
-	require.NotEmpty(t, fakeService.req.Context.RequestID)
-	require.Equal(t, "trace-1", fakeService.req.Context.TraceID)
-	require.Equal(t, "func-key", fakeService.req.Invoke.Function)
-	require.Equal(t, "instance-1", fakeService.req.Invoke.InstanceID)
-	require.Equal(t, "trace-1", fakeService.req.Invoke.TraceID)
-	require.NotEmpty(t, fakeService.req.Invoke.RequestID)
-	require.Equal(t, common.Arg_VALUE, fakeService.req.Invoke.Args[0].Type)
-	require.Equal(t, uint64(1), consumeProtoVarintField(t, fakeService.req.Invoke.Args[0].Value, 1))
-	functionMeta := consumeProtoBytesField(t, fakeService.req.Invoke.Args[0].Value, 2)
-	require.Equal(t, "func-key", string(consumeProtoBytesField(t, functionMeta, 11)))
-	require.Equal(t, uint64(api.FaaSApi), consumeProtoVarintField(t, functionMeta, 8))
-	invocationMeta := consumeProtoBytesField(t, fakeService.req.Invoke.Args[0].Value, 4)
-	require.NotEmpty(t, consumeProtoBytesField(t, invocationMeta, 1))
-	require.Equal(t, common.Arg_VALUE, fakeService.req.Invoke.Args[1].Type)
-	require.Equal(t, []byte(simpleRuntimeFaaSMetaPrefix+"arg-value"), fakeService.req.Invoke.Args[1].Value)
-	require.Equal(t, []string{"nested-1"}, fakeService.req.Invoke.Args[1].NestedRefs)
-	require.Equal(t, "value-a", fakeService.req.Invoke.InvokeOptions.CustomTag["tag-a"])
-	require.Equal(t, "proxy-a", fakeService.req.Invoke.InvokeOptions.CustomTag["YR_ROUTE"])
+	requireFaaSInvokeRequest(t, fakeService, payload, got)
 }
 
 func TestGRPCFrontendProxyInvokeClientStripsFaaSResultMetaPrefix(t *testing.T) {
@@ -426,7 +438,7 @@ func TestConvertSimpleRuntimeInvokeArgsPrefixesFaaSUserValuesOnly(t *testing.T) 
 
 	got := convertSimpleRuntimeInvokeArgs(api.FunctionMeta{FuncID: "faas-func", Api: api.FaaSApi}, args)
 
-	require.Len(t, got, 3)
+	require.Len(t, got, testConvertedArgumentCount)
 	require.Equal(t, common.Arg_VALUE, got[0].Type, "metadata arg must remain first")
 	require.Equal(t, common.Arg_VALUE, got[1].Type)
 	require.Equal(t, []byte(simpleRuntimeFaaSMetaPrefix+`{"body":{}}`), got[1].Value)
@@ -460,7 +472,7 @@ func TestPrefixSimpleRuntimeFaaSInvokeArgsDoesNotCopyReadOnlyObjectRefPayload(t 
 }
 
 func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgs64KiB(b *testing.B) {
-	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, testBenchmarkPayloadBytes)}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = prefixSimpleRuntimeFaaSInvokeArgs([]*common.Arg{arg})
@@ -468,16 +480,19 @@ func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgs64KiB(b *testing.B) {
 }
 
 func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgs64KiBProtoCloneBaseline(b *testing.B) {
-	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, testBenchmarkPayloadBytes)}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		next := proto.Clone(arg).(*common.Arg)
+		next, ok := proto.Clone(arg).(*common.Arg)
+		if !ok {
+			b.Fatal("cloned argument has unexpected type")
+		}
 		next.Value = append([]byte(simpleRuntimeFaaSMetaPrefix), next.GetValue()...)
 	}
 }
 
 func TestPrefixSimpleRuntimeFaaSInvokeArgsForRPCUsesBoundedBuffer(t *testing.T) {
-	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, testBenchmarkPayloadBytes)}
 
 	first, releaseFirst := prefixSimpleRuntimeFaaSInvokeArgsForRPC([]*common.Arg{arg})
 	require.Equal(t, simpleRuntimeMediumValueBufferSize, cap(first[0].Value))
@@ -491,13 +506,13 @@ func TestPrefixSimpleRuntimeFaaSInvokeArgsForRPCUsesBoundedBuffer(t *testing.T) 
 }
 
 func TestAcquireSimpleRuntimeValueBufferDoesNotPoolLargePayload(t *testing.T) {
-	value, pool := acquireSimpleRuntimeValueBuffer(1 << 20)
+	value, pool := acquireSimpleRuntimeValueBuffer(testLargePayloadBytes)
 	require.Nil(t, pool)
-	require.GreaterOrEqual(t, cap(value), 1<<20)
+	require.GreaterOrEqual(t, cap(value), testLargePayloadBytes)
 }
 
 func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgsForRPC64KiB(b *testing.B) {
-	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, testBenchmarkPayloadBytes)}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, release := prefixSimpleRuntimeFaaSInvokeArgsForRPC([]*common.Arg{arg})
@@ -731,7 +746,7 @@ func TestCallerRawIDReusedAfterCancelCannotCaptureLateResult(t *testing.T) {
 	second, err := client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{create: rawCreate})
 	require.NoError(t, err)
 
-	require.Len(t, internalIDs, 2)
+	require.Len(t, internalIDs, testCorrelationCount)
 	require.NotEqual(t, internalIDs[0], internalIDs[1], "reused external IDs must never reuse an internal ticket")
 	require.Equal(t, externalRequestID, string(consumeProtoBytesField(t, first, 1)))
 	require.Equal(t, externalRequestID, string(consumeProtoBytesField(t, second, 1)))
@@ -754,7 +769,8 @@ func TestRawCreateContextCancellationReachesGRPCClient(t *testing.T) {
 	_, err = client.CreateInstanceRaw(simpleRuntimeRawCreateRequest{ctx: ctx, create: rawCreate})
 
 	require.Equal(t, context.Canceled, err)
-	require.Equal(t, context.Canceled, fakeService.createCtx.Err())
+	createErr := fakeService.createCtx.Err()
+	require.Equal(t, context.Canceled, createErr)
 }
 
 func TestMarshalRuntimeNotifyFromCallResultPreservesExternalGwClientInstanceID(t *testing.T) {
@@ -789,7 +805,7 @@ func TestMarshalRuntimeNotifyFromCallResultPreservesExternalGwClientInstanceID(t
 		7: 1,
 		8: 1,
 	}, consumeProtoFieldCounts(t, got))
-	require.Equal(t, instanceID, string(consumeProtoBytesField(t, got, 8)))
+	require.Equal(t, instanceID, string(consumeProtoBytesField(t, got, runtimeNotifyInstanceIDField)))
 }
 
 func TestGRPCFrontendProxyLifecycleClientRecordsCreatedInstanceRoute(t *testing.T) {
@@ -878,19 +894,8 @@ func TestGRPCFrontendProxyLifecycleClientClearsRouteOnlyCacheAfterKill(t *testin
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), frontendProxyRouteKey)
-	require.Equal(t, "kill", event.Operation)
-	require.Equal(t, "success", event.Outcome)
-	require.Equal(t, "route-hint-cleared", event.CleanupOutcome)
-	require.Equal(t, "kill-correlation-id", event.RequestID)
-	require.Equal(t, "trace-kill-cleanup", event.TraceID)
-	require.Equal(t, instanceID, event.InstanceID)
-	require.Equal(t, "proxy-node-killed", event.OwningProxyID)
-	require.True(t, event.RoutePresentBefore)
-	require.False(t, event.RoutePresentAfter)
-	require.False(t, event.ReplayAttempted)
-	encoded, marshalErr := json.Marshal(event)
-	require.NoError(t, marshalErr)
-	require.NotContains(t, string(encoded), "payload")
+	requireRouteLifecycleEvent(t, event, "success", "kill-correlation-id", "trace-kill-cleanup", instanceID,
+		"proxy-node-killed")
 }
 
 func TestGRPCFrontendProxyLifecycleClientReturnsCreateError(t *testing.T) {
@@ -1032,7 +1037,7 @@ func TestTransportErrorRefreshesStaleFrontendProxySnapshotWithoutReplay(t *testi
 
 	require.Error(t, err)
 	require.Equal(t, []string{"10.0.0.11:22769"}, factory.evicted)
-	require.Equal(t, 2, source.calls)
+	require.Equal(t, testRefreshCallCount, source.calls)
 	endpoint, ok := provider.GetByNode("proxy-owner", frontendProxyCapabilityInvoke)
 	require.True(t, ok)
 	require.Equal(t, "10.0.0.11:25111", endpoint.Address)
@@ -1784,15 +1789,26 @@ func TestRoutingFrontendProxyLifecycleClientRouteStaleDropsRouteHintWithoutRepla
 		instanceID: instanceID,
 	})
 	require.Error(t, resolveErr, "stale route-only owner must be dropped for later fresh resolution")
-	require.Equal(t, "route-stale", event.Outcome)
+	requireRouteLifecycleEvent(t, event, "route-stale", "kill-route-stale-correlation", "trace-kill-route-stale",
+		instanceID, "proxy-stale-owner")
+}
+
+func requireRouteLifecycleEvent(t *testing.T, event frontendRouteLifecycleEvent, outcome, requestID, traceID,
+	instanceID, ownerID string) {
+	t.Helper()
+	require.Equal(t, "kill", event.Operation)
+	require.Equal(t, outcome, event.Outcome)
 	require.Equal(t, "route-hint-cleared", event.CleanupOutcome)
-	require.Equal(t, "kill-route-stale-correlation", event.RequestID)
-	require.Equal(t, "trace-kill-route-stale", event.TraceID)
+	require.Equal(t, requestID, event.RequestID)
+	require.Equal(t, traceID, event.TraceID)
 	require.Equal(t, instanceID, event.InstanceID)
-	require.Equal(t, "proxy-stale-owner", event.OwningProxyID)
+	require.Equal(t, ownerID, event.OwningProxyID)
 	require.True(t, event.RoutePresentBefore)
 	require.False(t, event.RoutePresentAfter)
 	require.False(t, event.ReplayAttempted)
+	encoded, err := json.Marshal(event)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "payload")
 }
 
 func setFrontendRouteLifecycleObserverForTest(observer func(frontendRouteLifecycleEvent)) func() {
@@ -2016,7 +2032,9 @@ func TestRoutingFrontendProxyInvokeClientRawSkipsSuspectConfiguredFallback(t *te
 
 	oldConfig := *config.GetConfig()
 	defer config.SetConfig(oldConfig)
-	config.SetConfig(types.Config{FrontendProxyAddress: "127.0.0.1:22773"})
+	newConfig := oldConfig
+	newConfig.FrontendProxyAddress = "127.0.0.1:22773"
+	config.SetConfig(newConfig)
 
 	invokeReq := &core.InvokeRequest{Function: "func-key", InstanceID: "instance-raw"}
 	rawReq, err := proto.Marshal(invokeReq)
@@ -2108,7 +2126,7 @@ func TestProxyAddressFromInstancePrefersFunctionProxyIDDiscovery(t *testing.T) {
 	restoreDiscovery := setFrontendProxyDiscoveryForTest(discovery)
 	defer restoreDiscovery()
 
-	address := proxyAddressFromInstance(&commontypes.InstanceSpecification{
+	address := proxyAddressFromInstance(&types.InstanceSpecification{
 		InstanceID:      "instance-raw-owned",
 		RuntimeAddress:  "10.244.0.9:32568",
 		FunctionProxyID: "proxy-b",
@@ -2129,7 +2147,7 @@ func TestProxyAddressFromInstanceUsesPublishedEndpointForRuntimeHostWhenOwnerRou
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
 
-	address := proxyAddressFromInstance(&commontypes.InstanceSpecification{
+	address := proxyAddressFromInstance(&types.InstanceSpecification{
 		RuntimeAddress: "10.244.0.9:32568",
 	})
 
@@ -2148,7 +2166,7 @@ func TestProxyAddressFromInstanceDoesNotBypassPublishedRuntimeHostCapability(t *
 	restore := setFrontendProxyDiscoveryForTest(discovery)
 	defer restore()
 
-	address := proxyAddressFromInstance(&commontypes.InstanceSpecification{
+	address := proxyAddressFromInstance(&types.InstanceSpecification{
 		RuntimeAddress: "10.244.0.9:32568",
 	})
 
@@ -2163,9 +2181,11 @@ func TestProxyAddressFromInstanceRuntimeAddressFallbackSkipsSuspectAddress(t *te
 
 	oldConfig := *config.GetConfig()
 	defer config.SetConfig(oldConfig)
-	config.SetConfig(types.Config{FrontendProxyAddress: "127.0.0.1:22773"})
+	newConfig := oldConfig
+	newConfig.FrontendProxyAddress = "127.0.0.1:22773"
+	config.SetConfig(newConfig)
 
-	address := proxyAddressFromInstance(&commontypes.InstanceSpecification{
+	address := proxyAddressFromInstance(&types.InstanceSpecification{
 		InstanceID:      "instance-runtime-fallback-suspect",
 		RuntimeAddress:  "10.244.0.9:32568",
 		FunctionProxyID: "proxy-not-yet-discovered",
@@ -2279,20 +2299,22 @@ func TestDefaultFrontendProxyRouteResolverDoesNotBypassCapabilityWithRuntimeAddr
 
 	oldConfig := *config.GetConfig()
 	defer config.SetConfig(oldConfig)
-	config.SetConfig(types.Config{FrontendProxyAddress: "127.0.0.1:22773"})
+	newConfig := oldConfig
+	newConfig.FrontendProxyAddress = "127.0.0.1:22773"
+	config.SetConfig(newConfig)
 
 	function := "tenant/func-capability/$latest"
 	instanceID := "instance-capability"
-	insSpec := &commontypes.InstanceSpecification{
+	insSpec := &types.InstanceSpecification{
 		InstanceID:      instanceID,
 		Function:        function,
 		FunctionProxyID: "proxy-owner",
 		RuntimeAddress:  "10.0.0.9:9999",
 		CreateOptions: map[string]string{
-			faasconstant.FunctionKeyNote: function,
+			constant.FunctionKeyNote: function,
 		},
-		InstanceStatus: commontypes.InstanceStatus{
-			Code: int32(faasconstant.KernelInstanceStatusRunning),
+		InstanceStatus: types.InstanceStatus{
+			Code: int32(constant.KernelInstanceStatusRunning),
 			Msg:  "running",
 		},
 	}
@@ -2336,7 +2358,7 @@ func TestGRPCFrontendProxyLifecycleClientBuildsKillRequest(t *testing.T) {
 	err := client.KillInstance(simpleRuntimeKillRequest{
 		instanceID: "instance-kill",
 		tenantID:   "tenant-kill",
-		signal:     15,
+		signal:     testTypedKillSignal,
 		payload:    []byte("kill-payload"),
 		options: api.InvokeOptions{
 			TraceID: "trace-kill",
@@ -2350,7 +2372,7 @@ func TestGRPCFrontendProxyLifecycleClientBuildsKillRequest(t *testing.T) {
 	require.NotEmpty(t, fakeService.killReq.Context.RequestID)
 	require.Equal(t, "trace-kill", fakeService.killReq.Context.TraceID)
 	require.Equal(t, "instance-kill", fakeService.killReq.Kill.InstanceID)
-	require.Equal(t, int32(15), fakeService.killReq.Kill.Signal)
+	require.Equal(t, int32(testTypedKillSignal), fakeService.killReq.Kill.Signal)
 	require.Equal(t, []byte("kill-payload"), fakeService.killReq.Kill.Payload)
 	require.Equal(t, fakeService.killReq.Context.RequestID, fakeService.killReq.Kill.RequestID)
 }

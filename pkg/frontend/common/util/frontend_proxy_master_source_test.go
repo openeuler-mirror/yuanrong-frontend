@@ -27,11 +27,12 @@ import (
 )
 
 func TestFrontendProxyMasterHTTPSourceListsEndpointsFromFunctionMaster(t *testing.T) {
+	const expectedEndpointCount = 2
 	var requestedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"count": 2,
 			"endpoints": [
 				{
@@ -50,6 +51,7 @@ func TestFrontendProxyMasterHTTPSourceListsEndpointsFromFunctionMaster(t *testin
 				}
 			]
 		}`))
+		require.NoError(t, err)
 	}))
 	defer server.Close()
 
@@ -61,7 +63,7 @@ func TestFrontendProxyMasterHTTPSourceListsEndpointsFromFunctionMaster(t *testin
 
 	require.NoError(t, err)
 	require.Equal(t, frontendProxyMasterEndpointPath, requestedPath)
-	require.Len(t, endpoints, 2)
+	require.Len(t, endpoints, expectedEndpointCount)
 	require.Equal(t, "proxy-node-a", endpoints[0].NodeID)
 	require.Equal(t, "10.0.0.11:19090", endpoints[0].Address)
 	require.Equal(t, "phase3", endpoints[0].Version)

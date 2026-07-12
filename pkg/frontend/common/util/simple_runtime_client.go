@@ -32,14 +32,17 @@ import (
 	"frontend/pkg/common/faas_common/logger/log"
 )
 
-const traceParentPartCount = 4
+const (
+	traceParentPartCount = 4
+	traceIDHexLength     = 32
+)
 
 func traceIDFromTraceParent(traceParent string) string {
 	parts := strings.Split(traceParent, "-")
-	if len(parts) != traceParentPartCount || len(parts[1]) != 32 {
+	if len(parts) != traceParentPartCount || len(parts[1]) != traceIDHexLength {
 		return ""
 	}
-	if _, err := hex.DecodeString(parts[1]); err != nil || parts[1] == strings.Repeat("0", 32) {
+	if _, err := hex.DecodeString(parts[1]); err != nil || parts[1] == strings.Repeat("0", traceIDHexLength) {
 		return ""
 	}
 	return parts[1]

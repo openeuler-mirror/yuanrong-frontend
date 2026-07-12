@@ -894,7 +894,7 @@ func (p *frontendProxyGRPCClientPool) ClientForAddress(
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:    time.Hour,
-				Timeout: frontendProxyKeepaliveTimeout,
+			Timeout: frontendProxyKeepaliveTimeout,
 		}),
 	)
 	if err != nil {

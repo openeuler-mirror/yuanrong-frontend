@@ -108,11 +108,14 @@ func main() {
 	if err := stream.StartListenFrontendResponseStream(stopCh); err != nil {
 		log.GetLogger().Warnf("failed to listen frontend response stream, err: %s", err.Error())
 	}
+	startModuleHTTPServer(stopCh)
+}
+
+func startModuleHTTPServer(stopCh <-chan struct{}) {
 	errChan := make(chan error, 1)
 	httpServer := server.CreateHTTPServer()
 	go func() {
-		err = server.Start(httpServer, stopCh)
-		if err != nil {
+		if err := server.Start(httpServer, stopCh); err != nil {
 			errChan <- err
 			logAndPrintError(fmt.Sprintf("start http server error: %s", err.Error()))
 		}

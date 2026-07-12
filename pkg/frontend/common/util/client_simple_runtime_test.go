@@ -32,6 +32,13 @@ import (
 	"frontend/pkg/common/faas_common/grpc/pb/core"
 )
 
+const (
+	testKillSignal      = 9
+	testTypedKillSignal = 15
+	testGetTimeout      = 321
+	testUnknownBackend  = 99
+)
+
 type fakeInvokerLibruntime struct {
 	invokerLibruntime
 
@@ -291,10 +298,10 @@ func TestDefaultClientUsesSingleInvokerLibruntimeSeam(t *testing.T) {
 	require.Equal(t, "sandbox-func", librt.createReq.funcMeta.FuncID)
 	require.Equal(t, "trace-create", librt.createReq.options.TraceID)
 
-	err = client.KillByLibRt("instance-1", 9, []byte("payload"))
+	err = client.KillByLibRt("instance-1", testKillSignal, []byte("payload"))
 	require.NoError(t, err)
 	require.Equal(t, "instance-1", librt.killReq.instanceID)
-	require.Equal(t, 9, librt.killReq.signal)
+	require.Equal(t, testKillSignal, librt.killReq.signal)
 	require.Equal(t, []byte("payload"), librt.killReq.payload)
 }
 
@@ -419,10 +426,10 @@ func TestClientSimpleRuntimePreservesLegacyObjectArgumentsAndRejectsMixedOwnersh
 	runtime := newClientSimpleRuntimeWithProxyClientAndControl(nil, control)
 	localID := runtime.putLocalResult([]byte("local"))
 
-	values, err := runtime.Get([]string{"legacy-1"}, 321)
+	values, err := runtime.Get([]string{"legacy-1"}, testGetTimeout)
 	require.NoError(t, err)
 	require.Equal(t, [][]byte{[]byte("legacy")}, values)
-	require.Equal(t, 321, control.getTimeout)
+	require.Equal(t, testGetTimeout, control.getTimeout)
 
 	failed, err := runtime.GDecreaseRef([]string{"legacy-1"}, "owner-1")
 	require.NoError(t, err)
@@ -575,7 +582,7 @@ func TestClientSimpleRuntimeKillRawUsesLifecycleClientWhenFrontendProxyBackendEn
 	require.NoError(t, runtime.SetTenantID("tenant-raw-kill"))
 	killReq, err := proto.Marshal(&core.KillRequest{
 		InstanceID: "instance-raw-kill",
-		Signal:     9,
+		Signal:     testKillSignal,
 		Payload:    []byte("kill-payload"),
 		RequestID:  "raw-kill-request",
 	})
@@ -590,7 +597,7 @@ func TestClientSimpleRuntimeKillRawUsesLifecycleClientWhenFrontendProxyBackendEn
 	require.Equal(t, common.ErrorCode_ERR_NONE, killResp.GetCode())
 	require.Equal(t, "instance-raw-kill", lifecycle.killReq.instanceID)
 	require.Equal(t, "tenant-raw-kill", lifecycle.killReq.tenantID)
-	require.Equal(t, 9, lifecycle.killReq.signal)
+	require.Equal(t, testKillSignal, lifecycle.killReq.signal)
 	require.Equal(t, []byte("kill-payload"), lifecycle.killReq.payload)
 	require.NotEqual(t, "raw-kill-request", lifecycle.killReq.requestID)
 	require.Contains(t, lifecycle.killReq.requestID, "frontend-proxy-kill-")
@@ -626,7 +633,7 @@ func TestClientSimpleRuntimeKillRawDoesNotUseControlFallbackUnlessEnabled(t *tes
 	runtime.lifecycleClient = nil
 	killReq, err := proto.Marshal(&core.KillRequest{
 		InstanceID: "instance-raw-kill",
-		Signal:     9,
+		Signal:     testKillSignal,
 		RequestID:  "raw-kill-request",
 	})
 	require.NoError(t, err)
@@ -666,7 +673,9 @@ func TestClientSimpleRuntimeKeepsCreateKillOnControlFallback(t *testing.T) {
 	require.Equal(t, []byte("create-raw"), control.createRawReq.payload)
 	require.Equal(t, "traceparent", control.createRawReq.option.TraceParent)
 
-	err = runtime.Kill("instance-1", 9, []byte("payload"), api.InvokeOptions{TraceID: "trace-kill"})
+	err = runtime.Kill(
+		"instance-1", testKillSignal, []byte("payload"), api.InvokeOptions{TraceID: "trace-kill"},
+	)
 	require.NoError(t, err)
 	require.Equal(t, "instance-1", control.killReq.instanceID)
 	require.Equal(t, "trace-kill", control.killReq.options.TraceID)
@@ -799,7 +808,7 @@ func TestClientSimpleRuntimeKeepsUntypedKillOnLegacyLane(t *testing.T) {
 	control := &fakeInvokerLibruntime{}
 	runtime := newClientSimpleRuntimeWithControl(control)
 
-	err := runtime.Kill("instance-1", 9, nil, api.InvokeOptions{})
+	err := runtime.Kill("instance-1", testKillSignal, nil, api.InvokeOptions{})
 	require.NoError(t, err)
 	require.Equal(t, "instance-1", control.killReq.instanceID)
 }
@@ -815,14 +824,14 @@ func TestDefaultClientKillInstanceUsesLifecycleClientForFaaS(t *testing.T) {
 	err := client.KillInstance(
 		api.FunctionMeta{FuncID: "faas-func", Api: api.FaaSApi},
 		"instance-faas",
-		15,
+		testTypedKillSignal,
 		[]byte("payload"),
 		api.InvokeOptions{TraceID: "trace-kill-typed"},
 	)
 
 	require.NoError(t, err)
 	require.Equal(t, "instance-faas", lifecycle.killReq.instanceID)
-	require.Equal(t, 15, lifecycle.killReq.signal)
+	require.Equal(t, testTypedKillSignal, lifecycle.killReq.signal)
 	require.Equal(t, []byte("payload"), lifecycle.killReq.payload)
 	require.Equal(t, "trace-kill-typed", lifecycle.killReq.options.TraceID)
 	require.Equal(t, "tenant-kill", lifecycle.killReq.tenantID)
@@ -837,7 +846,7 @@ func TestClientSimpleRuntimeKillInstanceFaaSDoesNotUseControlFallbackWithoutLife
 	err := runtime.KillInstance(
 		api.FunctionMeta{FuncID: "faas-func", Api: api.FaaSApi},
 		"instance-faas",
-		15,
+		testTypedKillSignal,
 		[]byte("payload"),
 		api.InvokeOptions{TraceID: "trace-kill-typed"},
 	)
@@ -855,7 +864,7 @@ func TestClientSimpleRuntimeKillInstanceServeDoesNotUseControlFallbackWithoutLif
 	err := runtime.KillInstance(
 		api.FunctionMeta{FuncID: "serve-func", Api: api.ServeApi},
 		"instance-serve",
-		15,
+		testTypedKillSignal,
 		[]byte("payload"),
 		api.InvokeOptions{TraceID: "trace-kill-serve"},
 	)
@@ -914,7 +923,7 @@ func TestSetAPIClientRuntimeBackendUsesMasterBackedFrontendProxyDiscovery(t *tes
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, frontendProxyMasterEndpointPath, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, writeErr := w.Write([]byte(`{
 			"count": 1,
 			"endpoints": [
 				{
@@ -926,6 +935,7 @@ func TestSetAPIClientRuntimeBackendUsesMasterBackedFrontendProxyDiscovery(t *tes
 				}
 			]
 		}`))
+		require.NoError(t, writeErr)
 	}))
 	defer server.Close()
 
@@ -970,13 +980,13 @@ func TestValidateRuntimeBackendOptionsAcceptsZeroValueKernelOptions(t *testing.T
 }
 
 func TestValidateRuntimeBackendOptionsRejectsUnknownBackend(t *testing.T) {
-	err := ValidateRuntimeBackendOptions(99, RuntimeBackendOptions{})
+	err := ValidateRuntimeBackendOptions(testUnknownBackend, RuntimeBackendOptions{})
 	require.EqualError(t, err, "unsupported function invoke backend 99")
 }
 
 func TestValidateRuntimeBackendOptionsRejectsMissingSingleProxyAddress(t *testing.T) {
 	err := ValidateRuntimeBackendOptions(constant.BackendTypeFrontendProxy, RuntimeBackendOptions{})
-	require.EqualError(t, err, "Go-native single-proxy mode requires a valid frontend proxy address")
+	require.EqualError(t, err, "go-native single-proxy mode requires a valid frontend proxy address")
 }
 
 func TestSetAPIClientRuntimeBackendCanEnableExplicitLegacyFallback(t *testing.T) {
