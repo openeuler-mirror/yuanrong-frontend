@@ -104,6 +104,16 @@ func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api
 	return InstanceID, nil
 }
 
+func (c *fakeClient) CreateRuntimeInstance(funcMeta api.FunctionMeta, args []api.Arg,
+	invokeOpt api.InvokeOptions) (string, error) {
+	return c.CreateInstanceByLibRt(funcMeta, args, invokeOpt)
+}
+
+func (c *fakeClient) KillInstance(funcMeta api.FunctionMeta, instanceID string, signal int, payload []byte,
+	invokeOpt api.InvokeOptions) error {
+	return c.KillByLibRt(instanceID, signal, payload)
+}
+
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -212,6 +222,16 @@ func (c *fakeFailedClient) Kill(req *function.KillRequest) (*function.KillRespon
 func (c *fakeFailedClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
 	InstanceID := ""
 	return InstanceID, nil
+}
+
+func (c *fakeFailedClient) CreateRuntimeInstance(funcMeta api.FunctionMeta, args []api.Arg,
+	invokeOpt api.InvokeOptions) (string, error) {
+	return c.CreateInstanceByLibRt(funcMeta, args, invokeOpt)
+}
+
+func (c *fakeFailedClient) KillInstance(funcMeta api.FunctionMeta, instanceID string, signal int, payload []byte,
+	invokeOpt api.InvokeOptions) error {
+	return c.KillByLibRt(instanceID, signal, payload)
 }
 
 func (c *fakeFailedClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
