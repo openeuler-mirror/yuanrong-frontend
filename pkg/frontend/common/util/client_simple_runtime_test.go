@@ -36,6 +36,7 @@ const (
 	testKillSignal      = 9
 	testTypedKillSignal = 15
 	testGetTimeout      = 321
+	testRetryTimes      = 3
 	testUnknownBackend  = 99
 )
 
@@ -267,7 +268,7 @@ func TestDefaultClientUsesSingleInvokerLibruntimeSeam(t *testing.T) {
 		Args:         []*api.Arg{{Type: api.Value, Data: []byte("arg")}},
 		InvokeTag:    map[string]string{"k": "v"},
 		RouteAddress: "proxy-a",
-		RetryTimes:   3,
+		RetryTimes:   testRetryTimes,
 		ForceInvoke:  true,
 	})
 	require.NoError(t, err)
@@ -277,7 +278,7 @@ func TestDefaultClientUsesSingleInvokerLibruntimeSeam(t *testing.T) {
 	require.Equal(t, "instance-1", librt.invokeByInstanceIDReq.instanceID)
 	require.Equal(t, "trace-1", librt.invokeByInstanceIDReq.options.TraceID)
 	require.Equal(t, "proxy-a", librt.invokeByInstanceIDReq.options.CreateOpt["YR_ROUTE"])
-	require.Equal(t, 3, librt.invokeByInstanceIDReq.options.RetryTimes)
+	require.Equal(t, testRetryTimes, librt.invokeByInstanceIDReq.options.RetryTimes)
 	require.True(t, librt.invokeByInstanceIDReq.options.ForceInvoke)
 	require.Len(t, librt.invokeByInstanceIDReq.args, 1)
 	require.Equal(t, "tenant-1", librt.invokeByInstanceIDReq.args[0].TenantID)

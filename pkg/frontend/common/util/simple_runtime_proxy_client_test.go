@@ -894,8 +894,10 @@ func TestGRPCFrontendProxyLifecycleClientClearsRouteOnlyCacheAfterKill(t *testin
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), frontendProxyRouteKey)
-	requireRouteLifecycleEvent(t, event, "success", "kill-correlation-id", "trace-kill-cleanup", instanceID,
-		"proxy-node-killed")
+	requireRouteLifecycleEvent(t, event, frontendRouteLifecycleEvent{
+		Outcome: "success", RequestID: "kill-correlation-id", TraceID: "trace-kill-cleanup",
+		InstanceID: instanceID, OwningProxyID: "proxy-node-killed",
+	})
 }
 
 func TestGRPCFrontendProxyLifecycleClientReturnsCreateError(t *testing.T) {
@@ -1789,20 +1791,21 @@ func TestRoutingFrontendProxyLifecycleClientRouteStaleDropsRouteHintWithoutRepla
 		instanceID: instanceID,
 	})
 	require.Error(t, resolveErr, "stale route-only owner must be dropped for later fresh resolution")
-	requireRouteLifecycleEvent(t, event, "route-stale", "kill-route-stale-correlation", "trace-kill-route-stale",
-		instanceID, "proxy-stale-owner")
+	requireRouteLifecycleEvent(t, event, frontendRouteLifecycleEvent{
+		Outcome: "route-stale", RequestID: "kill-route-stale-correlation", TraceID: "trace-kill-route-stale",
+		InstanceID: instanceID, OwningProxyID: "proxy-stale-owner",
+	})
 }
 
-func requireRouteLifecycleEvent(t *testing.T, event frontendRouteLifecycleEvent, outcome, requestID, traceID,
-	instanceID, ownerID string) {
+func requireRouteLifecycleEvent(t *testing.T, event, expected frontendRouteLifecycleEvent) {
 	t.Helper()
 	require.Equal(t, "kill", event.Operation)
-	require.Equal(t, outcome, event.Outcome)
+	require.Equal(t, expected.Outcome, event.Outcome)
 	require.Equal(t, "route-hint-cleared", event.CleanupOutcome)
-	require.Equal(t, requestID, event.RequestID)
-	require.Equal(t, traceID, event.TraceID)
-	require.Equal(t, instanceID, event.InstanceID)
-	require.Equal(t, ownerID, event.OwningProxyID)
+	require.Equal(t, expected.RequestID, event.RequestID)
+	require.Equal(t, expected.TraceID, event.TraceID)
+	require.Equal(t, expected.InstanceID, event.InstanceID)
+	require.Equal(t, expected.OwningProxyID, event.OwningProxyID)
 	require.True(t, event.RoutePresentBefore)
 	require.False(t, event.RoutePresentAfter)
 	require.False(t, event.ReplayAttempted)
