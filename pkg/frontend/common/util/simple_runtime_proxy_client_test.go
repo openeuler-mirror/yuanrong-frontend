@@ -436,6 +436,64 @@ func TestConvertSimpleRuntimeInvokeArgsKeepsPosixArgsUnwrapped(t *testing.T) {
 	require.Equal(t, []byte(`{"body":{}}`), got[0].Value)
 }
 
+func TestPrefixSimpleRuntimeFaaSInvokeArgsDoesNotCopyReadOnlyObjectRefPayload(t *testing.T) {
+	payload := []byte("object-ref-1")
+	arg := &common.Arg{Type: common.Arg_OBJECT_REF, Value: payload, NestedRefs: []string{"nested-1"}}
+
+	got := prefixSimpleRuntimeFaaSInvokeArgs([]*common.Arg{arg})
+
+	require.Len(t, got, 1)
+	require.NotSame(t, arg, got[0])
+	require.Same(t, &payload[0], &got[0].Value[0])
+	require.Equal(t, arg.NestedRefs, got[0].NestedRefs)
+}
+
+func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgs64KiB(b *testing.B) {
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = prefixSimpleRuntimeFaaSInvokeArgs([]*common.Arg{arg})
+	}
+}
+
+func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgs64KiBProtoCloneBaseline(b *testing.B) {
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		next := proto.Clone(arg).(*common.Arg)
+		next.Value = append([]byte(simpleRuntimeFaaSMetaPrefix), next.GetValue()...)
+	}
+}
+
+func TestPrefixSimpleRuntimeFaaSInvokeArgsForRPCUsesBoundedBuffer(t *testing.T) {
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+
+	first, releaseFirst := prefixSimpleRuntimeFaaSInvokeArgsForRPC([]*common.Arg{arg})
+	require.Equal(t, simpleRuntimeMediumValueBufferSize, cap(first[0].Value))
+	releaseFirst()
+	second, releaseSecond := prefixSimpleRuntimeFaaSInvokeArgsForRPC([]*common.Arg{arg})
+	defer releaseSecond()
+
+	require.Equal(t, simpleRuntimeMediumValueBufferSize, cap(second[0].Value))
+	require.Equal(t, []byte(simpleRuntimeFaaSMetaPrefix), second[0].Value[:len(simpleRuntimeFaaSMetaPrefix)])
+	require.Equal(t, arg.Value, second[0].Value[len(simpleRuntimeFaaSMetaPrefix):])
+}
+
+func TestAcquireSimpleRuntimeValueBufferDoesNotPoolLargePayload(t *testing.T) {
+	value, pool := acquireSimpleRuntimeValueBuffer(1 << 20)
+	require.Nil(t, pool)
+	require.GreaterOrEqual(t, cap(value), 1<<20)
+}
+
+func BenchmarkPrefixSimpleRuntimeFaaSInvokeArgsForRPC64KiB(b *testing.B) {
+	arg := &common.Arg{Type: common.Arg_VALUE, Value: make([]byte, 64<<10)}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, release := prefixSimpleRuntimeFaaSInvokeArgsForRPC([]*common.Arg{arg})
+		release()
+	}
+}
+
 func TestGRPCFrontendProxyLifecycleClientBuildsCreateRequestAndReturnsInstanceID(t *testing.T) {
 	fakeService := &fakeFrontendProxyServiceClient{
 		createResp: &frontend_proxy.CreateInstanceResponse{

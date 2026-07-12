@@ -52,6 +52,11 @@ import (
 var frontendProxyRequestSeq atomic.Uint64
 
 var (
+	simpleRuntimeSmallValueBufferPool  sync.Pool
+	simpleRuntimeMediumValueBufferPool sync.Pool
+)
+
+var (
 	frontendRouteLifecycleObserverMu sync.RWMutex
 	frontendRouteLifecycleObserver   func(frontendRouteLifecycleEvent)
 )
@@ -142,6 +147,8 @@ func (c *grpcFrontendProxyInvokeClient) InvokeByInstanceID(req simpleRuntimeInvo
 	requestID := fmt.Sprintf("frontend-proxy-%d", frontendProxyRequestSeq.Add(1))
 	ctx, cancel := simpleRuntimeInvokeContext(req.options)
 	defer cancel()
+	invokeArgs, releaseInvokeArgs := convertSimpleRuntimeInvokeArgsForRPC(req.funcMeta, req.args)
+	defer releaseInvokeArgs()
 	resp, err := c.client.InvokeInstance(ctx, &frontend_proxy.InvokeInstanceRequest{
 		Context: &frontend_proxy.FrontendRequestContext{
 			FrontendClientID: c.frontendClientID,
@@ -151,7 +158,7 @@ func (c *grpcFrontendProxyInvokeClient) InvokeByInstanceID(req simpleRuntimeInvo
 		},
 		Invoke: &core.InvokeRequest{
 			Function:      req.funcMeta.FuncID,
-			Args:          convertSimpleRuntimeInvokeArgs(req.funcMeta, req.args),
+			Args:          invokeArgs,
 			InstanceID:    req.instanceID,
 			RequestID:     requestID,
 			TraceID:       req.options.TraceID,
@@ -1262,6 +1269,22 @@ func convertSimpleRuntimeInvokeArgs(funcMeta api.FunctionMeta, args []api.Arg) [
 	return withMetadata
 }
 
+func convertSimpleRuntimeInvokeArgsForRPC(funcMeta api.FunctionMeta, args []api.Arg) ([]*common.Arg, func()) {
+	converted := convertSimpleRuntimeArgs(args)
+	release := func() {}
+	if funcMeta.Api == api.PosixApi {
+		return converted, release
+	}
+	if simpleRuntimeInvokeArgsNeedFaaSPrefix(funcMeta.Api) {
+		converted, release = prefixSimpleRuntimeFaaSInvokeArgsForRPC(converted)
+	}
+	metadata := buildSimpleRuntimeInvokeMetadata(funcMeta)
+	withMetadata := make([]*common.Arg, 0, len(converted)+1)
+	withMetadata = append(withMetadata, &common.Arg{Type: common.Arg_VALUE, Value: metadata})
+	withMetadata = append(withMetadata, converted...)
+	return withMetadata, release
+}
+
 func simpleRuntimeInvokeArgsNeedFaaSPrefix(apiType api.ApiType) bool {
 	return apiType == api.FaaSApi || apiType == api.ServeApi
 }
@@ -1284,13 +1307,73 @@ func prefixSimpleRuntimeFaaSInvokeArgs(args []*common.Arg) []*common.Arg {
 			prefixed = append(prefixed, nil)
 			continue
 		}
-		next := proto.Clone(arg).(*common.Arg)
+		next := &common.Arg{
+			Type:       arg.GetType(),
+			Value:      arg.GetValue(),
+			NestedRefs: arg.GetNestedRefs(),
+		}
 		if next.GetType() == common.Arg_VALUE && !bytes.HasPrefix(next.GetValue(), []byte(simpleRuntimeFaaSMetaPrefix)) {
-			next.Value = append([]byte(simpleRuntimeFaaSMetaPrefix), next.GetValue()...)
+			value := make([]byte, 0, len(simpleRuntimeFaaSMetaPrefix)+len(next.GetValue()))
+			value = append(value, simpleRuntimeFaaSMetaPrefix...)
+			next.Value = append(value, next.GetValue()...)
 		}
 		prefixed = append(prefixed, next)
 	}
 	return prefixed
+}
+
+const (
+	simpleRuntimeSmallValueBufferSize  = 4 << 10
+	simpleRuntimeMediumValueBufferSize = 128 << 10
+)
+
+func prefixSimpleRuntimeFaaSInvokeArgsForRPC(args []*common.Arg) ([]*common.Arg, func()) {
+	prefixed := make([]*common.Arg, 0, len(args))
+	type pooledBuffer struct {
+		pool  *sync.Pool
+		value []byte
+	}
+	pooled := make([]pooledBuffer, 0, len(args))
+	for _, arg := range args {
+		if arg == nil {
+			prefixed = append(prefixed, nil)
+			continue
+		}
+		next := &common.Arg{Type: arg.GetType(), Value: arg.GetValue(), NestedRefs: arg.GetNestedRefs()}
+		if next.GetType() == common.Arg_VALUE && !bytes.HasPrefix(next.GetValue(), []byte(simpleRuntimeFaaSMetaPrefix)) {
+			required := len(simpleRuntimeFaaSMetaPrefix) + len(next.GetValue())
+			value, pool := acquireSimpleRuntimeValueBuffer(required)
+			value = append(value, simpleRuntimeFaaSMetaPrefix...)
+			value = append(value, next.GetValue()...)
+			next.Value = value
+			if pool != nil {
+				pooled = append(pooled, pooledBuffer{pool: pool, value: value})
+			}
+		}
+		prefixed = append(prefixed, next)
+	}
+	return prefixed, func() {
+		for _, item := range pooled {
+			item.pool.Put(item.value[:0])
+		}
+	}
+}
+
+func acquireSimpleRuntimeValueBuffer(required int) ([]byte, *sync.Pool) {
+	var pool *sync.Pool
+	capacity := required
+	switch {
+	case required <= simpleRuntimeSmallValueBufferSize:
+		pool, capacity = &simpleRuntimeSmallValueBufferPool, simpleRuntimeSmallValueBufferSize
+	case required <= simpleRuntimeMediumValueBufferSize:
+		pool, capacity = &simpleRuntimeMediumValueBufferPool, simpleRuntimeMediumValueBufferSize
+	default:
+		return make([]byte, 0, required), nil
+	}
+	if cached := pool.Get(); cached != nil {
+		return cached.([]byte)[:0], pool
+	}
+	return make([]byte, 0, capacity), pool
 }
 
 func buildSimpleRuntimeInvokeMetadata(funcMeta api.FunctionMeta) []byte {
