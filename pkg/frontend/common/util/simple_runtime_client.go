@@ -113,7 +113,6 @@ type clientSimpleRuntime struct {
 	mu              sync.Mutex
 	seq             atomic.Uint64
 	results         map[string][]byte
-	consumed        map[string]struct{}
 	traceID         string
 	tenantID        string
 	proxyClient     frontendProxyInvokeClient
@@ -152,7 +151,6 @@ func newClientSimpleRuntimeWithProxyClientControlAndFallback(
 ) *clientSimpleRuntime {
 	return &clientSimpleRuntime{
 		results:         make(map[string][]byte),
-		consumed:        make(map[string]struct{}),
 		proxyClient:     proxyClient,
 		lifecycleClient: newRoutingFrontendProxyLifecycleClient(),
 		control:         control,
@@ -182,6 +180,10 @@ func (c *clientSimpleRuntime) shouldUseControlForFunction(funcMeta api.FunctionM
 	return funcMeta.Api == api.ActorApi || funcMeta.Api == api.PosixApi
 }
 
+func requiresLegacyControlForFunction(funcMeta api.FunctionMeta) bool {
+	return funcMeta.Api == api.ActorApi || funcMeta.Api == api.PosixApi
+}
+
 func (c *clientSimpleRuntime) putLocalResult(payload []byte) string {
 	id := fmt.Sprintf("frontend-simple-runtime-%d", c.seq.Add(1))
 	c.mu.Lock()
@@ -190,7 +192,6 @@ func (c *clientSimpleRuntime) putLocalResult(payload []byte) string {
 	// The simple runtime takes ownership of payload from the proxy response.
 	// Do not copy here; GetAsync consumes the local object exactly once.
 	c.results[id] = payload
-	delete(c.consumed, id)
 	return id
 }
 
@@ -214,6 +215,12 @@ func (c *clientSimpleRuntime) CreateInstance(funcMeta api.FunctionMeta, args []a
 func (c *clientSimpleRuntime) InvokeByInstanceId(funcMeta api.FunctionMeta, instanceID string, args []api.Arg,
 	invokeOpt api.InvokeOptions,
 ) (string, error) {
+	if requiresLegacyControlForFunction(funcMeta) {
+		if c.control == nil {
+			return "", fmt.Errorf("clientSimpleRuntime.InvokeByInstanceId requires legacy control for API type %d", funcMeta.Api)
+		}
+		return c.control.InvokeByInstanceId(funcMeta, instanceID, args, invokeOpt)
+	}
 	if c.proxyClient == nil {
 		return "", c.unsupported("InvokeByInstanceId")
 	}
@@ -420,11 +427,20 @@ func (c *clientSimpleRuntime) Put(objectID string, value []byte, _ api.PutParam,
 	defer c.mu.Unlock()
 	c.ensureStoresLocked()
 	c.results[objectID] = value
-	delete(c.consumed, objectID)
 	return nil
 }
 
-func (c *clientSimpleRuntime) Get(objectIDs []string, _ int) ([][]byte, error) {
+func (c *clientSimpleRuntime) Get(objectIDs []string, timeoutMs int) ([][]byte, error) {
+	allLocal, mixed := c.classifyObjectIDs(objectIDs)
+	if mixed {
+		return nil, fmt.Errorf("clientSimpleRuntime.Get does not support mixed local and legacy object IDs")
+	}
+	if !allLocal {
+		if c.control == nil {
+			return nil, fmt.Errorf("clientSimpleRuntime.Get requires legacy control for non-local objects")
+		}
+		return c.control.Get(objectIDs, timeoutMs)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	values := make([][]byte, 0, len(objectIDs))
@@ -438,7 +454,17 @@ func (c *clientSimpleRuntime) Get(objectIDs []string, _ int) ([][]byte, error) {
 	return values, nil
 }
 
-func (c *clientSimpleRuntime) GIncreaseRef(objectIDs []string, _ ...string) ([]string, error) {
+func (c *clientSimpleRuntime) GIncreaseRef(objectIDs []string, remoteClientID ...string) ([]string, error) {
+	allLocal, mixed := c.classifyObjectIDs(objectIDs)
+	if mixed {
+		return objectIDs, fmt.Errorf("clientSimpleRuntime.GIncreaseRef does not support mixed local and legacy object IDs")
+	}
+	if !allLocal {
+		if c.control == nil {
+			return objectIDs, fmt.Errorf("clientSimpleRuntime.GIncreaseRef requires legacy control for non-local objects")
+		}
+		return c.control.GIncreaseRef(objectIDs, remoteClientID...)
+	}
 	failed := c.missingLocalObjects(objectIDs)
 	if len(failed) > 0 {
 		return failed, fmt.Errorf("clientSimpleRuntime.GIncreaseRef only supports local simple-runtime objects, failed: %v", failed)
@@ -446,28 +472,37 @@ func (c *clientSimpleRuntime) GIncreaseRef(objectIDs []string, _ ...string) ([]s
 	return nil, nil
 }
 
-func (c *clientSimpleRuntime) GDecreaseRef(objectIDs []string, _ ...string) ([]string, error) {
+func (c *clientSimpleRuntime) GDecreaseRef(objectIDs []string, remoteClientID ...string) ([]string, error) {
+	allLocal, mixed := c.classifyObjectIDs(objectIDs)
+	if mixed {
+		return objectIDs, fmt.Errorf("clientSimpleRuntime.GDecreaseRef does not support mixed local and legacy object IDs")
+	}
+	if !allLocal {
+		if c.control == nil {
+			return objectIDs, fmt.Errorf("clientSimpleRuntime.GDecreaseRef requires legacy control for non-local objects")
+		}
+		return c.control.GDecreaseRef(objectIDs, remoteClientID...)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	failed := make([]string, 0)
 	for _, objectID := range objectIDs {
-		if _, ok := c.results[objectID]; ok {
-			delete(c.results, objectID)
-			c.consumed[objectID] = struct{}{}
-			continue
-		}
-		if _, ok := c.consumed[objectID]; ok {
-			continue
-		}
-		failed = append(failed, objectID)
+		delete(c.results, objectID)
 	}
-	if len(failed) > 0 {
-		return failed, fmt.Errorf("clientSimpleRuntime.GDecreaseRef local objects not found: %v", failed)
-	}
+	// Ref release is intentionally idempotent. GetAsync already transfers the
+	// payload to its caller and removes it from results, so retaining tombstones
+	// merely to distinguish a second release would grow with every invocation.
 	return nil, nil
 }
 
 func (c *clientSimpleRuntime) GetAsync(objectID string, cb api.GetAsyncCallback) {
+	if !c.isLocalObjectID(objectID) {
+		if c.control == nil {
+			cb(nil, fmt.Errorf("clientSimpleRuntime.GetAsync local object %q not found", objectID))
+			return
+		}
+		c.control.GetAsync(objectID, cb)
+		return
+	}
 	value, err := c.consumeLocalResult(objectID)
 	if err != nil {
 		cb(nil, err)
@@ -476,11 +511,23 @@ func (c *clientSimpleRuntime) GetAsync(objectID string, cb api.GetAsyncCallback)
 	cb(value, nil)
 }
 
-func (c *clientSimpleRuntime) GetEvent(_ string, cb api.GetEventCallback) {
-	cb(nil, c.unsupported("GetEvent"))
+func (c *clientSimpleRuntime) GetEvent(objectID string, cb api.GetEventCallback) {
+	if c.isLocalObjectID(objectID) {
+		cb(nil, c.unsupported("GetEvent"))
+		return
+	}
+	if c.control == nil {
+		cb(nil, c.unsupported("GetEvent"))
+		return
+	}
+	c.control.GetEvent(objectID, cb)
 }
 
-func (c *clientSimpleRuntime) DeleteGetEventCallback(string) {}
+func (c *clientSimpleRuntime) DeleteGetEventCallback(objectID string) {
+	if !c.isLocalObjectID(objectID) && c.control != nil {
+		c.control.DeleteGetEventCallback(objectID)
+	}
+}
 
 func (c *clientSimpleRuntime) GetFormatLogger() api.FormatLogger {
 	return nil
@@ -536,6 +583,29 @@ func (c *clientSimpleRuntime) missingLocalObjects(objectIDs []string) []string {
 	return failed
 }
 
+func (c *clientSimpleRuntime) isLocalObjectID(objectID string) bool {
+	if strings.HasPrefix(objectID, "frontend-simple-runtime-") {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.results[objectID]
+	return ok
+}
+
+func (c *clientSimpleRuntime) classifyObjectIDs(objectIDs []string) (allLocal bool, mixed bool) {
+	if len(objectIDs) == 0 {
+		return true, false
+	}
+	firstLocal := c.isLocalObjectID(objectIDs[0])
+	for _, objectID := range objectIDs[1:] {
+		if c.isLocalObjectID(objectID) != firstLocal {
+			return false, true
+		}
+	}
+	return firstLocal, false
+}
+
 func (c *clientSimpleRuntime) consumeLocalResult(objectID string) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -544,15 +614,11 @@ func (c *clientSimpleRuntime) consumeLocalResult(objectID string) ([]byte, error
 		return nil, fmt.Errorf("clientSimpleRuntime.GetAsync local object %q not found", objectID)
 	}
 	delete(c.results, objectID)
-	c.consumed[objectID] = struct{}{}
 	return value, nil
 }
 
 func (c *clientSimpleRuntime) ensureStoresLocked() {
 	if c.results == nil {
 		c.results = make(map[string][]byte)
-	}
-	if c.consumed == nil {
-		c.consumed = make(map[string]struct{})
 	}
 }

@@ -78,6 +78,11 @@ type fakeInvokerLibruntime struct {
 	}
 
 	results       map[string][]byte
+	decreasedRefs []string
+	decreaseOwner []string
+	getTimeout    int
+	getEventID    string
+	deletedEvent  string
 	createRawResp []byte
 	killRawResp   []byte
 	allocation    api.InstanceAllocation
@@ -204,8 +209,28 @@ func (f *fakeInvokerLibruntime) GetAsync(objectID string, cb api.GetAsyncCallbac
 	cb(f.results[objectID], nil)
 }
 
-func (f *fakeInvokerLibruntime) GDecreaseRef([]string, ...string) ([]string, error) {
+func (f *fakeInvokerLibruntime) Get(objectIDs []string, timeoutMs int) ([][]byte, error) {
+	f.getTimeout = timeoutMs
+	values := make([][]byte, 0, len(objectIDs))
+	for _, objectID := range objectIDs {
+		values = append(values, f.results[objectID])
+	}
+	return values, nil
+}
+
+func (f *fakeInvokerLibruntime) GDecreaseRef(objectIDs []string, remoteClientID ...string) ([]string, error) {
+	f.decreasedRefs = append(f.decreasedRefs, objectIDs...)
+	f.decreaseOwner = append(f.decreaseOwner, remoteClientID...)
 	return nil, nil
+}
+
+func (f *fakeInvokerLibruntime) GetEvent(objectID string, cb api.GetEventCallback) {
+	f.getEventID = objectID
+	cb(f.results[objectID], nil)
+}
+
+func (f *fakeInvokerLibruntime) DeleteGetEventCallback(objectID string) {
+	f.deletedEvent = objectID
 }
 
 func (f *fakeInvokerLibruntime) IsHealth() bool {
@@ -323,6 +348,111 @@ func TestClientSimpleRuntimeInvokeByInstanceIDStoresProxyPayload(t *testing.T) {
 	})
 	require.Equal(t, []byte("Proxy-payload"), got)
 	require.Same(t, &proxyPayload[0], &got[0])
+}
+
+func TestClientSimpleRuntimeKeepsActorAndPosixInvokeOnExplicitLegacyLane(t *testing.T) {
+	for name, apiType := range map[string]api.ApiType{"actor": api.ActorApi, "posix": api.PosixApi} {
+		t.Run(name, func(t *testing.T) {
+			proxyClient := &fakeFrontendProxyInvokeClient{payload: []byte("proxy-payload")}
+			control := &fakeInvokerLibruntime{results: map[string][]byte{"object-1": []byte("legacy-result")}}
+			runtime := newClientSimpleRuntimeWithProxyClientAndControl(proxyClient, control)
+
+			objectID, err := runtime.InvokeByInstanceId(
+				api.FunctionMeta{FuncID: "legacy-func", Api: apiType},
+				"instance-1",
+				[]api.Arg{{Type: api.Value, Data: []byte("arg")}},
+				api.InvokeOptions{TraceID: "trace-legacy"},
+			)
+
+			require.NoError(t, err)
+			require.Equal(t, "object-1", objectID)
+			require.Equal(t, apiType, control.invokeByInstanceIDReq.funcMeta.Api)
+			require.Equal(t, "instance-1", control.invokeByInstanceIDReq.instanceID)
+			require.Empty(t, proxyClient.req.instanceID)
+
+			var result []byte
+			runtime.GetAsync(objectID, func(value []byte, err error) {
+				require.NoError(t, err)
+				result = value
+			})
+			require.Equal(t, []byte("legacy-result"), result)
+			failed, err := runtime.GDecreaseRef([]string{objectID})
+			require.NoError(t, err)
+			require.Empty(t, failed)
+			require.Equal(t, []string{objectID}, control.decreasedRefs)
+		})
+	}
+}
+
+func TestClientSimpleRuntimeFailsFastForLegacyInvokeWithoutControl(t *testing.T) {
+	proxyClient := &fakeFrontendProxyInvokeClient{payload: []byte("proxy-payload")}
+	runtime := newClientSimpleRuntimeWithProxyClient(proxyClient)
+
+	objectID, err := runtime.InvokeByInstanceId(
+		api.FunctionMeta{FuncID: "actor-func", Api: api.ActorApi}, "instance-1", nil, api.InvokeOptions{})
+
+	require.Empty(t, objectID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires legacy control")
+	require.Empty(t, proxyClient.req.instanceID)
+}
+
+func TestClientSimpleRuntimeDoesNotRetainConsumedResultTombstones(t *testing.T) {
+	runtime := newClientSimpleRuntime()
+	for i := 0; i < 10_000; i++ {
+		objectID := runtime.putLocalResult([]byte("payload"))
+		runtime.GetAsync(objectID, func(_ []byte, err error) { require.NoError(t, err) })
+		failed, err := runtime.GDecreaseRef([]string{objectID})
+		require.NoError(t, err)
+		require.Empty(t, failed)
+	}
+
+	require.Empty(t, runtime.results)
+}
+
+func TestClientSimpleRuntimePreservesLegacyObjectArgumentsAndRejectsMixedOwnership(t *testing.T) {
+	control := &fakeInvokerLibruntime{results: map[string][]byte{"legacy-1": []byte("legacy")}}
+	runtime := newClientSimpleRuntimeWithProxyClientAndControl(nil, control)
+	localID := runtime.putLocalResult([]byte("local"))
+
+	values, err := runtime.Get([]string{"legacy-1"}, 321)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte("legacy")}, values)
+	require.Equal(t, 321, control.getTimeout)
+
+	failed, err := runtime.GDecreaseRef([]string{"legacy-1"}, "owner-1")
+	require.NoError(t, err)
+	require.Empty(t, failed)
+	require.Equal(t, []string{"owner-1"}, control.decreaseOwner)
+
+	_, err = runtime.Get([]string{localID, "legacy-1"}, 123)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mixed local and legacy")
+	failed, err = runtime.GDecreaseRef([]string{localID, "legacy-1"})
+	require.Error(t, err)
+	require.Equal(t, []string{localID, "legacy-1"}, failed)
+}
+
+func TestClientSimpleRuntimeRoutesEventsByObjectOwnership(t *testing.T) {
+	control := &fakeInvokerLibruntime{results: map[string][]byte{"legacy-event": []byte("event")}}
+	runtime := newClientSimpleRuntimeWithProxyClientAndControl(nil, control)
+	localID := runtime.putLocalResult([]byte("local"))
+
+	runtime.GetEvent(localID, func(result []byte, err error) {
+		require.Error(t, err)
+		require.Nil(t, result)
+	})
+	runtime.DeleteGetEventCallback(localID)
+	require.Empty(t, control.getEventID)
+	require.Empty(t, control.deletedEvent)
+
+	runtime.GetEvent("legacy-event", func(result []byte, err error) {
+		require.NoError(t, err)
+		require.Equal(t, []byte("event"), result)
+	})
+	runtime.DeleteGetEventCallback("legacy-event")
+	require.Equal(t, "legacy-event", control.getEventID)
+	require.Equal(t, "legacy-event", control.deletedEvent)
 }
 
 func TestClientSimpleRuntimeCreateInstanceRawKeepsControlFallbackBeforeProxy(t *testing.T) {
