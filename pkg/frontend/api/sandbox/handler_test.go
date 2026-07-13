@@ -713,6 +713,153 @@ func TestCreateV1HandlerDefaultsAndReturnsSandboxID(t *testing.T) {
 	require.Equal(t, "running", data["status"])
 }
 
+func TestCreateV1HandlerSSEUsesRequestedTimeoutAndReturnsFinal(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "sandbox-sse", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Name:                 "sandbox-sse",
+		Namespace:            "default",
+		Image:                "ubuntu:22.04",
+		CreateTimeoutSeconds: 37,
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set("Accept", "text/event-stream")
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+	require.Contains(t, recorder.Body.String(), "event: accepted")
+	require.Contains(t, recorder.Body.String(), `"status":"creating"`)
+	require.Contains(t, recorder.Body.String(), "event: final")
+	require.Contains(t, recorder.Body.String(), `"sandboxId":"sandbox-sse"`)
+	require.Contains(t, recorder.Body.String(), `"status":"running"`)
+	require.Equal(t, 37, capturedInvokeOpt.Timeout)
+	require.Equal(t, int64(7000), capturedInvokeOpt.ScheduleTimeoutMs)
+	require.Equal(t, "37", capturedInvokeOpt.CreateOpt["call_timeout"])
+}
+
+func TestResolveSandboxCreateTimeouts(t *testing.T) {
+	t.Setenv("YR_SANDBOX_CREATE_TIMEOUT", "")
+
+	tests := []struct {
+		name             string
+		createTimeout    int
+		scheduleTimeout  int
+		wantCreate       int
+		wantSchedule     int
+		wantErrorMessage string
+	}{
+		{
+			name:         "default create derives schedule",
+			wantCreate:   60,
+			wantSchedule: 30,
+		},
+		{
+			name:          "create derives schedule",
+			createTimeout: 120,
+			wantCreate:    120,
+			wantSchedule:  90,
+		},
+		{
+			name:            "schedule derives create",
+			scheduleTimeout: 90,
+			wantCreate:      120,
+			wantSchedule:    90,
+		},
+		{
+			name:             "create must exceed buffer",
+			createTimeout:    30,
+			wantErrorMessage: "createTimeoutSeconds must be greater than 30",
+		},
+		{
+			name:             "create must be positive",
+			createTimeout:    -1,
+			wantErrorMessage: "createTimeoutSeconds must be a positive integer",
+		},
+		{
+			name:             "schedule must be positive",
+			scheduleTimeout:  -1,
+			wantErrorMessage: "scheduleTimeoutSeconds must be a positive integer",
+		},
+		{
+			name:             "schedule must not exceed create",
+			createTimeout:    60,
+			scheduleTimeout:  70,
+			wantErrorMessage: "scheduleTimeoutSeconds must be less than or equal to createTimeoutSeconds",
+		},
+		{
+			name:             "explicit timeouts must reserve buffer",
+			createTimeout:    60,
+			scheduleTimeout:  45,
+			wantErrorMessage: "createTimeoutSeconds - scheduleTimeoutSeconds must be at least 30",
+		},
+		{
+			name:            "explicit timeouts preserve caller budgets",
+			createTimeout:   120,
+			scheduleTimeout: 80,
+			wantCreate:      120,
+			wantSchedule:    80,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			createTimeout, scheduleTimeout, err := resolveSandboxCreateTimeouts(
+				tt.createTimeout, tt.scheduleTimeout,
+			)
+			if tt.wantErrorMessage != "" {
+				require.EqualError(t, err, tt.wantErrorMessage)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantCreate, createTimeout)
+			require.Equal(t, tt.wantSchedule, scheduleTimeout)
+		})
+	}
+}
+
+func TestCreateV1HandlerSSEDoesNotReportUnconfirmedTimeoutAsRunning(t *testing.T) {
+	oldWaitForSandboxInstanceRunning := waitForSandboxInstanceRunning
+	waitForSandboxInstanceRunning = func(instanceID, functionID, resourceSpecNote string) bool {
+		return false
+	}
+	defer func() { waitForSandboxInstanceRunning = oldWaitForSandboxInstanceRunning }()
+
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			return "sandbox-timeout", api.ErrorInfo{Code: 3002, Err: fmt.Errorf("create instance timeout")}
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{Name: "sandbox-timeout", Namespace: "default"})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set("Accept", "text/event-stream")
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "event: final")
+	require.Contains(t, recorder.Body.String(), `"sandboxId":"sandbox-timeout"`)
+	require.Contains(t, recorder.Body.String(), `"status":"timeout"`)
+	require.Contains(t, recorder.Body.String(), `"errorCode":3002`)
+	require.NotContains(t, recorder.Body.String(), `"status":"running"`)
+}
+
 func TestCreateV1HandlerFrontendOwnsTunnelSetup(t *testing.T) {
 	var capturedInvokeOpt api.InvokeOptions
 	util.SetAPIClientLibruntime(&runtimeStub{
@@ -756,6 +903,37 @@ func TestCreateV1HandlerFrontendOwnsTunnelSetup(t *testing.T) {
 	require.Equal(t, "/tunnel/default-sandbox-demo-1", tunnel["url"])
 	require.Equal(t, "/tunnel/default-sandbox-demo-1", tunnel["path"])
 	require.Equal(t, "http://127.0.0.1:8766", tunnel["proxyUrl"])
+}
+
+func TestCreateV1HandlerDoesNotInjectRRTPortForPythonRuntime(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "default/sandbox_python.1", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Runtime: "python3.9",
+		Image:   "aio-yr-runtime:latest",
+		Env:     map[string]string{"USER_ENV": "ok"},
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NotContains(t, capturedInvokeOpt.CreateOpt, "network")
+	require.JSONEq(
+		t,
+		`{"USER_ENV":"ok"}`,
+		capturedInvokeOpt.CreateOpt[faasconstant.DelegateEnvVar],
+	)
 }
 
 func TestNormalizeJSONValuePreservesFractionalAndConvertsIntegers(t *testing.T) {
