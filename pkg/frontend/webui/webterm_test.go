@@ -141,6 +141,7 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 		StatusCode: int32(constant.KernelInstanceStatusRunning),
 		StatusMsg:  "running",
 		StartTime:  "1700000000",
+		Image:      "registry.example.com/ns/image:tag",
 		Resources: map[string]execendpoint.Resource{
 			"CPU":          localResource(500),
 			"Memory":       localResource(1024),
@@ -190,8 +191,132 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 		body[0]["required_npu"] != float64(2) {
 		t.Fatalf("expected resource quota fields, got %+v", body[0])
 	}
+	if body[0]["limit_cpu"] != float64(1000) ||
+		body[0]["limit_mem"] != float64(2048) {
+		t.Fatalf("expected CPU and memory resource limit fields, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_gpu"]; ok {
+		t.Fatalf("did not expect limit_gpu field, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_npu"]; ok {
+		t.Fatalf("did not expect limit_npu field, got %+v", body[0])
+	}
+	if body[0]["image"] != "registry.example.com/ns/image:tag" {
+		t.Fatalf("expected image field, got %+v", body[0])
+	}
+	if body[0]["image_endpoint"] != "" {
+		t.Fatalf("expected empty image_endpoint for registry image, got %+v", body[0])
+	}
 	if runtimeSeconds, ok := body[0]["runtime_seconds"].(float64); !ok || runtimeSeconds <= 0 {
 		t.Fatalf("expected positive runtime_seconds, got %+v", body[0]["runtime_seconds"])
+	}
+}
+
+func TestSummarizeInstancesExtractsImageFromRootfs(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		CreateOptions: map[string]string{
+			"rootfs": `{"runtime":"runsc","type":"image","readonly":false,"imageurl":"registry.example.com/ns/image:tag"}`,
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "registry.example.com/ns/image:tag" {
+		t.Fatalf("image = %q, want registry.example.com/ns/image:tag", body[0]["image"])
+	}
+}
+
+func TestSummarizeInstancesFormatsS3RootfsAsImage(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		ScheduleOption: struct {
+			Extension map[string]string `json:"extension"`
+		}{
+			Extension: map[string]string{
+				"rootfs": `{"runtime":"runsc","type":"s3","imageurl":"registry.example.com","storageInfo":{"endpoint":"cn-hangzhou.example.com","bucket":"crfs-dev","object":"rootfs.img","accessKey":"secret-ak","secretKey":"secret-sk"}}`,
+			},
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "s3://crfs-dev/rootfs.img" {
+		t.Fatalf("image = %q, want s3://crfs-dev/rootfs.img", body[0]["image"])
+	}
+	if body[0]["image_endpoint"] != "cn-hangzhou.example.com" {
+		t.Fatalf("image_endpoint = %q, want cn-hangzhou.example.com", body[0]["image_endpoint"])
+	}
+}
+
+func TestSummarizeInstancesFormatsOSSRootfsAsS3Image(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		ScheduleOption: struct {
+			Extension map[string]string `json:"extension"`
+		}{
+			Extension: map[string]string{
+				"rootfs": `{"runtime":"runsc","type":"s3","imageurl":"oss-cn-hangzhou.aliyuncs.com","storageInfo":{"endpoint":"https://oss-cn-hangzhou.aliyuncs.com","bucket":"yr-rootfs-prod","object":"/images/python310/rootfs.img","accessKey":"secret-ak","secretKey":"secret-sk"}}`,
+			},
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "s3://yr-rootfs-prod/images/python310/rootfs.img" {
+		t.Fatalf("image = %q, want s3://yr-rootfs-prod/images/python310/rootfs.img", body[0]["image"])
+	}
+	if body[0]["image_endpoint"] != "https://oss-cn-hangzhou.aliyuncs.com" {
+		t.Fatalf("image_endpoint = %q, want https://oss-cn-hangzhou.aliyuncs.com", body[0]["image_endpoint"])
+	}
+}
+
+func TestSummarizeInstancesMatchesConcreteGPUAndNPUResourceKeys(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		Resources: Resources{Resources: map[string]Resource{
+			"GPU/NVIDIA-A10/count": {
+				Scalar: ValueScalar{Value: 1, Limit: 2},
+			},
+			"NPU/Ascend910B4/count": {
+				Scalar: ValueScalar{Value: 3, Limit: 4},
+			},
+		}},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["required_gpu"] != float64(1) {
+		t.Fatalf("expected concrete GPU resource to match, got %+v", body[0])
+	}
+	if body[0]["required_npu"] != float64(3) {
+		t.Fatalf("expected concrete NPU resource to match, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_gpu"]; ok {
+		t.Fatalf("did not expect limit_gpu field, got %+v", body[0])
+	}
+	if _, ok := body[0]["limit_npu"]; ok {
+		t.Fatalf("did not expect limit_npu field, got %+v", body[0])
+	}
+}
+
+func TestSummarizeInstancesUsesPlainRootfsAsImage(t *testing.T) {
+	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
+		InstanceID: "instance-1",
+		CreateOptions: map[string]string{
+			"rootfs": "python:3.12-slim",
+		},
+	}}})
+
+	if len(body) != 1 {
+		t.Fatalf("expected one instance, got %+v", body)
+	}
+	if body[0]["image"] != "python:3.12-slim" {
+		t.Fatalf("image = %q, want python:3.12-slim", body[0]["image"])
 	}
 }
 
@@ -342,6 +467,7 @@ func TestHandleInstancesRejectsInvalidPaginationBeforeLocalLookup(t *testing.T) 
 func localResource(value float64) execendpoint.Resource {
 	var resource execendpoint.Resource
 	resource.Scalar.Value = value
+	resource.Scalar.Limit = value * 2
 	return resource
 }
 

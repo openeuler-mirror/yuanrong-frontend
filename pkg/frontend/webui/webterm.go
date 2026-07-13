@@ -44,6 +44,7 @@ import (
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/sandboxrouter/execendpoint"
+	"frontend/pkg/sandboxrouter/rootfs"
 )
 
 //go:embed static/*
@@ -162,31 +163,40 @@ type Resource struct {
 
 type ValueScalar struct {
 	Value float64 `json:"value"`
+	Limit float64 `json:"limit"`
 }
 
 // InstanceInfo defines instance information structure (corresponding to instance returned by master API)
 type InstanceInfo struct {
-	InstanceID       string         `json:"instanceID"`       // Instance ID
-	TenantID         string         `json:"tenantID"`         // Tenant ID
-	ContainerID      string         `json:"containerID"`      // Container ID
-	ProxyGrpcAddress string         `json:"proxyGrpcAddress"` // Proxy gRPC address
-	FunctionProxyID  string         `json:"functionProxyID"`  // Function Proxy ID
-	Function         string         `json:"function"`         // Function name
-	RuntimeAddress   string         `json:"runtimeAddress"`   // Runtime address
-	RuntimeID        string         `json:"runtimeID"`        // Runtime ID
-	InstanceStatus   InstanceStatus `json:"instanceStatus"`   // Instance status
-	Resources        Resources      `json:"resources"`        // Resource configuration
-	RequiredCPU      float64        `json:"required_cpu"`     // Requested CPU quota
-	RequiredMem      float64        `json:"required_mem"`     // Requested memory quota
-	RequiredGPU      float64        `json:"required_gpu"`     // Requested GPU quota
-	RequiredNPU      float64        `json:"required_npu"`     // Requested NPU quota
-	RuntimeSeconds   int64          `json:"runtime_seconds"`  // Runtime duration in seconds
-	StartTime        string         `json:"startTime"`        // Start time
-	RequestID        string         `json:"requestID"`        // Request ID
-	ParentID         string         `json:"parentID"`         // Parent ID
-	JobID            string         `json:"jobID"`            // Job ID
-	NodeIP           string         `json:"nodeIP"`           // Node IP
-	NodePort         string         `json:"nodePort"`         // Node port
+	InstanceID       string            `json:"instanceID"`       // Instance ID
+	TenantID         string            `json:"tenantID"`         // Tenant ID
+	ContainerID      string            `json:"containerID"`      // Container ID
+	ProxyGrpcAddress string            `json:"proxyGrpcAddress"` // Proxy gRPC address
+	FunctionProxyID  string            `json:"functionProxyID"`  // Function Proxy ID
+	Function         string            `json:"function"`         // Function name
+	Image            string            `json:"image"`            // Container image
+	ImageEndpoint    string            `json:"image_endpoint"`   // Non-sensitive image endpoint
+	RuntimeAddress   string            `json:"runtimeAddress"`   // Runtime address
+	RuntimeID        string            `json:"runtimeID"`        // Runtime ID
+	InstanceStatus   InstanceStatus    `json:"instanceStatus"`   // Instance status
+	Resources        Resources         `json:"resources"`        // Resource configuration
+	RequiredCPU      float64           `json:"required_cpu"`     // Requested CPU quota
+	RequiredMem      float64           `json:"required_mem"`     // Requested memory quota
+	RequiredGPU      float64           `json:"required_gpu"`     // Requested GPU quota
+	RequiredNPU      float64           `json:"required_npu"`     // Requested NPU quota
+	LimitCPU         float64           `json:"limit_cpu"`        // CPU limit quota
+	LimitMem         float64           `json:"limit_mem"`        // Memory limit quota
+	RuntimeSeconds   int64             `json:"runtime_seconds"`  // Runtime duration in seconds
+	StartTime        string            `json:"startTime"`        // Start time
+	CreateOptions    map[string]string `json:"createOptions"`    // Create options
+	ScheduleOption   struct {
+		Extension map[string]string `json:"extension"`
+	} `json:"scheduleOption"` // Schedule options
+	RequestID string `json:"requestID"` // Request ID
+	ParentID  string `json:"parentID"`  // Parent ID
+	JobID     string `json:"jobID"`     // Job ID
+	NodeIP    string `json:"nodeIP"`    // Node IP
+	NodePort  string `json:"nodePort"`  // Node port
 }
 
 // InstanceListResponse defines instance list response structure (corresponding to master API response)
@@ -342,12 +352,16 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 			"id":              inst.InstanceID,
 			"tenantID":        inst.TenantID,
 			"function":        inst.Function,
+			"image":           getInstanceImage(inst),
+			"image_endpoint":  getInstanceImageEndpoint(inst),
 			"status":          statusText,
 			"error":           errorDetail,
 			"required_cpu":    getResourceValueOrDefault("CPU", inst.Resources.Resources, inst.RequiredCPU),
 			"required_mem":    getResourceValueOrDefault("Memory", inst.Resources.Resources, inst.RequiredMem),
 			"required_gpu":    getResourceValueOrDefault("GPU", inst.Resources.Resources, inst.RequiredGPU),
 			"required_npu":    getResourceValueOrDefault("NPU/.+/count", inst.Resources.Resources, inst.RequiredNPU),
+			"limit_cpu":       getResourceLimitOrDefault("CPU", inst.Resources.Resources, inst.LimitCPU),
+			"limit_mem":       getResourceLimitOrDefault("Memory", inst.Resources.Resources, inst.LimitMem),
 			"runtime_seconds": getRuntimeSeconds(inst),
 		}
 		instances = append(instances, instance)
@@ -360,10 +374,12 @@ func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[str
 	for _, summary := range summaries {
 		resources := convertLocalResources(summary.Resources)
 		inst := InstanceInfo{
-			InstanceID: summary.InstanceID,
-			TenantID:   summary.TenantID,
-			Function:   summary.Function,
-			StartTime:  localSummaryStartTime(summary),
+			InstanceID:    summary.InstanceID,
+			TenantID:      summary.TenantID,
+			Function:      summary.Function,
+			Image:         summary.Image,
+			ImageEndpoint: summary.ImageEndpoint,
+			StartTime:     localSummaryStartTime(summary),
 			InstanceStatus: InstanceStatus{
 				Code:     int(summary.StatusCode),
 				ExitCode: int(summary.StatusExitCode),
@@ -393,6 +409,7 @@ func convertLocalResources(resources map[string]execendpoint.Resource) map[strin
 	for name, resource := range resources {
 		var converted Resource
 		converted.Scalar.Value = resource.Scalar.Value
+		converted.Scalar.Limit = resource.Scalar.Limit
 		out[name] = converted
 	}
 	return out
@@ -411,10 +428,56 @@ func paginateInstanceSummaries(summaries []execendpoint.Summary, page, pageSize 
 }
 
 func getResourceValueOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
-	if resource, ok := resources[resourceName]; ok {
+	if resource, ok := findResource(resourceName, resources); ok {
 		return resource.Scalar.Value
 	}
 	return fallback
+}
+
+func getResourceLimitOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
+	if resource, ok := findResource(resourceName, resources); ok {
+		return resource.Scalar.Limit
+	}
+	return fallback
+}
+
+func findResource(resourceName string, resources map[string]Resource) (Resource, bool) {
+	if resource, ok := resources[resourceName]; ok {
+		return resource, true
+	}
+	for name, resource := range resources {
+		if resourceName == "GPU" && (strings.HasPrefix(name, "GPU/") || strings.HasPrefix(name, "nvidia.com/gpu")) {
+			return resource, true
+		}
+		if resourceName == "NPU/.+/count" && strings.HasPrefix(name, "NPU/") && strings.HasSuffix(name, "/count") {
+			return resource, true
+		}
+	}
+	return Resource{}, false
+}
+
+func getInstanceImage(inst InstanceInfo) string {
+	if strings.TrimSpace(inst.Image) != "" {
+		return strings.TrimSpace(inst.Image)
+	}
+	return getInstanceRootfsDisplay(inst).Image
+}
+
+func getInstanceImageEndpoint(inst InstanceInfo) string {
+	if strings.TrimSpace(inst.ImageEndpoint) != "" {
+		return strings.TrimSpace(inst.ImageEndpoint)
+	}
+	return getInstanceRootfsDisplay(inst).Endpoint
+}
+
+func getInstanceRootfsDisplay(inst InstanceInfo) rootfs.Display {
+	for _, options := range []map[string]string{inst.ScheduleOption.Extension, inst.CreateOptions} {
+		display := rootfs.DisplayInfo(options["rootfs"])
+		if display.Image != "" || display.Endpoint != "" {
+			return display
+		}
+	}
+	return rootfs.Display{}
 }
 
 func getRuntimeSeconds(inst InstanceInfo) int64 {

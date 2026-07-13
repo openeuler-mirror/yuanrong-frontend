@@ -18,6 +18,7 @@ package execendpoint
 
 import (
 	"encoding/json"
+	"frontend/pkg/sandboxrouter/rootfs"
 	"strings"
 )
 
@@ -44,13 +45,17 @@ const (
 // route/instanceinfo.go. proxyGrpcAddress and containerID are NOT present in
 // frontend's existing InstanceSpecification struct, which is why we parse our own.
 type instanceExecInfo struct {
-	InstanceID       string `json:"instanceID"`
-	TenantID         string `json:"tenantID"`
-	ProxyGrpcAddress string `json:"proxyGrpcAddress"`
-	ContainerID      string `json:"containerID"`
-	Function         string `json:"function"`
-	StartTime        string `json:"startTime"`
-	Resources        struct {
+	InstanceID       string            `json:"instanceID"`
+	TenantID         string            `json:"tenantID"`
+	ProxyGrpcAddress string            `json:"proxyGrpcAddress"`
+	ContainerID      string            `json:"containerID"`
+	Function         string            `json:"function"`
+	StartTime        string            `json:"startTime"`
+	CreateOptions    map[string]string `json:"createOptions"`
+	ScheduleOption   struct {
+		Extension map[string]string `json:"extension"`
+	} `json:"scheduleOption"`
+	Resources struct {
 		Resources map[string]Resource `json:"resources"`
 	} `json:"resources"`
 	InstanceStatus struct {
@@ -96,10 +101,13 @@ func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 	if tenantID == "" {
 		tenantID = tenantIDFromKey(key)
 	}
+	image := rootfsDisplay(info.ScheduleOption.Extension, info.CreateOptions)
 	s.PutSummary(Summary{
 		InstanceID:     id,
 		TenantID:       tenantID,
 		Function:       info.Function,
+		Image:          image.Image,
+		ImageEndpoint:  image.Endpoint,
 		StatusCode:     info.InstanceStatus.Code,
 		StatusMsg:      info.InstanceStatus.Msg,
 		StatusType:     info.InstanceStatus.Type,
@@ -119,6 +127,16 @@ func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 		ProxyGrpcAddress: info.ProxyGrpcAddress,
 		ContainerID:      info.ContainerID,
 	})
+}
+
+func rootfsDisplay(optionMaps ...map[string]string) rootfs.Display {
+	for _, options := range optionMaps {
+		display := rootfs.DisplayInfo(options["rootfs"])
+		if display.Image != "" || display.Endpoint != "" {
+			return display
+		}
+	}
+	return rootfs.Display{}
 }
 
 // instanceIDFromKey returns the last '/'-separated segment of an instance key,

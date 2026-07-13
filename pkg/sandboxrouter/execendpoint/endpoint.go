@@ -45,6 +45,7 @@ type Endpoint struct {
 type Resource struct {
 	Scalar struct {
 		Value float64 `json:"value"`
+		Limit float64 `json:"limit"`
 	} `json:"scalar"`
 }
 
@@ -53,6 +54,8 @@ type Summary struct {
 	InstanceID     string
 	TenantID       string
 	Function       string
+	Image          string
+	ImageEndpoint  string
 	StatusCode     int32
 	StatusMsg      string
 	StatusType     int32
