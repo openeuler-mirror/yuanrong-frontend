@@ -204,6 +204,7 @@ func SignalHandlerLibruntime(signal int, payload []byte) error {
 func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct{}) error {
 	util.SetAPIClientLibruntime(rt)
 	schedulerproxy.Proxy.RTAPI = rt
+	schedulerproxy.BlueProxy.RTAPI = rt
 	shutdown := func() {}
 	go tracer.InitCommonTracer(shutdown, "frontend")
 	cfg := config.GetConfig()

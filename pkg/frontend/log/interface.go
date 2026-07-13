@@ -35,7 +35,7 @@ func CreateInterLogger(logPath string) error {
 	cfg := logger.InterfaceEncoderConfig{ModuleName: "frontend"}
 
 	var err error
-	if interfaceLog, err = logger.NewInterfaceLogger(logPath, "frontend-interface", cfg); err != nil {
+	if interfaceLog, err = logger.NewInterfaceLogger("frontend-interface", cfg); err != nil {
 		return err
 	}
 	return nil

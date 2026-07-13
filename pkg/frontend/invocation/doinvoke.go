@@ -75,7 +75,10 @@ func doInvokeWithRetry(ctx *types.InvokeProcessContext, funcSpec *commontype.Fun
 }
 
 func doInvoke(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) error {
-	kernelReqHandler := newKernelRequestHandler(ctx, funcSpec)
+	kernelReqHandler, err := createKernelRequestHandler(ctx, funcSpec)
+	if err != nil {
+		return err
+	}
 	return kernelReqHandler.invoke()
 }
 

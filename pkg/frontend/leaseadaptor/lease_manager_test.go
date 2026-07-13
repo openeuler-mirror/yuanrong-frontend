@@ -59,7 +59,7 @@ func TestInstanceLeasePool_releaseInstanceLease(t *testing.T) {
 				Timeout:             30,
 				FuncSig:             "",
 			}
-			pool := newInstanceLeasePool("func1", op)
+			pool := newInstanceLeasePool("func1", op, &types.RingName{Name: constant.GreenRing})
 			freeCalled := 0
 			p := gomonkey.ApplyFunc((*InstanceLease).free, func(_ *InstanceLease, abnormal bool, record bool) {
 				freeCalled++
@@ -210,7 +210,7 @@ func TestFuncKeyLeasePools_BatchRetainLeaseLoop(t *testing.T) {
 				d time.Duration) {
 				return
 			}).Reset()
-			funcKeyLeasePools := newFuncKeyLeasePools("func1")
+			funcKeyLeasePools := GetInstanceManager().newFuncKeyLeasePools("func1")
 			funcKeyLeasePools.interval.Store(int64(10 * time.Millisecond))
 			funcKeyLeasePools.leasePools["func1"] = &LeasePool{stopCh: make(chan struct{})}
 			ch <- time.Time{}
@@ -234,13 +234,47 @@ func TestFuncKeyLeasePools_BatchRetainLeaseLoop(t *testing.T) {
 				d time.Duration) {
 				return
 			}).Reset()
-			funcKeyLeasePools := newFuncKeyLeasePools("func2")
+			funcKeyLeasePools := GetInstanceManager().newFuncKeyLeasePools("func2")
 			funcKeyLeasePools.interval.Store(int64(10 * time.Millisecond))
 			funcKeyLeasePools.leasePools["func2"] = &LeasePool{stopCh: make(chan struct{})}
 			close(funcKeyLeasePools.stopCh)
 			time.Sleep(10 * time.Millisecond)
 			convey.So(count, convey.ShouldEqual, 0)
 			convey.So(len(funcKeyLeasePools.leasePools), convey.ShouldEqual, 1)
+		})
+		convey.Convey("pendingReqNum is not 0", func() {
+			count := 0
+			ch := make(chan time.Time, 1)
+			ticker := &time.Ticker{C: ch}
+			defer gomonkey.ApplyFunc((*FuncKeyLeasePools).doBatchRetain,
+				func(lp *FuncKeyLeasePools) {
+					leasePool, ok := lp.leasePools["func1"]
+					if ok && leasePool.pendingNum.Load() == 0 {
+						delete(lp.leasePools, "func1")
+					}
+					count++
+				}).Reset()
+			defer gomonkey.ApplyFunc(time.NewTicker, func(d time.Duration) *time.Ticker {
+				return ticker
+			}).Reset()
+			defer gomonkey.ApplyMethod(reflect.TypeOf(&time.Ticker{}), "Reset", func(_ *time.Ticker,
+				d time.Duration) {
+				return
+			}).Reset()
+			leasePool := &LeasePool{
+				stopCh: make(chan struct{}),
+			}
+			funcKeyLeasePools := GetInstanceManager().newFuncKeyLeasePools("func1")
+			funcKeyLeasePools.interval.Store(int64(10 * time.Millisecond))
+			funcKeyLeasePools.leasePools["func1"] = leasePool
+			leasePool.IncPendingReqNum()
+			ch <- time.Time{}
+			convey.So(len(funcKeyLeasePools.leasePools), convey.ShouldEqual, 1)
+			leasePool.DecPendingReqNum()
+			ch <- time.Time{}
+			time.Sleep(10 * time.Millisecond)
+			convey.So(len(funcKeyLeasePools.leasePools), convey.ShouldEqual, 0)
+			close(funcKeyLeasePools.stopCh)
 		})
 	})
 }
@@ -257,6 +291,7 @@ func TestFuncKeyLeasePools_DoBatchRetain(t *testing.T) {
 			globalLeaseList:    make(map[string]*InstanceLease),
 			leaseIdToLeasePool: make(map[string]*LeasePool),
 			interval:           atomic.Int64{},
+			ringName:           &types.RingName{Name: constant.GreenRing},
 		}
 
 		leaseId1 := "lease-1"
@@ -452,7 +487,7 @@ func Test_ReleaseInstanceLease(t *testing.T) {
 				Timeout:             30,
 				FuncSig:             "",
 			}
-			pool := newInstanceLeasePool("func1", op)
+			pool := newInstanceLeasePool("func1", op, &types.RingName{Name: constant.GreenRing})
 			pool.leaseMap["leaseId"] = &InstanceLease{}
 			freeCalled := 0
 			defer gomonkey.ApplyFunc((*FuncKeyLeasePools).loop,
@@ -483,7 +518,7 @@ func Test_ReleaseInstanceLease(t *testing.T) {
 					LocalAuth:   &localauth.AuthConfig{},
 				}
 			}).Reset()
-			funcKeyLeasePools := newFuncKeyLeasePools("funcKey")
+			funcKeyLeasePools := GetInstanceManager().newFuncKeyLeasePools("funcKey")
 
 			funcKeyLeasePools.releaseInstanceLease("leaseId", true)
 			convey.So(freeCalled, convey.ShouldEqual, 0)
@@ -513,7 +548,7 @@ func Test_AcquireRepeatedLease(t *testing.T) {
 			FuncSig:             "test-func",
 		}
 
-		leasePool := newInstanceLeasePool("test-function", op)
+		leasePool := newInstanceLeasePool("test-function", op, &types.RingName{Name: constant.GreenRing})
 		schedulerproxy.Proxy.Add(&schedulerproxy.SchedulerNodeInfo{InstanceInfo: &commType.InstanceInfo{
 			FunctionName: "test-scheduler",
 			InstanceName: "test-schedulerID",
@@ -653,8 +688,8 @@ func TestInstanceLeasePool_handleLeaseLifeCycle(t *testing.T) {
 				return ticker
 			})
 			defer patch.Reset()
-			patch.ApplyFunc(doReleaseInvoke, func(funcKey string, leaseId string, option *commType.AcquireOption,
-				report *InstanceReport) {
+			patch.ApplyFunc((*LeasePool).doReleaseInvoke, func(_ *LeasePool, funcKey string, leaseId string,
+				option *commType.AcquireOption, report *InstanceReport) {
 				return
 			})
 			defer patch.Reset()
@@ -737,8 +772,8 @@ func TestInstanceLeasePool_handleLeaseLifeCycle(t *testing.T) {
 				return ticker
 			})
 			defer patch.Reset()
-			patch.ApplyFunc(doReleaseInvoke, func(funcKey string, leaseId string, option *commType.AcquireOption,
-				report *InstanceReport) {
+			patch.ApplyFunc((*LeasePool).doReleaseInvoke, func(_ *LeasePool, funcKey string, leaseId string,
+				option *commType.AcquireOption, report *InstanceReport) {
 				return
 			})
 			defer patch.Reset()
@@ -779,6 +814,7 @@ func TestFuncKeyLeasePools_ProcessBatchResponse(t *testing.T) {
 			ilps = &FuncKeyLeasePools{
 				leasePools: make(map[string]*LeasePool),
 				interval:   atomic.Int64{},
+				ringName:   &types.RingName{Name: constant.GreenRing},
 			}
 			batch = &BatchRetainLeaseInfos{
 				infos: make(map[string]*BatchRetainLeaseInfo),
@@ -818,7 +854,7 @@ func TestFuncKeyLeasePools_ProcessBatchResponse(t *testing.T) {
 				ErrorCode:    statuscode.LeaseIDNotFoundCode,
 				ErrorMessage: "lease not found",
 			}
-			pool := newInstanceLeasePool(funcKey, op)
+			pool := newInstanceLeasePool(funcKey, op, &types.RingName{Name: constant.GreenRing})
 			ilps.leasePools[poolKey] = pool
 			lease := &InstanceLease{
 				InstanceAllocationInfo: &commType.InstanceAllocationInfo{
@@ -846,7 +882,7 @@ func TestFuncKeyLeasePools_ProcessBatchResponse(t *testing.T) {
 				ErrorMessage: "non-owner scheduler",
 			}
 
-			pool := newInstanceLeasePool(funcKey, op)
+			pool := newInstanceLeasePool(funcKey, op, &types.RingName{Name: constant.GreenRing})
 			ilps.leasePools[poolKey] = pool
 			lease := &InstanceLease{
 				InstanceAllocationInfo: &commType.InstanceAllocationInfo{
@@ -875,7 +911,7 @@ func TestFuncKeyLeasePools_ProcessBatchResponse(t *testing.T) {
 				ErrorMessage: "unknown error",
 			}
 
-			pool := newInstanceLeasePool(funcKey, op)
+			pool := newInstanceLeasePool(funcKey, op, &types.RingName{Name: constant.GreenRing})
 			ilps.leasePools[poolKey] = pool
 			lease := &InstanceLease{
 				InstanceAllocationInfo: &commType.InstanceAllocationInfo{
@@ -907,7 +943,7 @@ func TestLeasePool_removeLease(t *testing.T) {
 				Timeout:             30,
 				FuncSig:             "",
 			}
-			pool := newInstanceLeasePool("func1", op)
+			pool := newInstanceLeasePool("func1", op, &types.RingName{Name: constant.GreenRing})
 			pool.leaseMap["aaa"] = &InstanceLease{}
 			pool.removeLease("bbb")
 			convey.So(1, convey.ShouldEqual, len(pool.leaseMap))
@@ -932,18 +968,18 @@ func TestLeasePool_EmptyWithInFlightCount(t *testing.T) {
 	convey.Convey("test lease pool empty considering inFlightCount", t, func() {
 		op := &commType.AcquireOption{}
 		convey.Convey("empty lease map and no inflight", func() {
-			pool := newInstanceLeasePool("func_test", op)
+			pool := newInstanceLeasePool("func_test", op, &types.RingName{Name: constant.GreenRing})
 			convey.So(pool.empty(), convey.ShouldBeTrue)
 		})
 
 		convey.Convey("empty lease map but with inflight", func() {
-			pool := newInstanceLeasePool("func_test", op)
+			pool := newInstanceLeasePool("func_test", op, &types.RingName{Name: constant.GreenRing})
 			pool.inFlightCount.Add(1)
 			convey.So(pool.empty(), convey.ShouldBeFalse)
 		})
 
 		convey.Convey("has lease but no inflight", func() {
-			pool := newInstanceLeasePool("func_test", op)
+			pool := newInstanceLeasePool("func_test", op, &types.RingName{Name: constant.GreenRing})
 			pool.leaseMap["fake_lease"] = &InstanceLease{}
 			convey.So(pool.empty(), convey.ShouldBeFalse)
 		})

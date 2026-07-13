@@ -39,6 +39,7 @@ type AcquireOption struct {
 	InstanceLabel       string
 	Timeout             int64
 	TrafficLimited      bool
+	RingName            string
 	InstanceSession     *InstanceSessionConfig
 	SessionCtxID        string
 	EnableSessionCtx    bool

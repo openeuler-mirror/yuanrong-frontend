@@ -46,10 +46,16 @@ const (
 )
 
 // Proxy is the singleton proxy
-var Proxy *ProxyManager
+var (
+	Proxy     *ProxyManager
+	BlueProxy *ProxyManager
+)
 
 func init() {
 	Proxy = newSchedulerProxy(
+		loadbalance.LBFactory(loadbalance.SimpleHashGeneric),
+	)
+	BlueProxy = newSchedulerProxy(
 		loadbalance.LBFactory(loadbalance.SimpleHashGeneric),
 	)
 }

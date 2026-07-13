@@ -187,6 +187,8 @@ const (
 	ErrInstanceCircuitCode = 1009
 	// ErrInstanceEvicted -
 	ErrInstanceEvicted = 1013
+	// ErrUserFunctionException -
+	ErrUserFunctionException = 2002
 
 	// ErrRequestBetweenRuntimeBusCode -
 	ErrRequestBetweenRuntimeBusCode = 3001

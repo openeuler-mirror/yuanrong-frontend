@@ -268,6 +268,7 @@ func initSDKHandler(args []api.Arg, rt api.LibruntimeAPI) ([]byte, error) {
 	}
 	initSubscribe()
 	schedulerproxy.Proxy.RTAPI = rt
+	schedulerproxy.BlueProxy.RTAPI = rt
 	util.SetAPIClientLibruntime(rt)
 	datasystemclient.SetStreamEnable(config.GetConfig().StreamEnable)
 	datasystemclient.InitDataSystemLibruntime(config.GetConfig().DataSystemConfig, rt, stopCh)

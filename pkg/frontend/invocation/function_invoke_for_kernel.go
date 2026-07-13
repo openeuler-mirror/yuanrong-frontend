@@ -35,6 +35,7 @@ import (
 	"frontend/pkg/common/faas_common/snerror"
 	"frontend/pkg/common/faas_common/statuscode"
 	commontype "frontend/pkg/common/faas_common/types"
+	"frontend/pkg/common/faas_common/utils"
 	"frontend/pkg/common/uuid"
 	"frontend/pkg/frontend/common/httpconstant"
 	"frontend/pkg/frontend/common/httputil"
@@ -67,9 +68,10 @@ var (
 	}
 
 	instanceFatalCodeMap = map[int]struct{}{
-		statuscode.ErrInstanceNotFound:   {}, // 1003
-		statuscode.ErrInstanceExitedCode: {}, // 1007
-		statuscode.ErrInstanceEvicted:    {}, // 1013
+		statuscode.ErrInstanceNotFound:      {}, // 1003
+		statuscode.ErrInstanceExitedCode:    {}, // 1007
+		statuscode.ErrInstanceEvicted:       {}, // 1013
+		statuscode.ErrUserFunctionException: {}, // 2002
 	}
 )
 
@@ -95,13 +97,27 @@ type kernelRequestHandler struct {
 	unexpectedInstances []string
 
 	legacyCurrentSchedulerInfo *commontype.InstanceInfo
+
+	ringName string
+	grayNum  uint32
+	session  *commontype.InstanceSessionConfig
 }
 
-func newKernelRequestHandler(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) *kernelRequestHandler {
+func createKernelRequestHandler(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) (
+	*kernelRequestHandler, error) {
 	if ctx.InvokeTimeout == 0 {
 		ctx.InvokeTimeout = funcSpec.FuncMetaData.Timeout
 	}
 	resSpecKey := convertResSpecKey(ctx, funcSpec)
+	session := &commontype.InstanceSessionConfig{}
+	instanceSession := ctx.ReqHeader[httpconstant.HeaderInstanceSession]
+	if instanceSession != "" {
+		if err := json.Unmarshal([]byte(instanceSession), session); err != nil {
+			return nil, fmt.Errorf("unmarshal instance session failed, err: %s", err.Error())
+		}
+	}
+	ringName, grayNum := getRingName(ctx, session)
+	ctx.RingName = ringName
 	return &kernelRequestHandler{
 		ctx:           ctx,
 		funcSpec:      funcSpec,
@@ -109,11 +125,43 @@ func newKernelRequestHandler(ctx *types.InvokeProcessContext, funcSpec *commonty
 		resSpecKey:    &resSpecKey,
 		resSpecKeyStr: resSpecKey.String(),
 		logger: log.GetLogger().With(zap.Any("traceId", ctx.TraceID), zap.Any("function", funcSpec.FunctionKey),
-			zap.Any("timeout", ctx.InvokeTimeout), zap.Any("acquireTimeout", ctx.AcquireTimeout)),
+			zap.Any("timeout", ctx.InvokeTimeout), zap.Any("acquireTimeout", ctx.AcquireTimeout),
+			zap.Any("ringName", ringName), zap.Any("sessionId", session.SessionID)),
 		startTime:           time.Now(),
 		downgrade:           ctx.InvokeWithoutScheduler,
 		unexpectedInstances: make([]string, 0),
 		timeout:             ctx.InvokeTimeout,
+		ringName:            ringName,
+		grayNum:             grayNum,
+		session:             session,
+	}, nil
+}
+
+func newKernelRequestHandler(ctx *types.InvokeProcessContext, funcSpec *commontype.FuncSpec) *kernelRequestHandler {
+	handler, err := createKernelRequestHandler(ctx, funcSpec)
+	if err != nil {
+		log.GetLogger().Warnf("failed to create kernel request handler, err: %s", err.Error())
+		return &kernelRequestHandler{
+			ctx:                 ctx,
+			funcSpec:            funcSpec,
+			funcKey:             funcSpec.FunctionKey,
+			logger:              log.GetLogger(),
+			startTime:           time.Now(),
+			downgrade:           ctx.InvokeWithoutScheduler,
+			unexpectedInstances: make([]string, 0),
+			timeout:             ctx.InvokeTimeout,
+			ringName:            constant.GreenRing,
+		}
+	}
+	return handler
+}
+
+func (k *kernelRequestHandler) getProxyManager() *schedulerproxy.ProxyManager {
+	switch k.ringName {
+	case constant.BlueRing:
+		return schedulerproxy.BlueProxy
+	default:
+		return schedulerproxy.Proxy
 	}
 }
 
@@ -124,9 +172,9 @@ func (k *kernelRequestHandler) legacyMakeReq(logger api.FormatLogger) (*util.Inv
 		var err error
 		if k.funcSpec.ExtendedMetaData.EnableSessionCtx {
 			logger.Debugf("acquire with sessionCtx routing, funcKey=%s, sessionCtxID=%q", k.funcKey, k.ctx.SessionCtxID)
-			schedulerNodeInfo, err = schedulerproxy.Proxy.GetWithSessionCtx(k.funcKey, k.ctx.SessionCtxID, logger)
+			schedulerNodeInfo, err = k.getProxyManager().GetWithSessionCtx(k.funcKey, k.ctx.SessionCtxID, logger)
 		} else {
-			schedulerNodeInfo, err = schedulerproxy.Proxy.Get(k.funcKey, logger)
+			schedulerNodeInfo, err = k.getProxyManager().Get(k.funcKey, logger)
 		}
 		if err != nil {
 			logger.Warnf("failed to get scheduler, err: %s", err.Error())
@@ -136,7 +184,7 @@ func (k *kernelRequestHandler) legacyMakeReq(logger api.FormatLogger) (*util.Inv
 	}
 	var err error
 	var instanceId string
-	if k.downgrade || needDownGrade(k.legacyCurrentSchedulerInfo) {
+	if k.downgrade || k.needDownGrade(k.legacyCurrentSchedulerInfo) {
 		k.downgrade = true
 		instanceId, err = k.chooseInstance(logger)
 		if err != nil {
@@ -163,7 +211,14 @@ func (k *kernelRequestHandler) makeReq(logger api.FormatLogger) (*util.InvokeReq
 	var instanceId string
 	var forceInvoke bool
 	if !k.downgrade {
-		instanceAllocationInfo, err := leaseadaptor.GetInstanceManager().AcquireInstance(k.ctx, k.funcSpec, k.logger)
+		var instanceAllocationInfo *commontype.InstanceAllocationInfo
+		var err snerror.SNError
+		if k.ringName == constant.BlueRing {
+			instanceAllocationInfo, err = leaseadaptor.GetBlueInstanceManager().AcquireInstance(k.ctx, k.funcSpec,
+				k.logger)
+		} else {
+			instanceAllocationInfo, err = leaseadaptor.GetInstanceManager().AcquireInstance(k.ctx, k.funcSpec, k.logger)
+		}
 		if err != nil {
 			if err.Code() == statuscode.ErrAllSchedulerUnavailable {
 				k.logger.Warnf("acquire lease failed, err: %s, do downgrade", err.Error())
@@ -172,7 +227,7 @@ func (k *kernelRequestHandler) makeReq(logger api.FormatLogger) (*util.InvokeReq
 				k.logger.Errorf("acquire lease failed, err: %s", err.Error())
 				return nil, err
 			}
-		} else {
+		} else if instanceAllocationInfo != nil {
 			k.instanceAllocationInfo = instanceAllocationInfo
 			instanceId = instanceAllocationInfo.InstanceID
 			forceInvoke = instanceAllocationInfo.ForceInvoke
@@ -224,6 +279,44 @@ func (k *kernelRequestHandler) accessFaaSSchedulerWithLibRuntime() bool {
 	return accessType == upgradecompatible.AccessSchedulerByLibruntime
 }
 
+func getRingName(ctx *types.InvokeProcessContext, session *commontype.InstanceSessionConfig) (string, uint32) {
+	grayNum := utils.ConvertHashToPercent(ctx.RequestID)
+	if session != nil && session.SessionID != "" {
+		grayNum = utils.ConvertHashToPercent(session.SessionID)
+	}
+
+	if leaseadaptor.ShouldUseBlueRing(grayNum) {
+		return constant.BlueRing, grayNum
+	}
+	return constant.GreenRing, grayNum
+}
+
+func (k *kernelRequestHandler) setRingName() error {
+	if k.session == nil {
+		k.session = &commontype.InstanceSessionConfig{}
+		instanceSession := k.ctx.ReqHeader[httpconstant.HeaderInstanceSession]
+		if instanceSession != "" {
+			if err := json.Unmarshal([]byte(instanceSession), k.session); err != nil {
+				return err
+			}
+		}
+	}
+	ringName, grayNum := getRingName(k.ctx, k.session)
+	k.ringName = ringName
+	k.grayNum = grayNum
+	k.ctx.RingName = k.ringName
+	return nil
+}
+
+func (k *kernelRequestHandler) getRingInstanceManager() *leaseadaptor.Manager {
+	switch k.ringName {
+	case constant.BlueRing:
+		return leaseadaptor.GetBlueInstanceManager()
+	default:
+		return leaseadaptor.GetInstanceManager()
+	}
+}
+
 func (k *kernelRequestHandler) invoke() error {
 	defer resetSchedulerProxy(k.ctx)
 	count := 0
@@ -235,8 +328,13 @@ func (k *kernelRequestHandler) invoke() error {
 			return fmt.Errorf("do invoke failed, timeout")
 		}
 
+		if err := k.setRingName(); err != nil {
+			k.logger.Errorf("set ring name failed: %s", err.Error())
+			httputil.HandleInvokeError(k.ctx, err)
+			return err
+		}
 		logger := k.logger.With(zap.Any("requestId", k.ctx.RequestID), zap.Any("timeLeft", k.ctx.InvokeTimeout),
-			zap.Any("count", count))
+			zap.Any("count", count), zap.Any("ringName", k.ringName), zap.Any("grayNum", k.grayNum))
 		req, err := k.makeReqCompatible(logger)
 		if err != nil {
 			logger.Errorf("make req failed: %s", err.Error())
@@ -254,10 +352,10 @@ func (k *kernelRequestHandler) invoke() error {
 		}
 		if k.instanceAllocationInfo != nil {
 			if snError != nil && instanceIsAbnormal(snError.Code()) {
-				leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(k.instanceAllocationInfo, true,
+				k.getRingInstanceManager().ReleaseInstanceAllocation(k.instanceAllocationInfo, true,
 					k.ctx.TraceID)
 			} else {
-				leaseadaptor.GetInstanceManager().ReleaseInstanceAllocation(k.instanceAllocationInfo, false,
+				k.getRingInstanceManager().ReleaseInstanceAllocation(k.instanceAllocationInfo, false,
 					k.ctx.TraceID)
 			}
 			k.instanceAllocationInfo = nil
@@ -302,6 +400,13 @@ func (k *kernelRequestHandler) handleInvokeError(snError snerror.SNError, instan
 		httputil.HandleInvokeError(k.ctx, snError)
 		return false, snError
 	}
+}
+
+func (k *kernelRequestHandler) needDownGrade(schedulerInfo *commontype.InstanceInfo) bool {
+	if schedulerInfo == nil || k.getProxyManager().IsEmpty() {
+		return true
+	}
+	return false
 }
 
 func needRetryCode(code int) bool {
@@ -351,13 +456,6 @@ func convertResSpecKey(ctx *types.InvokeProcessContext, funcSpec *commontype.Fun
 	resSpec.Memory = memory
 
 	return resspeckey.ConvertToResSpecKey(resSpec)
-}
-
-func needDownGrade(schedulerInfo *commontype.InstanceInfo) bool {
-	if schedulerInfo == nil || schedulerproxy.Proxy.IsEmpty() {
-		return true
-	}
-	return false
 }
 
 func invokeFunctionWithLibRuntime(ctx *types.InvokeProcessContext, request util.InvokeRequest,
