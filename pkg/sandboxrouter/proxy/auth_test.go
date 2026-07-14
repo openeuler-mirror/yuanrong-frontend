@@ -157,6 +157,35 @@ func TestFrontendAuthenticatedRRTPortSkipsRouterAuthAndStripsToken(t *testing.T)
 	}
 }
 
+func TestFrontendProxyRRTPortAuthenticatesAtRouterAndStripsToken(t *testing.T) {
+	var gotAuth, gotQuery, gotInternal string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get(jwtauth.HeaderXAuth)
+		gotQuery = r.URL.Query().Get("token")
+		gotInternal = r.Header.Get(internalSrcHeader)
+		io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	tg := targetTo(t, upstream.URL)
+	tg.Tenant = "default"
+	s := New(fakeResolver{target: tg})
+	s.SetAuth(true, false, 50090, 8765)
+	req := httptest.NewRequest(http.MethodGet, "/default-rtt/50090/healthz?token=query-token", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set(internalSrcHeader, "2")
+	req.Header.Set(jwtauth.HeaderXAuth, mintJWT("default", farFuture))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotAuth != "" || gotQuery != "" || gotInternal != "" {
+		t.Fatalf("backend saw leaked auth/internal headers: X-Auth=%q token=%q internal=%q", gotAuth, gotQuery, gotInternal)
+	}
+}
+
 func TestFrontendAuthenticatedRRTPortRejectsTenantMismatch(t *testing.T) {
 	tg := targetTo(t, "http://127.0.0.1:1")
 	tg.Tenant = "tenant-a"

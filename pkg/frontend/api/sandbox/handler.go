@@ -39,6 +39,7 @@ import (
 	appapi "frontend/pkg/frontend/api/app"
 	frontendhttpconstant "frontend/pkg/frontend/common/httpconstant"
 	httputil "frontend/pkg/frontend/common/httputil"
+	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
 	"frontend/pkg/frontend/schedulerproxy"
@@ -464,6 +465,9 @@ func createSandbox(
 	if tenantID == "" {
 		tenantID = req.Tenant
 	}
+	if tenantID == "" {
+		tenantID = sandboxTenantClaim(ctx.Request)
+	}
 	if tenantID != "" {
 		invokeOpts.CreateOpt["tenantId"] = tenantID
 	}
@@ -625,6 +629,26 @@ func writeSandboxCreateSSEEvent(ctx *gin.Context, event string, data map[string]
 	}
 	ctx.Writer.Flush()
 	return nil
+}
+
+// sandboxTenantClaim recovers the tenant claim for instance ownership metadata
+// when frontend JWT middleware is disabled (for example in local/CI smoke).
+// This is attribution, not authentication: /direct still sends the original
+// token to sandboxRouter, which validates it according to router policy before
+// comparing the claim with this stored owner.
+func sandboxTenantClaim(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	token := req.Header.Get(jwtauth.HeaderXAuth)
+	if token == "" {
+		token = req.URL.Query().Get("token")
+	}
+	parsed, err := jwtauth.ParseJWT(token)
+	if err != nil || parsed == nil || parsed.Payload == nil {
+		return ""
+	}
+	return parsed.Payload.Sub
 }
 
 func sandboxCreateErrorCode(err error) int {

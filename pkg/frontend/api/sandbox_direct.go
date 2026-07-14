@@ -38,18 +38,19 @@ import (
 )
 
 const (
-	sandboxDirectPrefix      = "/direct"
-	sandboxTunnelPrefix      = "/tunnel"
-	sandboxInternalSrcKey    = "X-Internal-Src"
-	sandboxInternalSrcValue  = "1"
-	sandboxInternalTenantKey = "X-Internal-Tenant"
-	sandboxDefaultRRTPort    = 50090
+	sandboxDirectPrefix       = "/direct"
+	sandboxTunnelPrefix       = "/tunnel"
+	sandboxInternalSrcKey     = "X-Internal-Src"
+	sandboxInternalSrcValue   = "1"
+	sandboxInternalProxyValue = "2"
+	sandboxInternalTenantKey  = "X-Internal-Tenant"
+	sandboxDefaultRRTPort     = 50090
 )
 
 // registerSandboxDirectRoute exposes the RRT direct-invoke route on the normal
-// frontend endpoint. The request has already passed frontend JWT middleware;
-// this proxy strips the platform token before forwarding to the local
-// sandboxRouter listener so RRT never sees frontend credentials.
+// frontend endpoint. When frontend JWT is enabled, the proxy forwards only the
+// validated tenant identity. When it is disabled, authentication is deferred
+// to the local sandboxRouter. In both cases RRT never sees platform credentials.
 func registerSandboxDirectRoute(r *gin.Engine) {
 	r.Any(sandboxDirectPrefix, sandboxTraceHandler(sandboxDirectProxyHandler(sandboxDirectRouterPath, true)))
 	r.Any(sandboxDirectPrefix+"/*proxyPath", sandboxTraceHandler(sandboxDirectProxyHandler(sandboxDirectRouterPath, true)))
@@ -143,24 +144,32 @@ func sandboxDirectProxyHandler(
 			in := pr.In
 			forwardedProto := in.Header.Get("X-Forwarded-Proto")
 			authenticatedTenant := in.Header.Get(sandboxInternalTenantKey)
+			frontendAuthenticated := authenticatedTenant != ""
 			pr.SetURL(target)
 			pr.Out.URL.Path = pathMapper(in.URL.Path, cfg)
 			pr.Out.URL.RawPath = ""
 			pr.Out.URL.RawQuery = in.URL.RawQuery
 			if q := pr.Out.URL.Query(); q.Has("token") || q.Has("tenant_id") {
-				q.Del("token")
-				// JWT middleware injects tenant_id into the frontend request query for
-				// API handlers. The /direct hop is already authenticated at frontend
-				// and must not leak platform routing/auth params to sandboxRouter/RRT.
+				if frontendAuthenticated {
+					q.Del("token")
+				}
+				// tenant_id is only an API routing hint and must never override the
+				// validated identity at sandboxRouter/RRT.
 				q.Del("tenant_id")
 				pr.Out.URL.RawQuery = q.Encode()
 			}
 			pr.SetXForwarded()
-			pr.Out.Header.Del(jwtauth.HeaderXAuth)
-			pr.Out.Header.Set(sandboxInternalSrcKey, sandboxInternalSrcValue)
 			pr.Out.Header.Del(sandboxInternalTenantKey)
-			if authenticatedTenant != "" {
+			if frontendAuthenticated {
+				pr.Out.Header.Del(jwtauth.HeaderXAuth)
+				pr.Out.Header.Set(sandboxInternalSrcKey, sandboxInternalSrcValue)
 				pr.Out.Header.Set(sandboxInternalTenantKey, authenticatedTenant)
+			} else {
+				// Frontend JWT can be disabled while router JWT remains enabled (for
+				// example in smoke deployments). Do not claim that such a request was
+				// authenticated: preserve its token for router-side validation and use
+				// a separate loopback-only marker so the router strips it before RRT.
+				pr.Out.Header.Set(sandboxInternalSrcKey, sandboxInternalProxyValue)
 			}
 			if forwardedProto != "" {
 				pr.Out.Header.Set("X-Forwarded-Proto", forwardedProto)

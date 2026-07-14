@@ -152,6 +152,70 @@ func TestSandboxDirectRouteForwardsToLocalSandboxRouter(t *testing.T) {
 	}
 }
 
+func TestSandboxDirectRouteDefersAuthToRouterWhenFrontendJWTDisabled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	seen := make(chan *http.Request, 1)
+	backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = backend.Serve(listener) }()
+	defer backend.Close()
+
+	config.InitFunctionConfig([]byte(fmt.Sprintf(`{
+		"slaQuota":1000,
+		"functionCapability":1,
+		"authenticationEnable":false,
+		"trafficLimitDisable":true,
+		"businessType":1,
+		"iamConfig":{"enableFuncTokenAuth":false},
+		"sandboxRouter":{"enabled":true,"listenIP":"127.0.0.1","listenPort":%d}
+	}`, listener.Addr().(*net.TCPAddr).Port)))
+
+	r := gin.New()
+	InitRoute(r)
+	server := httptest.NewServer(r)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/direct/demo/invoke?token=query-token&tenant_id=spoofed", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(jwtauth.HeaderXAuth, "router-token")
+	req.Header.Set("X-Internal-Src", "1")
+	req.Header.Set("X-Internal-Tenant", "spoofed-tenant")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+	got := <-seen
+	if got.Header.Get(jwtauth.HeaderXAuth) != "router-token" {
+		t.Fatalf("router X-Auth = %q, want original token", got.Header.Get(jwtauth.HeaderXAuth))
+	}
+	if got.URL.Query().Get("token") != "query-token" {
+		t.Fatalf("router query token = %q, want original token", got.URL.Query().Get("token"))
+	}
+	if got.URL.Query().Get("tenant_id") != "" {
+		t.Fatalf("untrusted tenant_id reached router: %q", got.URL.Query().Get("tenant_id"))
+	}
+	if got.Header.Get("X-Internal-Src") != "2" {
+		t.Fatalf("internal source marker = %q, want deferred-auth marker", got.Header.Get("X-Internal-Src"))
+	}
+	if got.Header.Get("X-Internal-Tenant") != "" {
+		t.Fatalf("untrusted internal tenant reached router: %q", got.Header.Get("X-Internal-Tenant"))
+	}
+}
+
 func TestSandboxDirectRouterPathHidesControlPorts(t *testing.T) {
 	cfg := &routerconfig.SandboxRouterConfig{RRTPort: 50090, TunnelPort: 8765}
 
