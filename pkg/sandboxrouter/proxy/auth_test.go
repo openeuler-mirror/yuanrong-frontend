@@ -86,10 +86,9 @@ func TestAuthTenantMismatchIs403(t *testing.T) {
 	}
 }
 
-// When the resolver cannot attribute a tenant to the route (target.Tenant ==
-// "", e.g. an older instance key), authorization fails open: a valid token is
-// accepted rather than hard-breaking the route.
-func TestAuthUnknownTenantFailsOpen(t *testing.T) {
+// When the resolver cannot attribute a tenant to the route, authorization must
+// fail closed instead of exposing an unattributed sandbox.
+func TestAuthUnknownTenantFailsClosed(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "ok")
 	}))
@@ -98,8 +97,8 @@ func TestAuthUnknownTenantFailsOpen(t *testing.T) {
 	s := New(fakeResolver{target: targetTo(t, upstream.URL)}) // target.Tenant == ""
 	s.SetAuth(true, false, 50090, 8765)
 	rec := doAuth(s, http.MethodGet, "/default-rtt/50090/healthz", mintJWT("tenant-b", farFuture))
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200 (fail open on unknown tenant)", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (fail closed on unknown tenant)", rec.Code)
 	}
 }
 
@@ -145,6 +144,7 @@ func TestFrontendAuthenticatedRRTPortSkipsRouterAuthAndStripsToken(t *testing.T)
 	req := httptest.NewRequest(http.MethodGet, "/default-rtt/50090/healthz?token=secret&keep=1", nil)
 	req.RemoteAddr = "127.0.0.1:43210"
 	req.Header.Set(internalSrcHeader, internalSrcAuthenticatedValue)
+	req.Header.Set(internalTenantHeader, "default")
 	req.Header.Set(jwtauth.HeaderXAuth, "frontend-token")
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
@@ -154,6 +154,39 @@ func TestFrontendAuthenticatedRRTPortSkipsRouterAuthAndStripsToken(t *testing.T)
 	}
 	if gotAuth != "" || gotQuery != "" || gotInternal != "" {
 		t.Fatalf("backend saw leaked auth/internal headers: X-Auth=%q token=%q internal=%q", gotAuth, gotQuery, gotInternal)
+	}
+}
+
+func TestFrontendAuthenticatedRRTPortRejectsTenantMismatch(t *testing.T) {
+	tg := targetTo(t, "http://127.0.0.1:1")
+	tg.Tenant = "tenant-a"
+	s := New(fakeResolver{target: tg})
+	s.SetAuth(true, false, 50090, 8765)
+	req := httptest.NewRequest(http.MethodGet, "/victim-rtt/50090/healthz", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set(internalSrcHeader, internalSrcAuthenticatedValue)
+	req.Header.Set(internalTenantHeader, "tenant-b")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestFrontendAuthenticatedRRTPortRejectsMissingTenant(t *testing.T) {
+	tg := targetTo(t, "http://127.0.0.1:1")
+	tg.Tenant = "tenant-a"
+	s := New(fakeResolver{target: tg})
+	s.SetAuth(true, false, 50090, 8765)
+	req := httptest.NewRequest(http.MethodGet, "/victim-rtt/50090/healthz", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set(internalSrcHeader, internalSrcAuthenticatedValue)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 }
 
@@ -302,6 +335,28 @@ func TestAuthTunnelPortMissingTokenIsAllowed(t *testing.T) {
 	rec := doAuthProto(s, http.MethodGet, "/default-rtt/8765/healthz", "", "https")
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (tunnel is public)", rec.Code)
+	}
+}
+
+// The frontend keeps /tunnel unauthenticated for compatibility. Its local
+// source marker must not accidentally turn the public tunnel into a tenant-
+// authenticated control route.
+func TestFrontendAuthenticatedTunnelRemainsPublic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	s := New(fakeResolver{target: targetTo(t, upstream.URL)})
+	s.SetAuth(true, false, 50090, 8765)
+	req := httptest.NewRequest(http.MethodGet, "/default-rtt/8765/", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set(internalSrcHeader, internalSrcAuthenticatedValue)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (frontend tunnel remains public)", rec.Code)
 	}
 }
 

@@ -26,9 +26,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
 
 	faasconstant "frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/config"
 	routerconfig "frontend/pkg/sandboxrouter/config"
 )
@@ -72,6 +74,12 @@ func TestInitRoute(t *testing.T) {
 }
 
 func TestSandboxDirectRouteForwardsToLocalSandboxRouter(t *testing.T) {
+	patches := gomonkey.ApplyFunc(jwtauth.ParseJWT, func(string) (*jwtauth.ParsedJWT, error) {
+		return &jwtauth.ParsedJWT{Payload: &jwtauth.JWTPayload{Sub: "tenant-a", Role: jwtauth.RoleUser}}, nil
+	})
+	patches.ApplyFunc(jwtauth.ValidateWithIamServer, func(string, string) error { return nil })
+	defer patches.Reset()
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -93,6 +101,7 @@ func TestSandboxDirectRouteForwardsToLocalSandboxRouter(t *testing.T) {
 		"authenticationEnable":false,
 		"trafficLimitDisable":true,
 		"businessType":1,
+		"iamConfig":{"enableFuncTokenAuth":true},
 		"sandboxRouter":{"enabled":true,"listenIP":"127.0.0.1","listenPort":%d}
 	}`, listener.Addr().(*net.TCPAddr).Port)))
 
@@ -107,6 +116,7 @@ func TestSandboxDirectRouteForwardsToLocalSandboxRouter(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("X-Auth", "token")
+	req.Header.Set("X-Internal-Tenant", "spoofed-tenant")
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set(faasconstant.CaaSHeaderTraceID, "trace-direct")
 	resp, err := server.Client().Do(req)
@@ -127,6 +137,9 @@ func TestSandboxDirectRouteForwardsToLocalSandboxRouter(t *testing.T) {
 	}
 	if got.Header.Get("X-Internal-Src") != "1" {
 		t.Fatalf("internal source marker was not set")
+	}
+	if got.Header.Get("X-Internal-Tenant") != "tenant-a" {
+		t.Fatalf("internal tenant = %q, want validated JWT tenant", got.Header.Get("X-Internal-Tenant"))
 	}
 	if got.Header.Get("X-Forwarded-Proto") != "https" {
 		t.Fatalf("X-Forwarded-Proto was not preserved: %q", got.Header.Get("X-Forwarded-Proto"))
@@ -151,7 +164,9 @@ func TestSandboxDirectRouterPathHidesControlPorts(t *testing.T) {
 		{name: "rrt health alias", in: "/direct/demo/healthz", want: "/demo/50090/healthz"},
 		{name: "rrt upload alias", in: "/direct/demo/upload", want: "/demo/50090/upload"},
 		{name: "rrt download alias", in: "/direct/demo/download", want: "/demo/50090/download"},
-		{name: "legacy port form", in: "/direct/demo/50090/invoke", want: "/demo/50090/invoke"},
+		{name: "explicit rrt port rejected", in: "/direct/demo/50090/invoke", want: "/"},
+		{name: "explicit user port rejected", in: "/direct/demo/8080/", want: "/"},
+		{name: "unknown operation rejected", in: "/direct/demo/admin", want: "/"},
 	}
 
 	for _, tc := range cases {

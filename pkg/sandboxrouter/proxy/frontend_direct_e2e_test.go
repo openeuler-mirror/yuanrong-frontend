@@ -66,6 +66,7 @@ func TestFrontendDirectEndToEndDoesNotLeakTokenToRRT(t *testing.T) {
 		pr.SetXForwarded()
 		pr.Out.Header.Del(jwtauth.HeaderXAuth)
 		pr.Out.Header.Set(internalSrcHeader, internalSrcAuthenticatedValue)
+		pr.Out.Header.Set(internalTenantHeader, "default")
 	}}
 	frontend := httptest.NewServer(frontendProxy)
 	defer frontend.Close()

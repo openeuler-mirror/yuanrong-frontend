@@ -30,6 +30,21 @@ import (
 	"frontend/pkg/frontend/config"
 )
 
+const jwtTenantContextKey = "jwt_tenant"
+
+// JWTAuthenticatedTenant returns the tenant from the JWT that was validated by
+// JWTAuthMiddlewareWithRoles. Request headers are deliberately not used here:
+// callers may supply them, while this context value is written only after IAM
+// validation succeeds.
+func JWTAuthenticatedTenant(ctx *gin.Context) (string, bool) {
+	tenant, ok := ctx.Get(jwtTenantContextKey)
+	if !ok {
+		return "", false
+	}
+	value, ok := tenant.(string)
+	return value, ok && value != ""
+}
+
 // isBrowserRequest checks if the request is from a browser
 func isBrowserRequest(ctx *gin.Context) bool {
 	accept := ctx.GetHeader("Accept")
@@ -269,6 +284,7 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 		// If JWT token contains tenant information, replace the tenant in header
 		if parsedJWT.Payload.Sub != "" {
 			tenantFromJWT := parsedJWT.Payload.Sub
+			ctx.Set(jwtTenantContextKey, tenantFromJWT)
 
 			// Replace both X-Tenant-ID and X-Tenant-Id headers with the tenant from JWT
 			ctx.Request.Header.Set(constants.HeaderTenantID, tenantFromJWT)
