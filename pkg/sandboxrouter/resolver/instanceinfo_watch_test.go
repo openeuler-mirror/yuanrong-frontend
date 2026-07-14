@@ -28,7 +28,7 @@ import (
 
 const instanceKey = "/sn/instance/business/yrk/tenant/default/function/0-svc/version/$latest/defaultaz/req0/inst-abc"
 
-const runningJSON = `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22772",` +
+const runningJSON = `{"instanceID":"inst-abc","tenantID":"tenant-a","proxyGrpcAddress":"10.0.0.1:22772",` +
 	`"instanceStatus":{"code":3},"extensions":{"portForward":"[\"tcp:31080:8765\"]"}}`
 
 func resolve(r *InstanceInfoWatchResolver) (*route.RouteTarget, error) {

@@ -56,6 +56,7 @@ const (
 	reqInfoKey                    ctxKey = 0
 	internalSrcHeader                    = "X-Internal-Src"
 	internalSrcAuthenticatedValue        = "1"
+	internalTenantHeader                 = "X-Internal-Tenant"
 	defaultTunnelAliasPort        uint16 = 8765
 )
 
@@ -258,8 +259,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authorize (tenant ownership) AFTER resolving, against the target's
-	// authoritative tenant. Only enforced for control ports (see above).
-	if authRequired {
+	// authoritative tenant. Frontend-authenticated control traffic skips the
+	// duplicate JWT validation, but never skips tenant authorization.
+	authorizationRequired := authRequired ||
+		(s.authEnabled && frontendAuthenticated && s.isControlPort(parsed.Key.Port))
+	if authorizationRequired {
+		if frontendAuthenticated {
+			jwtPayload = &jwtauth.JWTPayload{Sub: r.Header.Get(internalTenantHeader)}
+		}
 		if code, msg := authorize(jwtPayload, target); code != 0 {
 			http.Error(w, msg, code)
 			return
@@ -302,13 +309,12 @@ func (s *Server) authenticateToken(r *http.Request) (*jwtauth.JWTPayload, int, s
 }
 
 // authorize checks that the token's tenant (Sub) owns the target sandbox, using
-// the tenant the resolver took from the authoritative /sn/instance key. It
-// fails open when the tenant is unknown (target.Tenant == "" — e.g. an older
-// instance key) so resolvable-but-unattributed routes are not hard-broken;
-// it fails closed (403) on a concrete mismatch.
+// the instance owner resolved from instance metadata. It fails closed when
+// either identity is missing: an unattributed route must not become a
+// cross-tenant escape hatch.
 func authorize(payload *jwtauth.JWTPayload, target *route.RouteTarget) (int, string) {
-	if payload == nil || target.Tenant == "" || payload.Sub == "" {
-		return 0, ""
+	if payload == nil || target == nil || target.Tenant == "" || payload.Sub == "" {
+		return http.StatusForbidden, "tenant ownership is unavailable"
 	}
 	if target.Tenant != payload.Sub {
 		return http.StatusForbidden, "tenant not authorized for this sandbox"
@@ -342,6 +348,7 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest) {
 		}
 	}
 	pr.Out.Header.Del(internalSrcHeader)
+	pr.Out.Header.Del(internalTenantHeader)
 }
 
 // errorHandler maps upstream transport failures to Traefik-consistent codes:

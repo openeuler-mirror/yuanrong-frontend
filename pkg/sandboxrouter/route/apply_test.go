@@ -23,7 +23,7 @@ import (
 
 const applyKey = "/sn/instance/business/yrk/tenant/default/function/0-svc/version/$latest/defaultaz/req0/inst-abc"
 
-const applyRunningJSON = `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22772",` +
+const applyRunningJSON = `{"instanceID":"inst-abc","tenantID":"tenant-a","proxyGrpcAddress":"10.0.0.1:22772",` +
 	`"instanceStatus":{"code":3},"extensions":{"portForward":"[\"tcp:31080:8765\"]"}}`
 
 const applyFatalJSON = `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22772",` +
@@ -80,7 +80,7 @@ func TestApplyMalformedJSONIgnored(t *testing.T) {
 
 func TestApplyRunningWithoutPortForwardAddsNothing(t *testing.T) {
 	c := NewRouteCache()
-	body := `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22772","instanceStatus":{"code":3},"extensions":{}}`
+	body := `{"instanceID":"inst-abc","tenantID":"tenant-a","proxyGrpcAddress":"10.0.0.1:22772","instanceStatus":{"code":3},"extensions":{}}`
 	ApplyInstanceEvent(c, EventPut, applyKey, []byte(body))
 	if _, err := getRoute(c); !errors.Is(err, ErrRouteNotFound) {
 		t.Errorf("no portForward should yield no route, got %v", err)
@@ -96,28 +96,34 @@ func TestInstanceIDFromKey(t *testing.T) {
 	}
 }
 
-// The owning tenant is taken from the instance key and stamped on every target,
-// so the proxy can authorize by tenant.
-func TestApplyStampsTenantFromKey(t *testing.T) {
+// A route without an instance owner cannot be authorized safely. The function
+// tenant embedded in the key is not a substitute because shared system
+// functions use a different tenant from the sandbox owner.
+func TestApplyMissingTenantAddsNoRoute(t *testing.T) {
 	c := NewRouteCache()
-	ApplyInstanceEvent(c, EventPut, applyKey, []byte(applyRunningJSON))
+	body := `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22772",` +
+		`"instanceStatus":{"code":3},"extensions":{"portForward":"[\"tcp:31080:8765\"]"}}`
+	ApplyInstanceEvent(c, EventPut, applyKey, []byte(body))
+	if _, err := getRoute(c); !errors.Is(err, ErrRouteNotFound) {
+		t.Errorf("route without tenantID should not be registered, got %v", err)
+	}
+}
+
+// Shared system functions use the function tenant (for example "default") in
+// their etcd key, while tenantID in the instance payload identifies the actual
+// sandbox owner. The instance owner must take precedence or legitimate SDK
+// requests are rejected and the shared function tenant can be over-authorized.
+func TestApplyPrefersInstanceTenantOverKeyTenant(t *testing.T) {
+	c := NewRouteCache()
+	body := `{"instanceID":"inst-abc","tenantID":"tenant-e2e-a",` +
+		`"proxyGrpcAddress":"10.0.0.1:22772","instanceStatus":{"code":3},` +
+		`"extensions":{"portForward":"[\"tcp:31080:8765\"]"}}`
+	ApplyInstanceEvent(c, EventPut, applyKey, []byte(body))
 	tgt, err := getRoute(c)
 	if err != nil {
 		t.Fatalf("route should exist: %v", err)
 	}
-	if tgt.Tenant != "default" {
-		t.Errorf("target Tenant = %q, want default", tgt.Tenant)
-	}
-}
-
-func TestTenantFromKey(t *testing.T) {
-	if got := tenantFromKey(applyKey); got != "default" {
-		t.Errorf("tenantFromKey = %q, want default", got)
-	}
-	if got := tenantFromKey("/sn/instance/business/yrk/function/f/version/v"); got != "" {
-		t.Errorf("tenantFromKey(no tenant seg) = %q, want empty", got)
-	}
-	if got := tenantFromKey("/sn/instance/business/yrk/tenant"); got != "" {
-		t.Errorf("tenantFromKey(trailing tenant) = %q, want empty", got)
+	if tgt.Tenant != "tenant-e2e-a" {
+		t.Errorf("target Tenant = %q, want tenant-e2e-a", tgt.Tenant)
 	}
 }

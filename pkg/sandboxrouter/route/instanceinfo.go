@@ -23,6 +23,7 @@ package route
 // in frontend's existing InstanceSpecification struct, which is why we parse our own.
 type InstanceInfo struct {
 	InstanceID       string            `json:"instanceID"`
+	TenantID         string            `json:"tenantID"`
 	ProxyGrpcAddress string            `json:"proxyGrpcAddress"`
 	InstanceStatus   InstanceStatus    `json:"instanceStatus"`
 	Extensions       map[string]string `json:"extensions"`

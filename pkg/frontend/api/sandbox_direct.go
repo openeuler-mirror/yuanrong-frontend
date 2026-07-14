@@ -33,15 +33,17 @@ import (
 	frontendhttputil "frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/config"
+	"frontend/pkg/frontend/middleware"
 	routerconfig "frontend/pkg/sandboxrouter/config"
 )
 
 const (
-	sandboxDirectPrefix     = "/direct"
-	sandboxTunnelPrefix     = "/tunnel"
-	sandboxInternalSrcKey   = "X-Internal-Src"
-	sandboxInternalSrcValue = "1"
-	sandboxDefaultRRTPort   = 50090
+	sandboxDirectPrefix      = "/direct"
+	sandboxTunnelPrefix      = "/tunnel"
+	sandboxInternalSrcKey    = "X-Internal-Src"
+	sandboxInternalSrcValue  = "1"
+	sandboxInternalTenantKey = "X-Internal-Tenant"
+	sandboxDefaultRRTPort    = 50090
 )
 
 // registerSandboxDirectRoute exposes the RRT direct-invoke route on the normal
@@ -49,10 +51,10 @@ const (
 // this proxy strips the platform token before forwarding to the local
 // sandboxRouter listener so RRT never sees frontend credentials.
 func registerSandboxDirectRoute(r *gin.Engine) {
-	r.Any(sandboxDirectPrefix, sandboxTraceHandler(sandboxDirectProxyHandler(sandboxDirectRouterPath)))
-	r.Any(sandboxDirectPrefix+"/*proxyPath", sandboxTraceHandler(sandboxDirectProxyHandler(sandboxDirectRouterPath)))
-	r.Any(sandboxTunnelPrefix, sandboxDirectProxyHandler(sandboxTunnelRouterPath))
-	r.Any(sandboxTunnelPrefix+"/*proxyPath", sandboxDirectProxyHandler(sandboxTunnelRouterPath))
+	r.Any(sandboxDirectPrefix, sandboxTraceHandler(sandboxDirectProxyHandler(sandboxDirectRouterPath, true)))
+	r.Any(sandboxDirectPrefix+"/*proxyPath", sandboxTraceHandler(sandboxDirectProxyHandler(sandboxDirectRouterPath, true)))
+	r.Any(sandboxTunnelPrefix, sandboxDirectProxyHandler(sandboxTunnelRouterPath, false))
+	r.Any(sandboxTunnelPrefix+"/*proxyPath", sandboxDirectProxyHandler(sandboxTunnelRouterPath, false))
 }
 
 func sandboxTraceHandler(handler gin.HandlerFunc) gin.HandlerFunc {
@@ -72,17 +74,17 @@ func sandboxDirectRouterPath(path string, cfg *routerconfig.SandboxRouterConfig)
 	trimmed := strings.TrimPrefix(routerPath, "/")
 	parts := strings.Split(trimmed, "/")
 	if len(parts) < 2 || parts[0] == "" {
-		return routerPath
+		return "/"
 	}
 	if _, err := strconv.ParseUint(parts[1], 10, 16); err == nil {
-		return routerPath // legacy /direct/{safeID}/{port}/... form
+		return "/" // explicit ports are not allowed on the RRT control-plane route
 	}
 
 	switch parts[1] {
 	case "invoke", "healthz", "upload", "download":
 		return sandboxDirectControlPath(parts[0], sandboxDirectRRTPort(cfg), parts[1:])
 	default:
-		return routerPath
+		return "/"
 	}
 }
 
@@ -118,7 +120,10 @@ func sandboxDirectRRTPort(cfg *routerconfig.SandboxRouterConfig) int {
 	return sandboxDefaultRRTPort
 }
 
-func sandboxDirectProxyHandler(pathMapper func(string, *routerconfig.SandboxRouterConfig) string) gin.HandlerFunc {
+func sandboxDirectProxyHandler(
+	pathMapper func(string, *routerconfig.SandboxRouterConfig) string,
+	requireAuthenticatedTenant bool,
+) gin.HandlerFunc {
 	cfg := config.GetConfig().SandboxRouter
 	if cfg == nil || !cfg.Enabled {
 		return func(c *gin.Context) {
@@ -137,6 +142,7 @@ func sandboxDirectProxyHandler(pathMapper func(string, *routerconfig.SandboxRout
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			in := pr.In
 			forwardedProto := in.Header.Get("X-Forwarded-Proto")
+			authenticatedTenant := in.Header.Get(sandboxInternalTenantKey)
 			pr.SetURL(target)
 			pr.Out.URL.Path = pathMapper(in.URL.Path, cfg)
 			pr.Out.URL.RawPath = ""
@@ -152,6 +158,10 @@ func sandboxDirectProxyHandler(pathMapper func(string, *routerconfig.SandboxRout
 			pr.SetXForwarded()
 			pr.Out.Header.Del(jwtauth.HeaderXAuth)
 			pr.Out.Header.Set(sandboxInternalSrcKey, sandboxInternalSrcValue)
+			pr.Out.Header.Del(sandboxInternalTenantKey)
+			if authenticatedTenant != "" {
+				pr.Out.Header.Set(sandboxInternalTenantKey, authenticatedTenant)
+			}
 			if forwardedProto != "" {
 				pr.Out.Header.Set("X-Forwarded-Proto", forwardedProto)
 			}
@@ -159,6 +169,15 @@ func sandboxDirectProxyHandler(pathMapper func(string, *routerconfig.SandboxRout
 	}
 
 	return func(c *gin.Context) {
+		// Never trust an internal tenant marker supplied by the client. Rebuild it
+		// exclusively from the JWT identity stored by the validated middleware.
+		c.Request.Header.Del(sandboxInternalTenantKey)
+		if tenant, ok := middleware.JWTAuthenticatedTenant(c); ok {
+			c.Request.Header.Set(sandboxInternalTenantKey, tenant)
+		} else if requireAuthenticatedTenant && config.GetConfig().IamConfig.EnableFuncTokenAuth {
+			c.String(http.StatusForbidden, "authenticated tenant is required")
+			return
+		}
 		started := time.Now()
 		routerPath := pathMapper(c.Request.URL.Path, cfg)
 		proxy.ServeHTTP(c.Writer, c.Request)
