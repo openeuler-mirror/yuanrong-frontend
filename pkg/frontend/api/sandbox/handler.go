@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ import (
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/resspeckey"
 	appapi "frontend/pkg/frontend/api/app"
+	frontendhttpconstant "frontend/pkg/frontend/common/httpconstant"
 	httputil "frontend/pkg/frontend/common/httputil"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/instancemanager"
@@ -51,6 +53,7 @@ const (
 	defaultSandboxRuntime          = "rrt"
 	defaultSandboxFunctionID       = "default/0-defaultservice-rrt/$latest"
 	sandboxCreateTimeoutSeconds    = 60
+	sandboxScheduleBufferSeconds   = 30
 	sandboxDefaultCPU              = 1000
 	sandboxDefaultMemory           = 2048
 	sandboxInitTimeoutSeconds      = 305
@@ -66,6 +69,11 @@ const (
 	sandboxDefaultRRTHTTPPort      = 50090
 	sandboxDefaultTunnelWSPort     = 8765
 	sandboxDefaultTunnelHTTPPort   = 8766
+	sandboxCreateHeartbeatInterval = 2 * time.Second
+	sandboxCreateStatusCreating    = "creating"
+	sandboxCreateStatusRunning     = "running"
+	sandboxCreateStatusTimeout     = "timeout"
+	sandboxCreateStatusFailed      = "failed"
 )
 
 var selectSandboxSchedulerID = func(funcKey string) (string, error) {
@@ -107,6 +115,12 @@ type CreateRequest struct {
 	Env         map[string]string        `json:"env"`
 	Mounts      []map[string]interface{} `json:"mounts"`
 	ExtraConfig map[string]interface{}   `json:"extra_config"`
+	// Optional logical create budget. A positive request value overrides the
+	// environment and default without changing the legacy request shape.
+	CreateTimeoutSeconds int `json:"createTimeoutSeconds"`
+	// Optional scheduling budget. When only one timeout is supplied, the other
+	// is derived using sandboxScheduleBufferSeconds.
+	ScheduleTimeoutSeconds int `json:"scheduleTimeoutSeconds"`
 }
 
 // RootfsSpec describes a structured sandbox rootfs request for the v1 API.
@@ -131,22 +145,24 @@ type TunnelSpec struct {
 
 // CreateV1Request holds POST /api/sandbox/v1/sandboxes parameters.
 type CreateV1Request struct {
-	Name               string                   `json:"name"`
-	Namespace          string                   `json:"namespace"`
-	Tenant             string                   `json:"tenant"`
-	Runtime            string                   `json:"runtime"`
-	Image              string                   `json:"image"`
-	Rootfs             RootfsSpec               `json:"rootfs"`
-	Ports              []string                 `json:"ports"`
-	IdleTimeoutSeconds int                      `json:"idleTimeoutSeconds"`
-	Cpu                int                      `json:"cpu"`
-	Memory             int                      `json:"memory"`
-	CpuLimit           int                      `json:"cpu_limit"`
-	MemLimit           int                      `json:"mem_limit"`
-	Env                map[string]string        `json:"env"`
-	Mounts             []map[string]interface{} `json:"mounts"`
-	ExtraConfig        map[string]interface{}   `json:"extra_config"`
-	Tunnel             TunnelSpec               `json:"tunnel,omitempty"`
+	Name                   string                   `json:"name"`
+	Namespace              string                   `json:"namespace"`
+	Tenant                 string                   `json:"tenant"`
+	Runtime                string                   `json:"runtime"`
+	Image                  string                   `json:"image"`
+	Rootfs                 RootfsSpec               `json:"rootfs"`
+	Ports                  []string                 `json:"ports"`
+	IdleTimeoutSeconds     int                      `json:"idleTimeoutSeconds"`
+	Cpu                    int                      `json:"cpu"`
+	Memory                 int                      `json:"memory"`
+	CpuLimit               int                      `json:"cpu_limit"`
+	MemLimit               int                      `json:"mem_limit"`
+	Env                    map[string]string        `json:"env"`
+	Mounts                 []map[string]interface{} `json:"mounts"`
+	ExtraConfig            map[string]interface{}   `json:"extra_config"`
+	Tunnel                 TunnelSpec               `json:"tunnel,omitempty"`
+	CreateTimeoutSeconds   int                      `json:"createTimeoutSeconds"`
+	ScheduleTimeoutSeconds int                      `json:"scheduleTimeoutSeconds"`
 }
 
 type TunnelInfo struct {
@@ -174,7 +190,7 @@ func CreateHandler(ctx *gin.Context) {
 		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %v", err))
 		return
 	}
-	instanceID, err := createSandbox(ctx, req, 0, traceID)
+	instanceID, _, err := createSandbox(ctx, req, 0, traceID, true)
 	if err != nil {
 		return
 	}
@@ -200,38 +216,76 @@ func CreateV1Handler(ctx *gin.Context) {
 		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
 		return
 	}
-	prepareSandboxRRTHTTP(&req)
+	if usesSandboxRRTRuntime(req.Runtime) {
+		prepareSandboxRRTHTTP(&req)
+	}
 	tunnelInfo := prepareSandboxTunnel(&req)
-	instanceID, err := createSandbox(ctx, CreateRequest{
-		Name:        req.Name,
-		Namespace:   req.Namespace,
-		Tenant:      req.Tenant,
-		Runtime:     req.Runtime,
-		Rootfs:      rootfs,
-		Ports:       req.Ports,
-		Cpu:         req.Cpu,
-		Memory:      req.Memory,
-		CpuLimit:    req.CpuLimit,
-		MemLimit:    req.MemLimit,
-		Env:         req.Env,
-		Mounts:      req.Mounts,
-		ExtraConfig: req.ExtraConfig,
-	}, req.IdleTimeoutSeconds, traceID)
+	createReq := CreateRequest{
+		Name:                   req.Name,
+		Namespace:              req.Namespace,
+		Tenant:                 req.Tenant,
+		Runtime:                req.Runtime,
+		Rootfs:                 rootfs,
+		Ports:                  req.Ports,
+		Cpu:                    req.Cpu,
+		Memory:                 req.Memory,
+		CpuLimit:               req.CpuLimit,
+		MemLimit:               req.MemLimit,
+		Env:                    req.Env,
+		Mounts:                 req.Mounts,
+		ExtraConfig:            req.ExtraConfig,
+		CreateTimeoutSeconds:   req.CreateTimeoutSeconds,
+		ScheduleTimeoutSeconds: req.ScheduleTimeoutSeconds,
+	}
+
+	if acceptsSandboxCreateEventStream(ctx) {
+		writeSandboxCreateSSEHeader(ctx)
+		_ = writeSandboxCreateSSEEvent(ctx, "accepted", map[string]interface{}{
+			"status": sandboxCreateStatusCreating,
+		})
+
+		stopHeartbeat := make(chan struct{})
+		heartbeatDone := make(chan struct{})
+		go serveSandboxCreateHeartbeats(ctx, stopHeartbeat, heartbeatDone)
+
+		// Keep the libruntime call on the request goroutine. The C libruntime
+		// call path is not safe when moved to an extra goroutine; only heartbeat
+		// writes are delegated, and they stop before the final event is written.
+		instanceID, status, createErr := createSandbox(
+			ctx, createReq, req.IdleTimeoutSeconds, traceID, false,
+		)
+		close(stopHeartbeat)
+		<-heartbeatDone
+
+		data := createV1Response(instanceID, status, tunnelInfo)
+		if createErr != nil {
+			data["errorCode"] = sandboxCreateErrorCode(createErr)
+			data["message"] = createErr.Error()
+		}
+		_ = writeSandboxCreateSSEEvent(ctx, "final", data)
+		return
+	}
+
+	instanceID, _, err := createSandbox(ctx, createReq, req.IdleTimeoutSeconds, traceID, true)
 	if err != nil {
 		return
 	}
+	appapi.SetCtxResponse(ctx, createV1Response(instanceID, sandboxCreateStatusRunning, tunnelInfo), http.StatusOK, nil)
+}
+
+func createV1Response(instanceID, status string, tunnelInfo *TunnelInfo) map[string]interface{} {
 	resp := map[string]interface{}{
 		"sandboxId":  instanceID,
 		"instanceId": instanceID,
-		"status":     "running",
+		"status":     status,
 	}
-	if tunnelInfo != nil {
+	if tunnelInfo != nil && status == sandboxCreateStatusRunning {
 		tunnelInfo.URL = fmt.Sprintf("/tunnel/%s", routerroute.SanitizeID(instanceID))
 		tunnelInfo.Path = tunnelInfo.URL
 		tunnelInfo.WSPath = tunnelInfo.URL
 		resp["tunnel"] = tunnelInfo
 	}
-	appapi.SetCtxResponse(ctx, resp, http.StatusOK, nil)
+	return resp
 }
 
 func prepareSandboxRRTHTTP(req *CreateV1Request) {
@@ -242,6 +296,14 @@ func prepareSandboxRRTHTTP(req *CreateV1Request) {
 	// Frontend owns the direct-invoke RRT HTTP server port. SDK callers use
 	// /direct/{safeID}/invoke and never need to know or set RRT_HTTP_PORT.
 	req.Env["RRT_HTTP_PORT"] = strconv.Itoa(sandboxDefaultRRTHTTPPort)
+}
+
+func usesSandboxRRTRuntime(runtime string) bool {
+	selectedRuntime := strings.ToLower(strings.TrimSpace(runtime))
+	if selectedRuntime == "" {
+		selectedRuntime = defaultSandboxRuntime
+	}
+	return selectedRuntime == "rust" || selectedRuntime == "rrt" || selectedRuntime == "rrt-runtime"
 }
 
 func prepareSandboxTunnel(req *CreateV1Request) *TunnelInfo {
@@ -286,11 +348,19 @@ func appendUniquePorts(ports []string, values ...string) []string {
 	return ports
 }
 
-func createSandbox(ctx *gin.Context, req CreateRequest, idleTimeoutSeconds int, traceID string) (string, error) {
+func createSandbox(
+	ctx *gin.Context,
+	req CreateRequest,
+	idleTimeoutSeconds int,
+	traceID string,
+	respondOnError bool,
+) (string, string, error) {
 	if req.Name == "" || req.Namespace == "" {
 		err := fmt.Errorf("name and namespace are required")
-		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
-		return "", err
+		if respondOnError {
+			appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+		}
+		return "", sandboxCreateStatusFailed, err
 	}
 	rootfs := req.Rootfs
 	if rootfs == "" {
@@ -298,8 +368,10 @@ func createSandbox(ctx *gin.Context, req CreateRequest, idleTimeoutSeconds int, 
 	}
 	funcID, err := sandboxFunctionIDForRuntime(req.Runtime)
 	if err != nil {
-		appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
-		return "", err
+		if respondOnError {
+			appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+		}
+		return "", sandboxCreateStatusFailed, err
 	}
 
 	funcMeta := api.FunctionMeta{
@@ -320,14 +392,25 @@ func createSandbox(ctx *gin.Context, req CreateRequest, idleTimeoutSeconds int, 
 		memory = sandboxDefaultMemory
 	}
 	traceParent := ctx.Request.Header.Get(constant.HeaderTraceParent)
+	createTimeoutSeconds, scheduleTimeoutSeconds, err := resolveSandboxCreateTimeouts(
+		req.CreateTimeoutSeconds, req.ScheduleTimeoutSeconds,
+	)
+	if err != nil {
+		if respondOnError {
+			appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+		}
+		return "", sandboxCreateStatusFailed, err
+	}
+
 	invokeOpts := api.InvokeOptions{
-		TraceID:     traceID,
-		Cpu:         cpu,
-		Memory:      memory,
-		CpuLimit:    req.CpuLimit,
-		MemoryLimit: req.MemLimit,
-		Timeout:     sandboxCreateTimeoutSeconds,
-		CreateOpt:   map[string]string{},
+		TraceID:           traceID,
+		Cpu:               cpu,
+		Memory:            memory,
+		CpuLimit:          req.CpuLimit,
+		MemoryLimit:       req.MemLimit,
+		Timeout:           createTimeoutSeconds,
+		ScheduleTimeoutMs: int64(scheduleTimeoutSeconds) * 1000,
+		CreateOpt:         map[string]string{},
 		CustomExtensions: map[string]string{
 			"lifecycle":   "detached",
 			"Concurrency": sandboxConcurrency,
@@ -370,8 +453,10 @@ func createSandbox(ctx *gin.Context, req CreateRequest, idleTimeoutSeconds int, 
 	if len(req.Ports) > 0 {
 		networkConfig, err := buildSandboxNetworkConfig(req.Ports)
 		if err != nil {
-			appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
-			return "", err
+			if respondOnError {
+				appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
+			}
+			return "", sandboxCreateStatusFailed, err
 		}
 		invokeOpts.CreateOpt["network"] = networkConfig
 	}
@@ -384,7 +469,7 @@ func createSandbox(ctx *gin.Context, req CreateRequest, idleTimeoutSeconds int, 
 	}
 	invokeOpts.CreateOpt[constant.FunctionKeyNote] = funcID
 	invokeOpts.CreateOpt[constant.InstanceTypeNote] = sandboxInstanceType
-	invokeOpts.CreateOpt["call_timeout"] = fmt.Sprintf("%d", sandboxCreateTimeoutSeconds)
+	invokeOpts.CreateOpt["call_timeout"] = fmt.Sprintf("%d", invokeOpts.Timeout)
 	invokeOpts.CreateOpt["init_call_timeout"] = fmt.Sprintf("%d", sandboxInitTimeoutSeconds)
 	invokeOpts.CreateOpt["GRACEFUL_SHUTDOWN_TIME"] = fmt.Sprintf("%d", sandboxGracefulShutdownSeconds)
 	invokeOpts.CreateOpt["DELEGATE_DIRECTORY_INFO"] = sandboxDelegateDirectory
@@ -404,20 +489,150 @@ func createSandbox(ctx *gin.Context, req CreateRequest, idleTimeoutSeconds int, 
 					"sandbox instance reached running state after create timeout instanceID=%s name=%s ns=%s",
 					instanceID, req.Name, req.Namespace,
 				)
+				return instanceID, sandboxCreateStatusRunning, nil
 			}
 			log.GetLogger().Warnf(
-				"sandbox create returned timeout after scheduling instanceID=%s name=%s ns=%s: %v",
+				"sandbox create timed out before running instanceID=%s name=%s ns=%s: %v",
 				instanceID, req.Name, req.Namespace, err,
 			)
-			return instanceID, nil
+			if respondOnError {
+				appapi.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("sandbox create timeout before running: %w", err))
+			}
+			return instanceID, sandboxCreateStatusTimeout, err
 		}
 		log.GetLogger().Errorf("failed to create sandbox instance name=%s ns=%s: %v", req.Name, req.Namespace, err)
-		appapi.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to create sandbox: %v", err))
-		return "", err
+		if respondOnError {
+			appapi.SetCtxResponse(ctx, nil, http.StatusInternalServerError, fmt.Errorf("failed to create sandbox: %v", err))
+		}
+		return instanceID, sandboxCreateStatusFailed, err
 	}
 
 	log.GetLogger().Infof("sandbox created: instanceID=%s name=%s ns=%s", instanceID, req.Name, req.Namespace)
-	return instanceID, nil
+	return instanceID, sandboxCreateStatusRunning, nil
+}
+
+func getSandboxCreateTimeoutSeconds(requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	raw := strings.TrimSpace(os.Getenv("YR_SANDBOX_CREATE_TIMEOUT"))
+	if raw == "" {
+		return sandboxCreateTimeoutSeconds
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		log.GetLogger().Warnf(
+			"invalid YR_SANDBOX_CREATE_TIMEOUT=%q, using default %d",
+			raw, sandboxCreateTimeoutSeconds,
+		)
+		return sandboxCreateTimeoutSeconds
+	}
+	return value
+}
+
+func resolveSandboxCreateTimeouts(requestedCreate, requestedSchedule int) (int, int, error) {
+	if requestedCreate < 0 {
+		return 0, 0, fmt.Errorf("createTimeoutSeconds must be a positive integer")
+	}
+	if requestedSchedule < 0 {
+		return 0, 0, fmt.Errorf("scheduleTimeoutSeconds must be a positive integer")
+	}
+
+	createTimeout := requestedCreate
+	scheduleTimeout := requestedSchedule
+	if createTimeout == 0 && scheduleTimeout == 0 {
+		createTimeout = getSandboxCreateTimeoutSeconds(0)
+	}
+	if createTimeout == 0 {
+		return scheduleTimeout + sandboxScheduleBufferSeconds, scheduleTimeout, nil
+	}
+	if scheduleTimeout == 0 {
+		if createTimeout <= sandboxScheduleBufferSeconds {
+			return 0, 0, fmt.Errorf(
+				"createTimeoutSeconds must be greater than %d", sandboxScheduleBufferSeconds,
+			)
+		}
+		return createTimeout, createTimeout - sandboxScheduleBufferSeconds, nil
+	}
+	if scheduleTimeout > createTimeout {
+		return 0, 0, fmt.Errorf(
+			"scheduleTimeoutSeconds must be less than or equal to createTimeoutSeconds",
+		)
+	}
+	if createTimeout-scheduleTimeout < sandboxScheduleBufferSeconds {
+		return 0, 0, fmt.Errorf(
+			"createTimeoutSeconds - scheduleTimeoutSeconds must be at least %d",
+			sandboxScheduleBufferSeconds,
+		)
+	}
+	return createTimeout, scheduleTimeout, nil
+}
+
+func acceptsSandboxCreateEventStream(ctx *gin.Context) bool {
+	for _, part := range strings.Split(ctx.GetHeader("Accept"), ",") {
+		mediaType := strings.TrimSpace(strings.SplitN(strings.TrimSpace(part), ";", 2)[0])
+		if strings.EqualFold(mediaType, frontendhttpconstant.AcceptEventStream) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeSandboxCreateSSEHeader(ctx *gin.Context) {
+	ctx.Header(frontendhttpconstant.ContentTypeHeaderKey, frontendhttpconstant.AcceptEventStream)
+	ctx.Header("Cache-Control", "no-cache")
+	ctx.Header("Connection", "keep-alive")
+	ctx.Header("X-Accel-Buffering", "no")
+	ctx.Status(http.StatusOK)
+}
+
+func writeSandboxCreateSSEHeartbeat(ctx *gin.Context) error {
+	if _, err := ctx.Writer.WriteString(": heartbeat\n\n"); err != nil {
+		return err
+	}
+	ctx.Writer.Flush()
+	return nil
+}
+
+func serveSandboxCreateHeartbeats(ctx *gin.Context, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(sandboxCreateHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ctx.Request.Context().Done():
+			return
+		case <-ticker.C:
+			if err := writeSandboxCreateSSEHeartbeat(ctx); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func writeSandboxCreateSSEEvent(ctx *gin.Context, event string, data map[string]interface{}) error {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if _, err = ctx.Writer.WriteString(fmt.Sprintf("event: %s\n", event)); err != nil {
+		return err
+	}
+	if _, err = ctx.Writer.WriteString(fmt.Sprintf("data: %s\n\n", payload)); err != nil {
+		return err
+	}
+	ctx.Writer.Flush()
+	return nil
+}
+
+func sandboxCreateErrorCode(err error) int {
+	var errInfo api.ErrorInfo
+	if errors.As(err, &errInfo) {
+		return errInfo.Code
+	}
+	return 0
 }
 
 func ensureSandboxTrace(ctx *gin.Context) string {
