@@ -186,7 +186,6 @@ func InitRoute(r *gin.Engine) {
 		sandboxV1Group.POST("", sandboxTraceHandler(sandbox.CreateV1Handler))
 		sandboxV1Group.DELETE("/:sandboxID", sandboxTraceHandler(sandbox.DeleteHandler))
 		sandboxV1Group.POST("/:sandboxID/invoke", sandboxTraceHandler(sandbox.InvokeV1Handler))
-		sandboxV1Group.GET("/:sandboxID/stream", sandboxTraceHandler(sandbox.StreamV1Handler))
 	}
 
 	// web terminal
