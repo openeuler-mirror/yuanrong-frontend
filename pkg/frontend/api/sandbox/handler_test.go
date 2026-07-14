@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	faasconstant "frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/resspeckey"
 	"frontend/pkg/common/job"
+	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
 )
 
@@ -243,6 +245,37 @@ func TestCreateHandlerFallsBackToBodyTenant(t *testing.T) {
 	require.Equal(t, "body-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 	require.Empty(t, capturedInvokeOpt.CreateOpt[faasconstant.SchedulerIDNote])
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
+}
+
+func TestCreateHandlerAttributesTenantFromTokenClaim(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(_ api.FunctionMeta, _ []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-from-token", nil
+		},
+	})
+
+	encode := func(value interface{}) string {
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	token := encode(jwtauth.JWTHeader{Alg: "none", Typ: "JWT"}) + "." +
+		encode(jwtauth.JWTPayload{Sub: "token-tenant"}) + ".sig"
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{Name: "sandbox-token", Namespace: "sandbox"})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set(jwtauth.HeaderXAuth, token)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "token-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 }
 
 func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *testing.T) {

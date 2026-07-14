@@ -47,6 +47,7 @@ type Resolver interface {
 type reqInfo struct {
 	parsed                *route.ParsedRequest
 	target                *route.RouteTarget
+	frontendProxied       bool
 	frontendAuthenticated bool
 }
 
@@ -56,6 +57,7 @@ const (
 	reqInfoKey                    ctxKey = 0
 	internalSrcHeader                    = "X-Internal-Src"
 	internalSrcAuthenticatedValue        = "1"
+	internalSrcProxyValue                = "2"
 	internalTenantHeader                 = "X-Internal-Tenant"
 	defaultTunnelAliasPort        uint16 = 8765
 )
@@ -112,6 +114,14 @@ func requestFromLoopback(r *http.Request) bool {
 
 func frontendAuthenticatedRequest(r *http.Request) bool {
 	return requestFromLoopback(r) && r.Header.Get(internalSrcHeader) == internalSrcAuthenticatedValue
+}
+
+func frontendProxiedRequest(r *http.Request) bool {
+	if !requestFromLoopback(r) {
+		return false
+	}
+	source := r.Header.Get(internalSrcHeader)
+	return source == internalSrcAuthenticatedValue || source == internalSrcProxyValue
 }
 
 // normalizeTunnelAliasPath lets the sandboxRouter serve the public tunnel URL
@@ -230,9 +240,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Authenticate (token validity) BEFORE resolving, so an unauthenticated
 	// caller gets 401 regardless of whether the route exists. Only RRT
 	// atomic-ops is gated; reverse-tunnel WS and user-forwarded service ports are
-	// public. Requests that came from the local frontend /direct proxy already
-	// passed frontend JWT auth, so do not require or forward the platform token
-	// here.
+	// public. Requests authenticated by the local frontend do not need router
+	// authentication. Frontend-proxied requests with deferred authentication do,
+	// and their token is stripped before the RRT hop below.
+	frontendProxied := frontendProxiedRequest(r)
 	frontendAuthenticated := frontendAuthenticatedRequest(r)
 	authRequired := s.authEnabled && s.isControlPort(parsed.Key.Port) && !frontendAuthenticated
 	var jwtPayload *jwtauth.JWTPayload
@@ -276,6 +287,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), reqInfoKey, &reqInfo{
 		parsed:                parsed,
 		target:                target,
+		frontendProxied:       frontendProxied,
 		frontendAuthenticated: frontendAuthenticated,
 	})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
@@ -335,10 +347,10 @@ func (s *Server) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.Header.Set("X-Instance-Id", info.parsed.Key.SafeInstanceID)
 	pr.Out.Header.Set("X-Instance-Port", strconv.Itoa(int(info.parsed.Key.Port)))
 
-	// Token handling: the frontend-authenticated /direct hop never forwards the
-	// platform token to RRT. Legacy direct-to-router RRT traffic still preserves
-	// the token for compatibility; user service ports must never see it.
-	stripToken := s.authEnabled && (info.frontendAuthenticated ||
+	// Token handling: any local frontend /direct hop strips platform credentials
+	// before RRT. Legacy direct-to-router RRT traffic still preserves the token
+	// for compatibility; user service ports must never see it.
+	stripToken := info.frontendProxied || (s.authEnabled &&
 		!(s.rrtPort != 0 && info.parsed.Key.Port == s.rrtPort))
 	if stripToken {
 		pr.Out.Header.Del(jwtauth.HeaderXAuth)
