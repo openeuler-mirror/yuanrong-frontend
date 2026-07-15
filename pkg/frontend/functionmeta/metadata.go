@@ -194,6 +194,8 @@ func buildFuncSpec(functionKey string, value []byte, etcdType string) (*types.Fu
 		ResourceMetaData:  funcMeta.ResourceMetaData,
 		InstanceMetaData:  funcMeta.InstanceMetaData,
 		ExtendedMetaData:  funcMeta.ExtendedMetaData,
+		RootfsSpecMeta:    funcMeta.RootfsSpecMeta,
+		SandboxType:       funcMeta.SandboxType,
 	}
 	return funcSpec, nil
 }
