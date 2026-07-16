@@ -23,7 +23,7 @@ const instanceKey = "/sn/instance/business/yrk/tenant/default/function/0-svc/ver
 // Shape mirrors a real /sn/instance value (MessageToJsonString output) reduced
 // to the fields the exec path reads.
 const runningJSON = `{"instanceID":"inst-abc","proxyGrpcAddress":"10.0.0.1:22774",` +
-	`"containerID":"sbox-4fb6aa1c","tenantID":"default","function":"func-a","startTime":"1700000000",` +
+	`"containerID":"sbox-4fb6aa1c","tenantID":"default","functionProxyID":"node-a","function":"func-a","startTime":"1700000000",` +
 	`"resources":{"resources":{"CPU":{"scalar":{"value":1000}},"Memory":{"scalar":{"value":2048}}}},` +
 	`"scheduleOption":{"extension":{"rootfs":"{\"runtime\":\"runsc\",\"type\":\"image\",\"imageurl\":\"registry.example.com/ns/image:tag\"}"}},` +
 	`"instanceStatus":{"code":3,"msg":"running"},` +
@@ -49,6 +49,9 @@ func TestApplyEventPutRunning(t *testing.T) {
 	}
 	if summaries[0].Function != "func-a" || summaries[0].Resources["CPU"].Scalar.Value != 1000 {
 		t.Fatalf("unexpected summary: %+v", summaries[0])
+	}
+	if summaries[0].NodeID != "node-a" {
+		t.Fatalf("summary NodeID = %q, want node-a", summaries[0].NodeID)
 	}
 	if summaries[0].Image != "registry.example.com/ns/image:tag" {
 		t.Fatalf("summary image = %q, want registry.example.com/ns/image:tag", summaries[0].Image)

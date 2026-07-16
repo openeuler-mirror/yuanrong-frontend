@@ -47,6 +47,7 @@ const (
 type instanceExecInfo struct {
 	InstanceID       string            `json:"instanceID"`
 	TenantID         string            `json:"tenantID"`
+	FunctionProxyID  string            `json:"functionProxyID"`
 	ProxyGrpcAddress string            `json:"proxyGrpcAddress"`
 	ContainerID      string            `json:"containerID"`
 	Function         string            `json:"function"`
@@ -105,6 +106,7 @@ func ApplyInstanceEvent(s *Store, kind EventKind, key string, value []byte) {
 	s.PutSummary(Summary{
 		InstanceID:     id,
 		TenantID:       tenantID,
+		NodeID:         info.FunctionProxyID,
 		Function:       info.Function,
 		Image:          image.Image,
 		ImageEndpoint:  image.Endpoint,
