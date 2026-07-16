@@ -53,6 +53,7 @@ type Resource struct {
 type Summary struct {
 	InstanceID     string
 	TenantID       string
+	NodeID         string
 	Function       string
 	Image          string
 	ImageEndpoint  string

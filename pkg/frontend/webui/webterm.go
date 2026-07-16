@@ -351,6 +351,7 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 		instance := map[string]interface{}{
 			"id":              inst.InstanceID,
 			"tenantID":        inst.TenantID,
+			"node_id":         inst.FunctionProxyID,
 			"function":        inst.Function,
 			"image":           getInstanceImage(inst),
 			"image_endpoint":  getInstanceImageEndpoint(inst),
@@ -374,12 +375,13 @@ func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[str
 	for _, summary := range summaries {
 		resources := convertLocalResources(summary.Resources)
 		inst := InstanceInfo{
-			InstanceID:    summary.InstanceID,
-			TenantID:      summary.TenantID,
-			Function:      summary.Function,
-			Image:         summary.Image,
-			ImageEndpoint: summary.ImageEndpoint,
-			StartTime:     localSummaryStartTime(summary),
+			InstanceID:      summary.InstanceID,
+			TenantID:        summary.TenantID,
+			FunctionProxyID: summary.NodeID,
+			Function:        summary.Function,
+			Image:           summary.Image,
+			ImageEndpoint:   summary.ImageEndpoint,
+			StartTime:       localSummaryStartTime(summary),
 			InstanceStatus: InstanceStatus{
 				Code:     int(summary.StatusCode),
 				ExitCode: int(summary.StatusExitCode),

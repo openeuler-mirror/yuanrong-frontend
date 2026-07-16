@@ -138,6 +138,7 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	info := execendpoint.Summary{
 		InstanceID: "instance-1",
 		TenantID:   "tenant-1",
+		NodeID:     "node-1",
 		StatusCode: int32(constant.KernelInstanceStatusRunning),
 		StatusMsg:  "running",
 		StartTime:  "1700000000",
@@ -177,6 +178,9 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"tenantID":"tenant-1"`) {
 		t.Fatalf("expected tenantID in response body, got %s", recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"node_id":"node-1"`) {
+		t.Fatalf("expected node_id in response body, got %s", recorder.Body.String())
+	}
 
 	var body []map[string]interface{}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
@@ -214,7 +218,8 @@ func TestHandleInstancesIncludesTenantID(t *testing.T) {
 
 func TestSummarizeInstancesExtractsImageFromRootfs(t *testing.T) {
 	body := summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{{
-		InstanceID: "instance-1",
+		InstanceID:      "instance-1",
+		FunctionProxyID: "node-1",
 		CreateOptions: map[string]string{
 			"rootfs": `{"runtime":"runsc","type":"image","readonly":false,"imageurl":"registry.example.com/ns/image:tag"}`,
 		},
@@ -225,6 +230,9 @@ func TestSummarizeInstancesExtractsImageFromRootfs(t *testing.T) {
 	}
 	if body[0]["image"] != "registry.example.com/ns/image:tag" {
 		t.Fatalf("image = %q, want registry.example.com/ns/image:tag", body[0]["image"])
+	}
+	if body[0]["node_id"] != "node-1" {
+		t.Fatalf("node_id = %q, want node-1", body[0]["node_id"])
 	}
 }
 
