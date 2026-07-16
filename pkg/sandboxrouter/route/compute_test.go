@@ -107,6 +107,32 @@ func TestComputeRoutesMultiplePorts(t *testing.T) {
 	}
 }
 
+func TestComputeRoutesRouteKindsRemainAvailableToInternalRouter(t *testing.T) {
+	info := &InstanceInfo{
+		InstanceID:       "inst",
+		ProxyGrpcAddress: "10.0.1.23:22423",
+		Extensions: portForward(
+			`["direct+http:40001:50090","tunnel+http:40002:8765","direct+http:40003:8766","public+https:40004:8443"]`,
+		),
+	}
+
+	got, err := ComputeRoutes(info)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d routes, want 4", len(got))
+	}
+	wantPorts := []uint16{50090, 8765, 8766, 8443}
+	wantSchemes := []string{"http", "http", "http", "https"}
+	for i := range got {
+		if got[i].Key.Port != wantPorts[i] || got[i].Scheme != wantSchemes[i] {
+			t.Errorf("route[%d] = port %d scheme %q, want port %d scheme %q",
+				i, got[i].Key.Port, got[i].Scheme, wantPorts[i], wantSchemes[i])
+		}
+	}
+}
+
 func TestComputeRoutesNoPortForward(t *testing.T) {
 	for _, ext := range []map[string]string{nil, {}, {"portForward": ""}, {"other": "x"}} {
 		got, err := ComputeRoutes(&InstanceInfo{
@@ -144,6 +170,23 @@ func TestComputeRoutesSkipsBadEntries(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Key.Port != 8080 {
 		t.Errorf("got %d routes %+v, want 1 with port 8080", len(got), got)
+	}
+}
+
+func TestComputeRoutesSkipsUnknownKindsAndUnsupportedSchemes(t *testing.T) {
+	info := &InstanceInfo{
+		InstanceID:       "inst",
+		ProxyGrpcAddress: "10.0.1.23:22423",
+		Extensions: portForward(
+			`["direct+udp:40001:53","unknown+http:40002:80","http:40003:8080"]`,
+		),
+	}
+	got, err := ComputeRoutes(info)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Key.Port != 8080 {
+		t.Fatalf("got %+v, want only public HTTP port 8080", got)
 	}
 }
 

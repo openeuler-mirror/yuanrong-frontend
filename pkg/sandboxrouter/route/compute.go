@@ -84,9 +84,9 @@ func ComputeRoutes(info *InstanceInfo) ([]*RouteTarget, error) {
 			continue
 		}
 
-		scheme := "http"
-		if strings.EqualFold(protocol, "https") {
-			scheme = "https"
+		scheme, ok := backendScheme(protocol)
+		if !ok {
+			continue
 		}
 		u := &url.URL{Scheme: scheme, Host: hostIP + ":" + strconv.FormatUint(hport, 10)}
 		routes = append(routes, &RouteTarget{
@@ -96,4 +96,32 @@ func ComputeRoutes(info *InstanceInfo) ([]*RouteTarget, error) {
 		})
 	}
 	return routes, nil
+}
+
+func backendScheme(protocol string) (string, bool) {
+	token := strings.ToLower(strings.TrimSpace(protocol))
+	parts := strings.Split(token, "+")
+	if len(parts) == 1 {
+		switch parts[0] {
+		case "http", "https":
+			return parts[0], true
+		case "tcp", "direct", "tunnel":
+			// These are legacy transport/route tokens. Canonical mappings use
+			// routeKind+backendScheme; the legacy backend defaults to HTTP.
+			return "http", true
+		default:
+			return "", false
+		}
+	}
+	if len(parts) != 2 {
+		return "", false
+	}
+	kind, scheme := parts[0], parts[1]
+	if kind != "direct" && kind != "tunnel" && kind != "public" {
+		return "", false
+	}
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	return scheme, true
 }
