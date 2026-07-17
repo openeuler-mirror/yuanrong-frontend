@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	"frontend/pkg/common/job"
 	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
+	"frontend/pkg/sandboxrouter/execendpoint"
 )
 
 type runtimeStub struct {
@@ -1124,4 +1126,119 @@ func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "failed to delete sandbox")
+}
+
+func TestDeleteHandlerTenantAuthorization(t *testing.T) {
+	targetInstance := "sandbox-delete-rbac-target"
+	execendpoint.Default().PutSummary(execendpoint.Summary{
+		InstanceID: targetInstance,
+		TenantID:   "tenant-owner",
+	})
+	defer execendpoint.Default().Delete(targetInstance)
+
+	t.Run("rejects cross tenant before runtime kill", func(t *testing.T) {
+		killCalled := false
+		util.SetAPIClientLibruntime(&runtimeStub{
+			kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+				killCalled = true
+				return nil
+			},
+		})
+
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
+		ctx.Set("jwt_sub", "tenant-other")
+		ctx.Set("jwt_role", jwtauth.RoleDeveloper)
+		req, err := http.NewRequest(http.MethodDelete, "/api/sandbox/"+targetInstance, nil)
+		require.NoError(t, err)
+		ctx.Request = req
+
+		DeleteHandler(ctx)
+
+		require.Equal(t, http.StatusForbidden, recorder.Code)
+		require.False(t, killCalled)
+	})
+
+	t.Run("allows same tenant", func(t *testing.T) {
+		killCalled := false
+		util.SetAPIClientLibruntime(&runtimeStub{
+			kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+				killCalled = true
+				require.Equal(t, targetInstance, instanceID)
+				return nil
+			},
+		})
+
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
+		ctx.Set("jwt_sub", "tenant-owner")
+		ctx.Set("jwt_role", jwtauth.RoleDeveloper)
+		req, err := http.NewRequest(http.MethodDelete, "/api/sandbox/"+targetInstance, nil)
+		require.NoError(t, err)
+		ctx.Request = req
+
+		DeleteHandler(ctx)
+
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.True(t, killCalled)
+	})
+
+	t.Run("x-auth header is enforced without middleware context", func(t *testing.T) {
+		killCalled := false
+		util.SetAPIClientLibruntime(&runtimeStub{
+			kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+				killCalled = true
+				return nil
+			},
+		})
+
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
+		req, err := http.NewRequest(http.MethodDelete, "/api/sandbox/"+targetInstance, nil)
+		require.NoError(t, err)
+		req.Header.Set(jwtauth.HeaderXAuth, sandboxTestJWT("tenant-other", jwtauth.RoleDeveloper))
+		ctx.Request = req
+
+		DeleteHandler(ctx)
+
+		require.Equal(t, http.StatusForbidden, recorder.Code)
+		require.False(t, killCalled)
+	})
+
+	t.Run("allows system tenant developer", func(t *testing.T) {
+		killCalled := false
+		util.SetAPIClientLibruntime(&runtimeStub{
+			kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+				killCalled = true
+				require.Equal(t, targetInstance, instanceID)
+				return nil
+			},
+		})
+
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
+		ctx.Set("jwt_sub", "0")
+		ctx.Set("jwt_role", jwtauth.RoleDeveloper)
+		req, err := http.NewRequest(http.MethodDelete, "/api/sandbox/"+targetInstance, nil)
+		require.NoError(t, err)
+		ctx.Request = req
+
+		DeleteHandler(ctx)
+
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.True(t, killCalled)
+	})
+}
+
+func sandboxTestJWT(sub, role string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+		`{"sub":%q,"role":%q,"exp":%d}`,
+		sub, role, time.Now().Add(time.Hour).Unix(),
+	)))
+	return header + "." + payload + ".signature"
 }

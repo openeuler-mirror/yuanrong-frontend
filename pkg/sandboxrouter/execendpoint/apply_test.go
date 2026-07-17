@@ -112,6 +112,26 @@ func TestApplyEventUsesPlainRootfsAsImage(t *testing.T) {
 	}
 }
 
+func TestStoreGetSummary(t *testing.T) {
+	s := NewStore()
+	ApplyInstanceEvent(s, EventPut, instanceKey, []byte(runningJSON))
+
+	summary, ok := s.GetSummary("inst-abc")
+	if !ok {
+		t.Fatal("GetSummary should find a cached running instance")
+	}
+	if summary.InstanceID != "inst-abc" {
+		t.Fatalf("InstanceID = %q, want inst-abc", summary.InstanceID)
+	}
+	if summary.TenantID != "default" {
+		t.Fatalf("TenantID = %q, want default", summary.TenantID)
+	}
+
+	if _, ok := s.GetSummary("missing"); ok {
+		t.Fatal("GetSummary should not find a missing instance")
+	}
+}
+
 func TestApplyEventPutThenDelete(t *testing.T) {
 	s := NewStore()
 	ApplyInstanceEvent(s, EventPut, instanceKey, []byte(runningJSON))

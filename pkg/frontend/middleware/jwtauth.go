@@ -298,8 +298,9 @@ func JWTAuthMiddlewareWithRoles(allowedRoles []string) gin.HandlerFunc {
 			log.GetLogger().Debugf("Replaced tenant in header/query with JWT tenant: %s, traceID %s", tenantFromJWT, traceID)
 		}
 
-		// Store user info in context for downstream handlers
+		// Store user info in context for downstream handlers.
 		ctx.Set("jwt_role", role)
+		ctx.Set("jwt_sub", parsedJWT.Payload.Sub)
 
 		ctx.Next()
 	}

@@ -1,8 +1,10 @@
 package webui
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,9 @@ import (
 	"time"
 
 	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/frontend/common/jwtauth"
+	"frontend/pkg/frontend/config"
+	"frontend/pkg/frontend/types"
 	"frontend/pkg/sandboxrouter/execendpoint"
 )
 
@@ -449,6 +454,107 @@ func TestHandleInstancesUsesLocalCacheWithPagination(t *testing.T) {
 	}
 }
 
+func TestHandleInstancesSystemTenantListsAllTenants(t *testing.T) {
+	originalLookupSummaries := lookupLocalInstanceSummaries
+	defer func() {
+		lookupLocalInstanceSummaries = originalLookupSummaries
+	}()
+
+	lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+		if tenantID != "" || instanceID != "" {
+			t.Fatalf("system tenant list should query all tenants, got tenant=%q instance=%q", tenantID, instanceID)
+		}
+		return []execendpoint.Summary{
+			{InstanceID: "tenant0-instance", TenantID: "0", StatusCode: int32(constant.KernelInstanceStatusRunning)},
+			{InstanceID: "user1-instance", TenantID: "user1", StatusCode: int32(constant.KernelInstanceStatusRunning)},
+			{InstanceID: "user2-instance", TenantID: "user2", StatusCode: int32(constant.KernelInstanceStatusRunning)},
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=0", nil)
+	req.Header.Set(jwtauth.HeaderXAuth, webuiTestJWT("0", jwtauth.RoleDeveloper))
+	recorder := httptest.NewRecorder()
+
+	HandleInstances(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var body []map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(body) != 3 {
+		t.Fatalf("system tenant should see all tenant instances, got %+v", body)
+	}
+}
+
+func TestHandleInstancesDeveloperTenantCannotSpoofQueryTenant(t *testing.T) {
+	originalLookupSummaries := lookupLocalInstanceSummaries
+	defer func() {
+		lookupLocalInstanceSummaries = originalLookupSummaries
+	}()
+
+	lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+		if tenantID != "user1" || instanceID != "" {
+			t.Fatalf("developer tenant list should be forced to JWT tenant, got tenant=%q instance=%q", tenantID, instanceID)
+		}
+		return []execendpoint.Summary{
+			{InstanceID: "user1-instance", TenantID: "user1", StatusCode: int32(constant.KernelInstanceStatusRunning)},
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/instances?tenant_id=user2", nil)
+	req.Header.Set(jwtauth.HeaderXAuth, webuiTestJWT("user1", jwtauth.RoleDeveloper))
+	recorder := httptest.NewRecorder()
+
+	HandleInstances(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "user2") {
+		t.Fatalf("developer tenant must not see spoofed tenant data, got %s", recorder.Body.String())
+	}
+}
+
+func TestHandleInstancesRejectsTokenWhenIAMValidationFails(t *testing.T) {
+	oldLookupSummaries := lookupLocalInstanceSummaries
+	lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+		t.Fatalf("instance list must not read local cache after IAM validation fails, tenant=%q instance=%q",
+			tenantID, instanceID)
+		return nil
+	}
+	defer func() {
+		lookupLocalInstanceSummaries = oldLookupSummaries
+	}()
+
+	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/iam-server/v1/token/auth" {
+			t.Fatalf("unexpected IAM path %q", r.URL.Path)
+		}
+		http.Error(w, "token abandoned", http.StatusUnauthorized)
+	}))
+	defer iam.Close()
+	prevConfig := *config.GetConfig()
+	config.SetConfig(types.Config{
+		IamConfig: types.IamConfig{
+			Addr: strings.TrimPrefix(iam.URL, "http://"),
+		},
+	})
+	defer config.SetConfig(prevConfig)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/instances", nil)
+	req.Header.Set(jwtauth.HeaderXAuth, webuiTestJWT("user-iam-fail", jwtauth.RoleDeveloper))
+	recorder := httptest.NewRecorder()
+
+	HandleInstances(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("HandleInstances status = %d, want 401; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHandleInstancesRejectsInvalidPaginationBeforeLocalLookup(t *testing.T) {
 	originalLookupSummaries := lookupLocalInstanceSummaries
 	defer func() {
@@ -470,6 +576,15 @@ func TestHandleInstancesRejectsInvalidPaginationBeforeLocalLookup(t *testing.T) 
 	if !strings.Contains(recorder.Body.String(), "page must be a positive integer") {
 		t.Fatalf("expected pagination error body, got %q", recorder.Body.String())
 	}
+}
+
+func webuiTestJWT(sub, role string) string {
+	return strings.Join([]string{
+		base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+			`{"sub":"%s","exp":9876543210,"role":"%s"}`, sub, role))),
+		"signature",
+	}, ".")
 }
 
 func localResource(value float64) execendpoint.Resource {

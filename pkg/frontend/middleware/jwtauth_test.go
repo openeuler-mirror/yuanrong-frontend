@@ -17,12 +17,13 @@
 package middleware
 
 import (
-	"errors"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 
@@ -37,8 +38,7 @@ func TestJWTAuthMiddleware(t *testing.T) {
 		name               string
 		enableAuth         bool
 		authHeader         string
-		mockParseJWT       func() (*jwtauth.ParsedJWT, error)
-		mockValidateIAM    func(string, string) error
+		iamAddr            string
 		expectedStatusCode int
 		shouldCallNext     bool
 	}{
@@ -50,82 +50,42 @@ func TestJWTAuthMiddleware(t *testing.T) {
 			shouldCallNext:     true,
 		},
 		{
-			name:               "no auth header, should return 401",
+			name:       "no auth header when auth enabled, should be rejected",
+			enableAuth: true,
+			authHeader: "",
+			// EnableFuncTokenAuth=true means JWTAuthMiddleware must reject non-whitelisted requests without a token.
+			expectedStatusCode: http.StatusUnauthorized,
+			shouldCallNext:     false,
+		},
+		{
+			name:               "invalid JWT format, should return 401",
 			enableAuth:         true,
-			authHeader:         "",
+			authHeader:         "invalid.jwt.token",
 			expectedStatusCode: http.StatusUnauthorized,
 			shouldCallNext:     false,
 		},
 		{
-			name:       "invalid JWT format, should return 401",
-			enableAuth: true,
-			authHeader: "invalid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return nil, errors.New("invalid JWT format")
-			},
-			expectedStatusCode: http.StatusUnauthorized,
-			shouldCallNext:     false,
-		},
-		{
-			name:       "invalid role, should return 401",
-			enableAuth: true,
-			authHeader: "valid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Header: &jwtauth.JWTHeader{
-						Alg: "HMAC-SHA256",
-						Typ: "JWT",
-					},
-					Payload: &jwtauth.JWTPayload{
-						Sub:  "tenant123",
-						Role: "user",
-					},
-				}, nil
-			},
+			name:               "invalid role, should return 401",
+			enableAuth:         true,
+			authHeader:         middlewareTestJWT("tenant123", "user"),
 			expectedStatusCode: http.StatusUnauthorized,
 			shouldCallNext:     false,
 		},
 		{
 			name:       "IAM validation failed, should return 401",
 			enableAuth: true,
-			authHeader: "valid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Header: &jwtauth.JWTHeader{
-						Alg: "HMAC-SHA256",
-						Typ: "JWT",
-					},
-					Payload: &jwtauth.JWTPayload{
-						Sub:  "tenant123",
-						Role: "developer",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(authHeader, traceID string) error {
-				return errors.New("IAM validation failed")
-			},
+			authHeader: middlewareTestJWT("tenant123", "developer"),
+			// Non-empty unreachable IAM address exercises the real IAM validation failure path.
+			iamAddr:            "127.0.0.1:1",
 			expectedStatusCode: http.StatusUnauthorized,
 			shouldCallNext:     false,
 		},
 		{
 			name:       "valid JWT and IAM, should pass",
 			enableAuth: true,
-			authHeader: "valid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Header: &jwtauth.JWTHeader{
-						Alg: "HMAC-SHA256",
-						Typ: "JWT",
-					},
-					Payload: &jwtauth.JWTPayload{
-						Sub:  "tenant123",
-						Role: "developer",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(authHeader, traceID string) error {
-				return nil
-			},
+			authHeader: middlewareTestJWT("tenant123", "developer"),
+			// Empty IAM address intentionally exercises ValidateWithIamServer's configured skip path.
+			iamAddr:            "",
 			expectedStatusCode: http.StatusOK,
 			shouldCallNext:     true,
 		},
@@ -138,22 +98,11 @@ func TestJWTAuthMiddleware(t *testing.T) {
 			c, router := gin.CreateTestContext(w)
 
 			// Set config
+			origIAMAddr := config.GetConfig().IamConfig.Addr
 			config.GetConfig().IamConfig.EnableFuncTokenAuth = tt.enableAuth
-
-			// Mock functions
-			patches := make([]*gomonkey.Patches, 0)
-			if tt.mockParseJWT != nil {
-				patch := gomonkey.ApplyFunc(jwtauth.ParseJWT, tt.mockParseJWT)
-				patches = append(patches, patch)
-			}
-			if tt.mockValidateIAM != nil {
-				patch := gomonkey.ApplyFunc(jwtauth.ValidateWithIamServer, tt.mockValidateIAM)
-				patches = append(patches, patch)
-			}
+			config.GetConfig().IamConfig.Addr = tt.iamAddr
 			defer func() {
-				for _, p := range patches {
-					p.Reset()
-				}
+				config.GetConfig().IamConfig.Addr = origIAMAddr
 			}()
 
 			// Track if next was called
@@ -184,6 +133,48 @@ func TestJWTAuthMiddleware(t *testing.T) {
 	}
 }
 
+func middlewareTestJWT(sub, role string) string {
+	return strings.Join([]string{
+		base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+			`{"sub":"%s","exp":9876543210,"role":"%s"}`, sub, role))),
+		"signature",
+	}, ".")
+}
+
+func TestJWTAuthMiddlewareStoresClaimsInContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	origEnable := config.GetConfig().IamConfig.EnableFuncTokenAuth
+	origIAMAddr := config.GetConfig().IamConfig.Addr
+	config.GetConfig().IamConfig.EnableFuncTokenAuth = true
+	config.GetConfig().IamConfig.Addr = ""
+	defer func() {
+		config.GetConfig().IamConfig.EnableFuncTokenAuth = origEnable
+		config.GetConfig().IamConfig.Addr = origIAMAddr
+	}()
+
+	router := gin.New()
+	router.POST("/test", JWTAuthMiddleware(), func(ctx *gin.Context) {
+		sub, _ := ctx.Get("jwt_sub")
+		role, _ := ctx.Get("jwt_role")
+		ctx.JSON(http.StatusOK, gin.H{
+			"sub":  sub,
+			"role": role,
+		})
+	})
+
+	req, _ := http.NewRequest(http.MethodPost, "/test", nil)
+	req.Header.Set(jwtauth.HeaderXAuth, middlewareTestJWT("tenant123", "developer"))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"sub":"tenant123"`)
+	assert.Contains(t, recorder.Body.String(), `"role":"developer"`)
+}
+
 func TestJWTAuthMiddleware_Integration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -206,9 +197,10 @@ func TestJWTAuthMiddleware_Integration(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:               "auth enabled rejects missing token",
-			enableAuth:         true,
-			authHeader:         "",
+			name:       "auth enabled without header is rejected",
+			enableAuth: true,
+			authHeader: "",
+			// Direct JWTAuthMiddleware is strict when auth is enabled; whitelist skipping is handled by GlobalJWTAuthMiddleware.
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 	}

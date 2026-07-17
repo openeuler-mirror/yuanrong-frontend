@@ -283,11 +283,59 @@ func TestInitRouteRegistersGlobalSchedulerResources(t *testing.T) {
 	r := gin.New()
 	InitRoute(r)
 
-	for _, route := range r.Routes() {
-		if route.Method == http.MethodGet && route.Path == "/global-scheduler/resources" {
-			return
-		}
+	if routeExists(r, http.MethodGet, "/global-scheduler/resources") {
+		return
 	}
 
 	t.Fatalf("GET /global-scheduler/resources route is not registered")
+}
+
+func TestInitRouteRegistersProtectedTokenProxyRoutes(t *testing.T) {
+	config.InitFunctionConfig([]byte(cfg))
+	r := gin.New()
+	InitRoute(r)
+
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/auth/token/require"},
+		{method: http.MethodGet, path: "/auth/token/abandon"},
+	}
+
+	for _, route := range routes {
+		if !routeExists(r, route.method, route.path) {
+			t.Fatalf("%s %s route is not registered", route.method, route.path)
+		}
+	}
+}
+
+func TestInitRouteDoesNotRegisterDeveloperTenantCRUDRoutes(t *testing.T) {
+	config.InitFunctionConfig([]byte(cfg))
+	r := gin.New()
+	InitRoute(r)
+
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/auth/tenants/developers"},
+		{method: http.MethodGet, path: "/auth/tenants/developers/:tenant_id"},
+		{method: http.MethodDelete, path: "/auth/tenants/developers/:tenant_id"},
+		{method: http.MethodPatch, path: "/auth/tenants/developers/:tenant_id"},
+	}
+	for _, route := range routes {
+		if routeExists(r, route.method, route.path) {
+			t.Fatalf("%s %s route should not be registered", route.method, route.path)
+		}
+	}
+}
+
+func routeExists(r *gin.Engine, method string, path string) bool {
+	for _, route := range r.Routes() {
+		if route.Method == method && route.Path == path {
+			return true
+		}
+	}
+	return false
 }

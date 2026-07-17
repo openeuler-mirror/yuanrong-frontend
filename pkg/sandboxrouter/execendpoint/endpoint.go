@@ -122,6 +122,14 @@ func (s *Store) PutSummary(summary Summary) {
 	s.summaries[summary.InstanceID] = summary
 }
 
+// GetSummary returns the cached RUNNING instance summary for instanceID.
+func (s *Store) GetSummary(instanceID string) (Summary, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	summary, ok := s.summaries[instanceID]
+	return summary, ok
+}
+
 // Delete removes the endpoint for instanceID (no-op if absent).
 func (s *Store) Delete(instanceID string) {
 	s.mu.Lock()

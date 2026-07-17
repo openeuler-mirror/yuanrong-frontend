@@ -172,12 +172,6 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 				}
 
 				defer patches.Reset()
-			} else {
-				// For non-invoke URLs, mock isInvokeURL to return false
-				patches = gomonkey.ApplyFunc(isInvokeURL, func(path string) bool {
-					return false
-				})
-				defer patches.Reset()
 			}
 
 			// Create test context
@@ -260,25 +254,6 @@ func TestIsInvokeURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := isInvokeURL(tt.path)
 			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestIsSandboxDirectURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		path     string
-		expected bool
-	}{
-		{name: "exact direct", path: "/direct", expected: true},
-		{name: "direct child", path: "/direct/demo/50090/invoke", expected: true},
-		{name: "similar prefix", path: "/directly/demo", expected: false},
-		{name: "api path", path: "/api/sandbox/v1/sandboxes", expected: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, isSandboxDirectURL(tt.path))
 		})
 	}
 }

@@ -18,13 +18,14 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
-	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 
@@ -46,8 +47,7 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 		name               string
 		enableAuth         bool
 		authHeader         string
-		mockParseJWT       func() (*jwtauth.ParsedJWT, error)
-		mockValidateIAM    func(string, string) error
+		iamAddr            string
 		requestBody        map[string]interface{}
 		expectedStatusCode int
 	}{
@@ -59,70 +59,42 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:               "invoke without JWT when auth enabled",
+			name:        "invoke without JWT when auth enabled should be rejected",
+			enableAuth:  true,
+			authHeader:  "",
+			requestBody: map[string]interface{}{"test": "data"},
+			// EnableFuncTokenAuth=true makes JWT mandatory on non-whitelisted routes.
+			expectedStatusCode: http.StatusUnauthorized,
+		},
+		{
+			name:               "invoke with invalid JWT",
 			enableAuth:         true,
-			authHeader:         "",
+			authHeader:         "invalid.jwt.token",
 			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
-			name:       "invoke with invalid JWT",
-			enableAuth: true,
-			authHeader: "invalid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return nil, errors.New("invalid JWT")
-			},
-			requestBody:        map[string]interface{}{"test": "data"},
-			expectedStatusCode: http.StatusUnauthorized,
-		},
-		{
-			name:       "invoke with wrong role",
-			enableAuth: true,
-			authHeader: "valid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Sub:  "tenant123",
-						Role: "user",
-					},
-				}, nil
-			},
+			name:               "invoke with wrong role",
+			enableAuth:         true,
+			authHeader:         jwtIntegrationTestToken("tenant123", "user"),
 			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
 			name:       "invoke with valid JWT but IAM validation failed",
 			enableAuth: true,
-			authHeader: "valid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Sub:  "tenant123",
-						Role: "developer",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(authHeader, traceID string) error {
-				return errors.New("IAM validation failed")
-			},
+			authHeader: jwtIntegrationTestToken("tenant123", "developer"),
+			// Non-empty unreachable IAM address exercises the real IAM validation failure path.
+			iamAddr:            "127.0.0.1:1",
 			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 		{
 			name:       "invoke with valid JWT and IAM",
 			enableAuth: true,
-			authHeader: "valid.jwt.token",
-			mockParseJWT: func() (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Sub:  "tenant123",
-						Role: "developer",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(authHeader, traceID string) error {
-				return nil
-			},
+			authHeader: jwtIntegrationTestToken("tenant123", "developer"),
+			// Empty IAM address intentionally exercises ValidateWithIamServer's configured skip path.
+			iamAddr:            "",
 			requestBody:        map[string]interface{}{"test": "data"},
 			expectedStatusCode: http.StatusOK,
 		},
@@ -131,22 +103,11 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup config
+			origIAMAddr := config.GetConfig().IamConfig.Addr
 			config.GetConfig().IamConfig.EnableFuncTokenAuth = tt.enableAuth
-
-			// Setup mocks
-			patches := make([]*gomonkey.Patches, 0)
-			if tt.mockParseJWT != nil {
-				patch := gomonkey.ApplyFunc(jwtauth.ParseJWT, tt.mockParseJWT)
-				patches = append(patches, patch)
-			}
-			if tt.mockValidateIAM != nil {
-				patch := gomonkey.ApplyFunc(jwtauth.ValidateWithIamServer, tt.mockValidateIAM)
-				patches = append(patches, patch)
-			}
+			config.GetConfig().IamConfig.Addr = tt.iamAddr
 			defer func() {
-				for _, p := range patches {
-					p.Reset()
-				}
+				config.GetConfig().IamConfig.Addr = origIAMAddr
 			}()
 
 			// Create router with middleware (simulating InitRoute behavior)
@@ -173,6 +134,15 @@ func TestInvokeHandlerWithJWTMiddleware(t *testing.T) {
 			assert.Equal(t, tt.expectedStatusCode, w.Code, "status code mismatch for test: "+tt.name)
 		})
 	}
+}
+
+func jwtIntegrationTestToken(sub, role string) string {
+	return strings.Join([]string{
+		base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)),
+		base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+			`{"sub":"%s","exp":9876543210,"role":"%s"}`, sub, role))),
+		"signature",
+	}, ".")
 }
 
 func TestMultipleEndpointsWithJWTMiddleware(t *testing.T) {
@@ -213,10 +183,11 @@ func TestMultipleEndpointsWithJWTMiddleware(t *testing.T) {
 			expectedStatusCode: http.StatusOK,
 		},
 		{
-			name:               "invoke without auth when enabled should fail",
-			endpoint:           "/invoke",
-			authHeader:         "",
-			enableAuth:         true,
+			name:       "invoke without auth when enabled should be rejected",
+			endpoint:   "/invoke",
+			authHeader: "",
+			enableAuth: true,
+			// The route has JWT middleware and is not whitelisted; enabled auth requires a token.
 			expectedStatusCode: http.StatusUnauthorized,
 		},
 	}
