@@ -110,6 +110,9 @@ type CreateRequest struct {
 	Rootfs    string   `json:"rootfs"`
 	Image     string   `json:"image"`
 	Ports     []string `json:"ports"`
+	// portRouteKinds is populated only by the frontend for runtime-owned ports.
+	// It is deliberately not part of the public SDK request contract.
+	portRouteKinds map[int]string
 	// Resource and runtime extras (honored by v1 create; 0/nil = use default).
 	Cpu         int                      `json:"cpu"`
 	Memory      int                      `json:"memory"`
@@ -166,6 +169,7 @@ type CreateV1Request struct {
 	Tunnel                 TunnelSpec               `json:"tunnel,omitempty"`
 	CreateTimeoutSeconds   int                      `json:"createTimeoutSeconds"`
 	ScheduleTimeoutSeconds int                      `json:"scheduleTimeoutSeconds"`
+	portRouteKinds         map[int]string
 }
 
 type TunnelInfo struct {
@@ -230,6 +234,7 @@ func CreateV1Handler(ctx *gin.Context) {
 		Runtime:                req.Runtime,
 		Rootfs:                 rootfs,
 		Ports:                  req.Ports,
+		portRouteKinds:         req.portRouteKinds,
 		Cpu:                    req.Cpu,
 		Memory:                 req.Memory,
 		CpuLimit:               req.CpuLimit,
@@ -293,6 +298,7 @@ func createV1Response(instanceID, status string, tunnelInfo *TunnelInfo) map[str
 
 func prepareSandboxRRTHTTP(req *CreateV1Request) {
 	req.Ports = appendUniquePorts(req.Ports, strconv.Itoa(sandboxDefaultRRTHTTPPort))
+	setSandboxPortRouteKind(req, sandboxDefaultRRTHTTPPort, sandboxRouteDirect)
 	if req.Env == nil {
 		req.Env = map[string]string{}
 	}
@@ -323,6 +329,8 @@ func prepareSandboxTunnel(req *CreateV1Request) *TunnelInfo {
 		proxyPort = sandboxDefaultTunnelHTTPPort
 	}
 	req.Ports = appendUniquePorts(req.Ports, strconv.Itoa(wsPort), strconv.Itoa(proxyPort))
+	setSandboxPortRouteKind(req, wsPort, sandboxRouteTunnel)
+	setSandboxPortRouteKind(req, proxyPort, sandboxRouteDirect)
 	if req.Env == nil {
 		req.Env = map[string]string{}
 	}
@@ -334,6 +342,13 @@ func prepareSandboxTunnel(req *CreateV1Request) *TunnelInfo {
 		ProxyURL:  fmt.Sprintf("http://127.0.0.1:%d", proxyPort),
 		ProxyPort: proxyPort,
 	}
+}
+
+func setSandboxPortRouteKind(req *CreateV1Request, port int, routeKind string) {
+	if req.portRouteKinds == nil {
+		req.portRouteKinds = make(map[int]string)
+	}
+	req.portRouteKinds[port] = routeKind
 }
 
 func appendUniquePorts(ports []string, values ...string) []string {
@@ -454,7 +469,7 @@ func createSandbox(
 		}
 	}
 	if len(req.Ports) > 0 {
-		networkConfig, err := buildSandboxNetworkConfig(req.Ports)
+		networkConfig, err := buildSandboxNetworkConfig(req.Ports, req.portRouteKinds)
 		if err != nil {
 			if respondOnError {
 				appapi.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
@@ -947,11 +962,18 @@ func buildSandboxResourceSpecJSON(cpu, memory int) (string, error) {
 }
 
 type sandboxPortForwarding struct {
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"`
+	Port      int    `json:"port"`
+	Protocol  string `json:"protocol"`
+	RouteKind string `json:"routeKind"`
 }
 
-func buildSandboxNetworkConfig(ports []string) (string, error) {
+const (
+	sandboxRoutePublic = "public"
+	sandboxRouteDirect = "direct"
+	sandboxRouteTunnel = "tunnel"
+)
+
+func buildSandboxNetworkConfig(ports []string, routeKinds map[int]string) (string, error) {
 	// The sandbox data plane is L7-only (sandboxrouter is an HTTP/WS reverse
 	// proxy; there is no L4 routing). So a forwarded port declares its L7
 	// SCHEME ("http"/"https"), NOT a transport protocol — the scheme flows
@@ -984,8 +1006,9 @@ func buildSandboxNetworkConfig(ports []string) (string, error) {
 			return "", fmt.Errorf("port scheme must be http or https, got %s", scheme)
 		}
 		portForwardings = append(portForwardings, sandboxPortForwarding{
-			Port:     port,
-			Protocol: scheme,
+			Port:      port,
+			Protocol:  scheme,
+			RouteKind: sandboxPortRouteKind(port, routeKinds),
 		})
 	}
 
@@ -997,6 +1020,13 @@ func buildSandboxNetworkConfig(ports []string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func sandboxPortRouteKind(port int, routeKinds map[int]string) string {
+	if routeKind, ok := routeKinds[port]; ok {
+		return routeKind
+	}
+	return sandboxRoutePublic
 }
 
 func isSandboxInstanceRunning(instanceID, functionID, resourceSpecNote string) bool {

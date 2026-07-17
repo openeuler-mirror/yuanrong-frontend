@@ -618,7 +618,7 @@ func TestCreateHandlerPassesPortForwardingsToNetworkCreateOption(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(
 		t,
-		`{"portForwardings":[{"port":8080,"protocol":"http"},{"port":9090,"protocol":"https"}]}`,
+		`{"portForwardings":[{"port":8080,"protocol":"http","routeKind":"public"},{"port":9090,"protocol":"https","routeKind":"public"}]}`,
 		capturedInvokeOpt.CreateOpt["network"],
 	)
 }
@@ -920,7 +920,7 @@ func TestCreateV1HandlerFrontendOwnsTunnelSetup(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(
 		t,
-		`{"portForwardings":[{"port":50090,"protocol":"http"},{"port":8765,"protocol":"http"},{"port":8766,"protocol":"http"}]}`,
+		`{"portForwardings":[{"port":50090,"protocol":"http","routeKind":"direct"},{"port":8765,"protocol":"http","routeKind":"tunnel"},{"port":8766,"protocol":"http","routeKind":"direct"}]}`,
 		capturedInvokeOpt.CreateOpt["network"],
 	)
 	require.JSONEq(
