@@ -191,6 +191,8 @@ func TestCreateHandlerPropagatesHeaderTenantID(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
+	require.Equal(t, sandboxModuleName, capturedFuncMeta.ModuleName)
+	require.Equal(t, sandboxClassName, capturedFuncMeta.ClassName)
 	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	require.Equal(t, "header-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
