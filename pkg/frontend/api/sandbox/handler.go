@@ -51,6 +51,8 @@ const (
 	sandboxInstanceType            = "reserved"
 	sandboxDelegateDirectory       = "/tmp"
 	sandboxConcurrency             = "1"
+	sandboxModuleName              = "yr.sandbox.sandbox"
+	sandboxClassName               = "SandboxInstance"
 	sandboxTemporarySchedulerNote  = "-temporary"
 	sandboxKillInstanceSignal      = constant.KillSignalVal
 	sandboxRunningPollTimeout      = 5 * time.Second
@@ -127,11 +129,13 @@ func CreateHandler(ctx *gin.Context) {
 
 func buildSandboxFunctionMeta(req CreateRequest, funcID string) api.FunctionMeta {
 	return api.FunctionMeta{
-		FuncID:    funcID,
-		Language:  api.Python,
-		Api:       api.ActorApi,
-		Name:      &req.Name,
-		Namespace: &req.Namespace,
+		FuncID:     funcID,
+		ModuleName: sandboxModuleName,
+		ClassName:  sandboxClassName,
+		Language:   api.Python,
+		Api:        api.ActorApi,
+		Name:       &req.Name,
+		Namespace:  &req.Namespace,
 	}
 }
 
@@ -173,8 +177,8 @@ func buildSandboxInvokeOptions(
 	invokeOpts.CreateOpt["DELEGATE_DIRECTORY_INFO"] = sandboxDelegateDirectory
 	invokeOpts.CreateOpt["DELEGATE_DIRECTORY_QUOTA"] = fmt.Sprintf("%d", sandboxDirectoryQuotaMB)
 	invokeOpts.CreateOpt["ConcurrentNum"] = sandboxConcurrency
-	invokeOpts.CreateOpt["moduleName"] = "yr.sandbox.sandbox"
-	invokeOpts.CreateOpt["className"] = "SandboxInstance"
+	invokeOpts.CreateOpt["moduleName"] = sandboxModuleName
+	invokeOpts.CreateOpt["className"] = sandboxClassName
 	if resSpecJSON, err := buildSandboxResourceSpecJSON(invokeOpts.Cpu, invokeOpts.Memory); err == nil {
 		invokeOpts.CreateOpt[constant.ResourceSpecNote] = resSpecJSON
 	} else {
