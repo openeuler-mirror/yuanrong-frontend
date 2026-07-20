@@ -19,6 +19,7 @@ package frontend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -28,13 +29,19 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/grpc/pb/core"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/frontend/common/httputil"
+	"frontend/pkg/frontend/common/jwtauth"
+	"frontend/pkg/frontend/common/tenantauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/metrics"
+	"frontend/pkg/frontend/sandboxrouter/execendpoint"
 	"frontend/pkg/frontend/serverstatus"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
@@ -216,52 +223,201 @@ func KillHandler(ctx *gin.Context) {
 	startTime := time.Now()
 	var httpCode int
 	hasError := false
-
-	// Use defer to ensure metrics are reported even if function returns early
-	defer func() {
-		if httpCode == 0 {
-			if hasError {
-				httpCode = http.StatusInternalServerError
-			} else {
-				httpCode = http.StatusOK
-			}
-		}
-		httpCodeStr := strconv.Itoa(httpCode)
-
-		// Report operation count
-		if err := metrics.IncrementCounter("handler_kill_operations_total", httpCodeStr); err != nil {
-			log.GetLogger().Debugf("failed to report handler_kill_operations_total metric: %v", err)
-		}
-
-		// Report operation duration
-		duration := time.Since(startTime)
-		if err := metrics.ObserveHistogram("handler_kill_operation_duration_seconds", duration.Seconds()); err != nil {
-			log.GetLogger().Debugf("failed to report handler_kill_operation_duration_seconds metric: %v", err)
-		}
-	}()
+	defer reportKillMetrics(startTime, &httpCode, &hasError)
 
 	remoteClientID, traceID := getHeaderPrams(ctx)
 	spanCtx, span := otel.Tracer(tracer.GetOtelServiceName()).Start(ctx.Request.Context(), "http.kill")
 	defer span.End()
 	log.GetLogger().Infof("%s|receives instance kill request, remoteClientID: %s", traceID, remoteClientID)
+	httpCode, hasError = handleKillRequest(ctx, traceID, spanCtx)
+}
+
+func handleKillRequest(ctx *gin.Context, traceID string, spanCtx context.Context) (int, bool) {
 	body, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
 		log.GetLogger().Errorf("failed to read request body error %s", err.Error())
-		httpCode = http.StatusInternalServerError
-		hasError = true
-		SetCtxResponse(ctx, nil, httpCode)
-		return
+		SetCtxResponse(ctx, nil, http.StatusInternalServerError)
+		return http.StatusInternalServerError, true
 	}
-	resp, err := util.NewClient().KillRaw(body, buildRawRequestOption(spanCtx))
+	killReqRaw, isJSON, err := buildKillRequestBody(ctx, traceID, body)
+	if err != nil {
+		SetCtxResponse(ctx, []byte(err.Error()), http.StatusBadRequest)
+		return http.StatusBadRequest, true
+	}
+
+	needsAuth, errCode, authErr := ensureKillJWTContext(ctx, traceID)
+	if authErr != nil {
+		log.GetLogger().Warnf("%s|rejects instance kill request: %s", traceID, authErr.Error())
+		SetCtxResponse(ctx, []byte(authErr.Error()), errCode)
+		return errCode, true
+	}
+	if needsAuth {
+		killReq, _, decodeErr := decodeKillRequest(killReqRaw, false)
+		if decodeErr != nil {
+			log.GetLogger().Errorf("%s|failed to decode kill request protobuf: %s", traceID, decodeErr.Error())
+			SetCtxResponse(ctx, []byte(decodeErr.Error()), http.StatusBadRequest)
+			return http.StatusBadRequest, true
+		}
+		if errCode, authErr := authorizeKillRequest(ctx, killReq); authErr != nil {
+			log.GetLogger().Warnf("%s|rejects instance kill request: %s", traceID, authErr.Error())
+			SetCtxResponse(ctx, []byte(authErr.Error()), errCode)
+			return errCode, true
+		}
+	}
+	resp, err := util.NewClient().KillRaw(killReqRaw, buildRawRequestOption(spanCtx))
 	log.GetLogger().Debugf("receive instance kill response, msg: %s", resp)
 	if err != nil {
-		httpCode = http.StatusBadRequest
-		hasError = true
-		SetCtxResponse(ctx, []byte(err.Error()), httpCode)
-		return
+		SetCtxResponse(ctx, []byte(err.Error()), http.StatusBadRequest)
+		return http.StatusBadRequest, true
 	}
-	httpCode = http.StatusOK
+	if err := writeKillResponse(ctx, traceID, resp, isJSON, http.StatusOK); err != nil {
+		SetCtxResponse(ctx, []byte(err.Error()), http.StatusInternalServerError)
+		return http.StatusInternalServerError, true
+	}
+	return http.StatusOK, false
+}
+
+func reportKillMetrics(startTime time.Time, httpCode *int, hasError *bool) {
+	if *httpCode == 0 {
+		if *hasError {
+			*httpCode = http.StatusInternalServerError
+		} else {
+			*httpCode = http.StatusOK
+		}
+	}
+	httpCodeStr := strconv.Itoa(*httpCode)
+	if err := metrics.IncrementCounter("handler_kill_operations_total", httpCodeStr); err != nil {
+		log.GetLogger().Debugf("failed to report handler_kill_operations_total metric: %v", err)
+	}
+	duration := time.Since(startTime)
+	if err := metrics.ObserveHistogram("handler_kill_operation_duration_seconds", duration.Seconds()); err != nil {
+		log.GetLogger().Debugf("failed to report handler_kill_operation_duration_seconds metric: %v", err)
+	}
+}
+
+func buildKillRequestBody(ctx *gin.Context, traceID string, body []byte) ([]byte, bool, error) {
+	// Clients may send JSON instead of a serialized core_service.KillRequest.
+	isJSON := ctx.ContentType() == "application/json"
+	if !isJSON {
+		return body, false, nil
+	}
+	killReqRaw, err := killRequestJSONToProto(body)
+	if err != nil {
+		log.GetLogger().Errorf("%s|failed to decode kill request json: %s", traceID, err.Error())
+		return nil, true, err
+	}
+	return killReqRaw, true, nil
+}
+
+func writeKillResponse(ctx *gin.Context, traceID string, resp []byte, isJSON bool, httpCode int) error {
+	if isJSON {
+		jsonResp, convErr := killResponseProtoToJSON(resp)
+		if convErr != nil {
+			log.GetLogger().Errorf("%s|failed to encode kill response json: %s", traceID, convErr.Error())
+			return convErr
+		}
+		ctx.Writer.Header().Set("Content-Type", "application/json")
+		SetCtxResponse(ctx, jsonResp, httpCode)
+		return nil
+	}
 	SetCtxResponse(ctx, resp, httpCode)
+	return nil
+}
+
+// killRequestJSONToProto transcodes a JSON-encoded kill request into the
+// serialized core_service.KillRequest protobuf expected by the runtime. Unknown
+// JSON fields are ignored so the wire contract can evolve without breaking
+// older clients.
+func killRequestJSONToProto(body []byte) ([]byte, error) {
+	_, raw, err := decodeKillRequest(body, true)
+	return raw, err
+}
+
+func decodeKillRequest(body []byte, isJSON bool) (*core.KillRequest, []byte, error) {
+	killReq := &core.KillRequest{}
+	if len(body) > 0 {
+		if isJSON {
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, killReq); err != nil {
+				return nil, nil, err
+			}
+		} else if err := proto.Unmarshal(body, killReq); err != nil {
+			return nil, nil, err
+		}
+	}
+	raw, err := proto.Marshal(killReq)
+	if err != nil {
+		return nil, nil, err
+	}
+	return killReq, raw, nil
+}
+
+func needsKillAuthorization(ctx *gin.Context) bool {
+	_, hasSub := ctx.Get("jwt_sub")
+	_, hasRole := ctx.Get("jwt_role")
+	return hasSub || hasRole || ctx.GetHeader(jwtauth.HeaderXAuth) != ""
+}
+
+func ensureKillJWTContext(ctx *gin.Context, traceID string) (bool, int, error) {
+	if !needsKillAuthorization(ctx) {
+		return false, http.StatusOK, nil
+	}
+	if _, hasSub := ctx.Get("jwt_sub"); hasSub {
+		if _, hasRole := ctx.Get("jwt_role"); hasRole {
+			return true, http.StatusOK, nil
+		}
+	}
+	token := ctx.GetHeader(jwtauth.HeaderXAuth)
+	identity, errCode, err := tenantauth.AuthenticateDeveloperToken(token, traceID)
+	if err != nil {
+		return true, errCode, err
+	}
+	ctx.Set("jwt_sub", identity.TenantID)
+	ctx.Set("jwt_role", identity.Role)
+	return true, http.StatusOK, nil
+}
+
+func authorizeKillRequest(ctx *gin.Context, killReq *core.KillRequest) (int, error) {
+	callerTenant, _ := ctx.Get("jwt_sub")
+	callerRole, _ := ctx.Get("jwt_role")
+	callerTenantID, ok := callerTenant.(string)
+	if !ok || callerTenantID == "" {
+		return http.StatusForbidden, errors.New("missing caller tenant in JWT context")
+	}
+	callerRoleName, ok := callerRole.(string)
+	if !ok || callerRoleName == "" {
+		return http.StatusForbidden, errors.New("missing caller role in JWT context")
+	}
+	if callerRoleName != jwtauth.RoleDeveloper {
+		return http.StatusForbidden, errors.New("caller role is not authorized to delete instances")
+	}
+	instanceID := killReq.GetInstanceID()
+	if instanceID == "" {
+		return http.StatusBadRequest, errors.New("missing instanceID")
+	}
+	summary, ok := execendpoint.Default().GetSummary(instanceID)
+	if !ok {
+		return http.StatusNotFound, errors.New("instance not found in frontend cache")
+	}
+	if callerTenantID == tenantauth.SystemTenantID {
+		return http.StatusOK, nil
+	}
+	if callerTenantID == summary.TenantID {
+		return http.StatusOK, nil
+	}
+	return http.StatusForbidden, errors.New("caller tenant is not authorized to delete target instance")
+}
+
+// killResponseProtoToJSON transcodes a serialized core_service.KillResponse
+// protobuf into JSON. Enum codes are emitted as numbers and all fields are
+// always populated so clients can rely on a stable {"code","message"} shape.
+func killResponseProtoToJSON(raw []byte) ([]byte, error) {
+	killResp := &core.KillResponse{}
+	if len(raw) > 0 {
+		if err := proto.Unmarshal(raw, killResp); err != nil {
+			return nil, err
+		}
+	}
+	return protojson.MarshalOptions{UseEnumNumbers: true, EmitUnpopulated: true}.Marshal(killResp)
 }
 
 func getHeaderPrams(ctx *gin.Context) (string, string) {

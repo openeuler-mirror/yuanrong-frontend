@@ -104,6 +104,15 @@ func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api
 	return InstanceID, nil
 }
 
+func (c *fakeClient) InvokeInstanceByLibRtAndGet(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) ([]byte, error) {
+	return nil, nil
+}
+
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -212,6 +221,15 @@ func (c *fakeFailedClient) Kill(req *function.KillRequest) (*function.KillRespon
 func (c *fakeFailedClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (instanceID string, err error) {
 	InstanceID := ""
 	return InstanceID, nil
+}
+
+func (c *fakeFailedClient) InvokeInstanceByLibRtAndGet(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) ([]byte, error) {
+	return nil, errors.New("runtime initialization timed out after 3s")
 }
 
 func (c *fakeFailedClient) KillByLibRt(instanceID string, signal int, payload []byte) error {

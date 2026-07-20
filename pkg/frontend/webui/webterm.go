@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,8 +41,11 @@ import (
 	"frontend/pkg/common/faas_common/grpc/pb/exec_service"
 	"frontend/pkg/common/faas_common/logger/log"
 	"frontend/pkg/frontend/common/jwtauth"
+	"frontend/pkg/frontend/common/tenantauth"
 	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
+	"frontend/pkg/frontend/sandboxrouter/execendpoint"
+	"frontend/pkg/frontend/sandboxrouter/rootfs"
 )
 
 //go:embed static/*
@@ -150,30 +153,53 @@ type InstanceStatus struct {
 	ErrCode  int    `json:"errCode"`  // Error code
 }
 
-// Resources defines resource configuration
+// Resources defines resource configuration.
 type Resources struct {
-	CPU    string `json:"cpu"`    // CPU quota, e.g. "2000m"
-	Memory string `json:"memory"` // Memory quota, e.g. "4Gi"
+	Resources map[string]Resource `json:"resources"`
+}
+
+// Resource defines one named resource quota.
+type Resource struct {
+	Scalar ValueScalar `json:"scalar"`
+}
+
+// ValueScalar stores a scalar resource value.
+type ValueScalar struct {
+	Value float64 `json:"value"`
+	Limit float64 `json:"limit"`
 }
 
 // InstanceInfo defines instance information structure (corresponding to instance returned by master API)
 type InstanceInfo struct {
-	InstanceID       string         `json:"instanceID"`       // Instance ID
-	TenantID         string         `json:"tenantID"`         // Tenant ID
-	ContainerID      string         `json:"containerID"`      // Container ID
-	ProxyGrpcAddress string         `json:"proxyGrpcAddress"` // Proxy gRPC address
-	FunctionProxyID  string         `json:"functionProxyID"`  // Function Proxy ID
-	Function         string         `json:"function"`         // Function name
-	RuntimeAddress   string         `json:"runtimeAddress"`   // Runtime address
-	RuntimeID        string         `json:"runtimeID"`        // Runtime ID
-	InstanceStatus   InstanceStatus `json:"instanceStatus"`   // Instance status
-	Resources        Resources      `json:"resources"`        // Resource configuration
-	StartTime        string         `json:"startTime"`        // Start time
-	RequestID        string         `json:"requestID"`        // Request ID
-	ParentID         string         `json:"parentID"`         // Parent ID
-	JobID            string         `json:"jobID"`            // Job ID
-	NodeIP           string         `json:"nodeIP"`           // Node IP
-	NodePort         string         `json:"nodePort"`         // Node port
+	InstanceID       string            `json:"instanceID"`       // Instance ID
+	TenantID         string            `json:"tenantID"`         // Tenant ID
+	ContainerID      string            `json:"containerID"`      // Container ID
+	ProxyGrpcAddress string            `json:"proxyGrpcAddress"` // Proxy gRPC address
+	FunctionProxyID  string            `json:"functionProxyID"`  // Function Proxy ID
+	Function         string            `json:"function"`         // Function name
+	Image            string            `json:"image"`            // Container image
+	ImageEndpoint    string            `json:"image_endpoint"`   // Non-sensitive image endpoint
+	RuntimeAddress   string            `json:"runtimeAddress"`   // Runtime address
+	RuntimeID        string            `json:"runtimeID"`        // Runtime ID
+	InstanceStatus   InstanceStatus    `json:"instanceStatus"`   // Instance status
+	Resources        Resources         `json:"resources"`        // Resource configuration
+	RequiredCPU      float64           `json:"required_cpu"`     // Requested CPU quota
+	RequiredMem      float64           `json:"required_mem"`     // Requested memory quota
+	RequiredGPU      float64           `json:"required_gpu"`     // Requested GPU quota
+	RequiredNPU      float64           `json:"required_npu"`     // Requested NPU quota
+	LimitCPU         float64           `json:"limit_cpu"`        // CPU limit quota
+	LimitMem         float64           `json:"limit_mem"`        // Memory limit quota
+	RuntimeSeconds   int64             `json:"runtime_seconds"`  // Runtime duration in seconds
+	StartTime        string            `json:"startTime"`        // Start time
+	CreateOptions    map[string]string `json:"createOptions"`    // Create options
+	ScheduleOption   struct {
+		Extension map[string]string `json:"extension"`
+	} `json:"scheduleOption"` // Schedule options
+	RequestID string `json:"requestID"` // Request ID
+	ParentID  string `json:"parentID"`  // Parent ID
+	JobID     string `json:"jobID"`     // Job ID
+	NodeIP    string `json:"nodeIP"`    // Node IP
+	NodePort  string `json:"nodePort"`  // Node port
 }
 
 // InstanceListResponse defines instance list response structure (corresponding to master API response)
@@ -194,6 +220,18 @@ type paginatedInstanceListResponse struct {
 }
 
 var queryMasterFunc = queryMaster
+
+// lookupLocalExecEndpoint resolves an instance's exec backend from the sandbox
+// router's in-memory cache (populated by the /sn/instance watch). It is a
+// package-level seam so tests can stub it. A hit lets getExecAddr skip the
+// master query entirely.
+var lookupLocalExecEndpoint = func(instanceID string) (execendpoint.Endpoint, bool) {
+	return execendpoint.Default().Get(instanceID)
+}
+
+var lookupLocalInstanceSummaries = func(tenantID, instanceID string) []execendpoint.Summary {
+	return execendpoint.Default().ListSummaries(tenantID, instanceID)
+}
 
 type masterQueryError struct {
 	statusCode int
@@ -314,15 +352,181 @@ func summarizeInstances(response InstanceListResponse) []map[string]interface{} 
 			statusText = inst.InstanceStatus.Msg
 		}
 		instance := map[string]interface{}{
-			"id":       inst.InstanceID,
-			"tenantID": inst.TenantID,
-			"function": inst.Function,
-			"status":   statusText,
-			"error":    errorDetail,
+			"id":              inst.InstanceID,
+			"tenantID":        inst.TenantID,
+			"node_id":         inst.FunctionProxyID,
+			"function":        inst.Function,
+			"image":           getInstanceImage(inst),
+			"image_endpoint":  getInstanceImageEndpoint(inst),
+			"status":          statusText,
+			"error":           errorDetail,
+			"required_cpu":    getResourceValueOrDefault("CPU", inst.Resources.Resources, inst.RequiredCPU),
+			"required_mem":    getResourceValueOrDefault("Memory", inst.Resources.Resources, inst.RequiredMem),
+			"required_gpu":    getResourceValueOrDefault("GPU", inst.Resources.Resources, inst.RequiredGPU),
+			"required_npu":    getResourceValueOrDefault("NPU/.+/count", inst.Resources.Resources, inst.RequiredNPU),
+			"limit_cpu":       getResourceLimitOrDefault("CPU", inst.Resources.Resources, inst.LimitCPU),
+			"limit_mem":       getResourceLimitOrDefault("Memory", inst.Resources.Resources, inst.LimitMem),
+			"runtime_seconds": getRuntimeSeconds(inst),
 		}
 		instances = append(instances, instance)
 	}
 	return instances
+}
+
+func summarizeLocalInstanceSummaries(summaries []execendpoint.Summary) []map[string]interface{} {
+	instances := make([]map[string]interface{}, 0, len(summaries))
+	for _, summary := range summaries {
+		resources := convertLocalResources(summary.Resources)
+		inst := InstanceInfo{
+			InstanceID:      summary.InstanceID,
+			TenantID:        summary.TenantID,
+			FunctionProxyID: summary.NodeID,
+			Function:        summary.Function,
+			Image:           summary.Image,
+			ImageEndpoint:   summary.ImageEndpoint,
+			StartTime:       localSummaryStartTime(summary),
+			InstanceStatus: InstanceStatus{
+				Code:     int(summary.StatusCode),
+				ExitCode: int(summary.StatusExitCode),
+				Msg:      summary.StatusMsg,
+				Type:     int(summary.StatusType),
+				ErrCode:  int(summary.StatusErrCode),
+			},
+			Resources: Resources{Resources: resources},
+		}
+		instances = append(instances, summarizeInstances(InstanceListResponse{Instances: []InstanceInfo{inst}})...)
+	}
+	return instances
+}
+
+func localSummaryStartTime(summary execendpoint.Summary) string {
+	if strings.TrimSpace(summary.StartTime) != "" {
+		return summary.StartTime
+	}
+	if summary.ObservedRunningAt.IsZero() {
+		return ""
+	}
+	return summary.ObservedRunningAt.Format(time.RFC3339Nano)
+}
+
+func convertLocalResources(resources map[string]execendpoint.Resource) map[string]Resource {
+	out := make(map[string]Resource, len(resources))
+	for name, resource := range resources {
+		var converted Resource
+		converted.Scalar.Value = resource.Scalar.Value
+		converted.Scalar.Limit = resource.Scalar.Limit
+		out[name] = converted
+	}
+	return out
+}
+
+func paginateInstanceSummaries(summaries []execendpoint.Summary, page, pageSize int) []execendpoint.Summary {
+	start := (page - 1) * pageSize
+	if start >= len(summaries) {
+		return []execendpoint.Summary{}
+	}
+	end := start + pageSize
+	if end > len(summaries) {
+		end = len(summaries)
+	}
+	return summaries[start:end]
+}
+
+func getResourceValueOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
+	if resource, ok := findResource(resourceName, resources); ok {
+		return resource.Scalar.Value
+	}
+	return fallback
+}
+
+func getResourceLimitOrDefault(resourceName string, resources map[string]Resource, fallback float64) float64 {
+	if resource, ok := findResource(resourceName, resources); ok {
+		return resource.Scalar.Limit
+	}
+	return fallback
+}
+
+func findResource(resourceName string, resources map[string]Resource) (Resource, bool) {
+	if resource, ok := resources[resourceName]; ok {
+		return resource, true
+	}
+	for name, resource := range resources {
+		if resourceName == "GPU" && (strings.HasPrefix(name, "GPU/") || strings.HasPrefix(name, "nvidia.com/gpu")) {
+			return resource, true
+		}
+		if resourceName == "NPU/.+/count" && strings.HasPrefix(name, "NPU/") && strings.HasSuffix(name, "/count") {
+			return resource, true
+		}
+	}
+	return Resource{}, false
+}
+
+func getInstanceImage(inst InstanceInfo) string {
+	if strings.TrimSpace(inst.Image) != "" {
+		return strings.TrimSpace(inst.Image)
+	}
+	return getInstanceRootfsDisplay(inst).Image
+}
+
+func getInstanceImageEndpoint(inst InstanceInfo) string {
+	if strings.TrimSpace(inst.ImageEndpoint) != "" {
+		return strings.TrimSpace(inst.ImageEndpoint)
+	}
+	return getInstanceRootfsDisplay(inst).Endpoint
+}
+
+func getInstanceRootfsDisplay(inst InstanceInfo) rootfs.Display {
+	for _, options := range []map[string]string{inst.ScheduleOption.Extension, inst.CreateOptions} {
+		display := rootfs.DisplayInfo(options["rootfs"])
+		if display.Image != "" || display.Endpoint != "" {
+			return display
+		}
+	}
+	return rootfs.Display{}
+}
+
+func getRuntimeSeconds(inst InstanceInfo) int64 {
+	if inst.RuntimeSeconds > 0 {
+		return inst.RuntimeSeconds
+	}
+	return runtimeSecondsSince(inst.StartTime, time.Now())
+}
+
+func runtimeSecondsSince(startTime string, now time.Time) int64 {
+	const (
+		unixTimestampBase     = 10
+		unixTimestampBitSize  = 64
+		millisecondEpochLower = 1_000_000_000_000
+	)
+	startTime = strings.TrimSpace(startTime)
+	if startTime == "" {
+		return 0
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999999 -0700",
+		"2006-01-02 15:04:05",
+	} {
+		if parsed, err := time.Parse(layout, startTime); err == nil {
+			if now.Before(parsed) {
+				return 0
+			}
+			return int64(now.Sub(parsed).Seconds())
+		}
+	}
+	if unix, err := strconv.ParseInt(startTime, unixTimestampBase, unixTimestampBitSize); err == nil {
+		if unix > millisecondEpochLower {
+			unix /= 1000
+		}
+		parsed := time.Unix(unix, 0)
+		if now.Before(parsed) {
+			return 0
+		}
+		return int64(now.Sub(parsed).Seconds())
+	}
+	return 0
 }
 
 func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
@@ -334,10 +538,26 @@ func getExecAddr(instance, tenantID string) (InstanceInfo, error) {
 		tenantID = "default"
 	}
 
-	// Query all instances and find the matching one
+	// Fast path: resolve from the sandbox router's local instance-info cache,
+	// fed by the same /sn/instance etcd watch the frontend already runs. This
+	// avoids a full query-tenant-instances HTTP round trip to the master (which
+	// serializes every instance of the tenant) on every exec.
+	if ep, ok := lookupLocalExecEndpoint(instance); ok && ep.ProxyGrpcAddress != "" {
+		log.GetLogger().Infof("Instance %s resolved from local cache (proxy: %s)",
+			instance, ep.ProxyGrpcAddress)
+		return InstanceInfo{
+			InstanceID:       instance,
+			ContainerID:      ep.ContainerID,
+			ProxyGrpcAddress: ep.ProxyGrpcAddress,
+		}, nil
+	}
+
+	// Fallback: query the master. Used when the sandbox router is disabled or the
+	// instance was created so recently that the watch event has not arrived yet.
 	apiPath := "/instance-manager/query-tenant-instances"
 	queryParams := map[string]string{
-		"tenant_id": tenantID,
+		"tenant_id":   tenantID,
+		"instance_id": instance,
 	}
 
 	// Call generic query function
@@ -423,6 +643,38 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			clientCert.Subject.String(), clientCert.Issuer.String())
 	}
 
+	// Read configuration from URL parameters before WebSocket upgrade so route
+	// resolution failures are reported as non-2xx HTTP responses. Otherwise the
+	// copy/exec client can observe a successfully upgraded connection that closes
+	// without running anything and treat the operation as a success.
+	query := r.URL.Query()
+	instance := query.Get("instance")
+
+	// Resolve and connect to executor backend before upgrading. This turns cache
+	// miss + master fallback timeout into an explicit client-visible failure.
+	info, err := getExecAddr(instance, tenantID)
+	if err != nil {
+		log.GetLogger().Infof("Failed to get executor address: %v", err)
+		http.Error(w, fmt.Sprintf("failed to resolve executor address: %v", err), http.StatusBadGateway)
+		return
+	}
+	grpcConn, err := acquireGrpcConn(info.ProxyGrpcAddress)
+	if err != nil {
+		log.GetLogger().Infof("Failed to connect to executor: %v", err)
+		http.Error(w, fmt.Sprintf("failed to connect to executor: %v", err), http.StatusBadGateway)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	client := exec_service.NewExecServiceClient(grpcConn)
+	stream, err := client.ExecStream(ctx)
+	if err != nil {
+		cancel()
+		releaseGrpcConn(info.ProxyGrpcAddress)
+		log.GetLogger().Infof("Failed to create ExecStream: %v", err)
+		http.Error(w, fmt.Sprintf("failed to create exec stream: %v", err), http.StatusBadGateway)
+		return
+	}
+
 	// Echo back the subprotocol so the browser accepts the upgrade.
 	// If token was sent via Sec-WebSocket-Protocol we must mirror it in the response.
 	var upgradeHeader http.Header
@@ -431,17 +683,17 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	conn, err := upgrader.Upgrade(w, r, upgradeHeader)
 	if err != nil {
+		cancel()
+		releaseGrpcConn(info.ProxyGrpcAddress)
 		log.GetLogger().Infof("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
+	defer cancel()
+	defer releaseGrpcConn(info.ProxyGrpcAddress)
 
 	sessionID := uuid.New().String()
 	log.GetLogger().Infof("WebSocket client connected, session: %s", sessionID)
-
-	// Read configuration from URL parameters
-	query := r.URL.Query()
-	instance := query.Get("instance")
 
 	// Support multi-value command= params (new format: each argv element is a separate param)
 	// and legacy single-value format (space-separated string, e.g. "echo hello").
@@ -471,29 +723,6 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if val, err := fmt.Sscanf(c, "%d", &cols); err == nil && val == 1 {
 			// cols updated
 		}
-	}
-
-	// Connect to executor backend
-	info, err := getExecAddr(instance, tenantID)
-	if err != nil {
-		log.GetLogger().Infof("Failed to get executor address: %v", err)
-		return
-	}
-	grpcConn, err := acquireGrpcConn(info.ProxyGrpcAddress)
-	if err != nil {
-		log.GetLogger().Infof("Failed to connect to executor: %v", err)
-		return
-	}
-	defer releaseGrpcConn(info.ProxyGrpcAddress)
-
-	client := exec_service.NewExecServiceClient(grpcConn)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	stream, err := client.ExecStream(ctx)
-	if err != nil {
-		log.GetLogger().Infof("Failed to create ExecStream: %v", err)
-		return
 	}
 
 	session := &wsSession{
@@ -727,64 +956,39 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.GetLogger().Infof("Session %s disconnected", sessionID)
 }
 
-// HandleInstances returns instance list, queried from master
+// HandleInstances returns RUNNING instance list from the local instance watcher cache.
 func HandleInstances(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Get tenant_id from request parameters, use default if not provided
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, errCode, err := resolveInstancesTenantID(r)
+	if err != nil {
+		http.Error(w, err.Error(), errCode)
+		return
 	}
 
-	// Call master's instance management API
-	apiPath := "/instance-manager/query-tenant-instances"
-	queryParams := map[string]string{
-		"tenant_id": tenantID,
-	}
-	if instanceID := r.URL.Query().Get("instance_id"); instanceID != "" {
-		queryParams["instance_id"] = instanceID
-	}
-	paginationParams, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
+	instanceID := r.URL.Query().Get("instance_id")
+	_, paginated, page, pageSize, err := parseInstancesPagination(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	for key, value := range paginationParams {
-		queryParams[key] = value
-	}
 
-	// Call generic query function
-	var response InstanceListResponse
-	if err := queryMasterFunc(apiPath, queryParams, &response); err != nil {
-		log.GetLogger().Infof("Failed to query instances from master: %v", err)
-		if paginated {
-			writeMasterQueryError(w, err, http.StatusBadGateway)
-			return
-		}
-		// Return empty list on query failure instead of error, so frontend can continue
-		response.Instances = []InstanceInfo{}
+	summaries := lookupLocalInstanceSummaries(tenantID, instanceID)
+	total := len(summaries)
+	if paginated {
+		summaries = paginateInstanceSummaries(summaries, page, pageSize)
 	}
 
 	// Convert to frontend expected format (simplified instance info)
-	instances := summarizeInstances(response)
+	instances := summarizeLocalInstanceSummaries(summaries)
 	if paginated {
-		if response.Page == 0 {
-			response.Page = page
-		}
-		if response.PageSize == 0 {
-			response.PageSize = pageSize
-		}
-		if response.Count == 0 {
-			response.Count = len(instances)
-		}
 		err := json.NewEncoder(w).Encode(paginatedInstanceListResponse{
 			Instances: instances,
-			Count:     response.Count,
-			TenantID:  response.TenantID,
-			Page:      response.Page,
-			PageSize:  response.PageSize,
+			Count:     total,
+			TenantID:  tenantID,
+			Page:      page,
+			PageSize:  pageSize,
 		})
 		if err != nil {
 			log.GetLogger().Infof("Error encoding instances: %v", err)
@@ -798,6 +1002,31 @@ func HandleInstances(w http.ResponseWriter, r *http.Request) {
 		log.GetLogger().Infof("Error encoding instances: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+func resolveInstancesTenantID(r *http.Request) (string, int, error) {
+	rawTenantID := r.URL.Query().Get("tenant_id")
+	requestedTenantID := rawTenantID
+	if requestedTenantID == "" {
+		requestedTenantID = "default"
+	}
+
+	token := r.Header.Get(jwtauth.HeaderXAuth)
+	if token == "" {
+		return requestedTenantID, http.StatusOK, nil
+	}
+	identity, errCode, err := tenantauth.AuthenticateDeveloperToken(token, r.Header.Get("X-Trace-ID"))
+	if err != nil {
+		return "", errCode, err
+	}
+	if identity.IsSystemTenant {
+		if rawTenantID == "" || requestedTenantID == tenantauth.SystemTenantID {
+			return "", http.StatusOK, nil
+		}
+		return requestedTenantID, http.StatusOK, nil
+	}
+
+	return identity.TenantID, http.StatusOK, nil
 }
 
 func instanceStatusText(code int) string {

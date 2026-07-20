@@ -21,7 +21,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/agiledragon/gomonkey/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 
@@ -103,6 +102,12 @@ func TestIsInAuthWhitelist(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "tunnel alias is not a static whitelist rule",
+			path:     "/tunnel/sandbox-demo",
+			method:   "GET",
+			expected: false,
+		},
+		{
 			name:     "auth login page - should be in whitelist",
 			path:     "/auth/login-page",
 			method:   "GET",
@@ -124,6 +129,12 @@ func TestIsInAuthWhitelist(t *testing.T) {
 			name:     "invoke endpoint - should not be in whitelist",
 			path:     "/serverless/v1/posix/instance/invoke",
 			method:   "POST",
+			expected: false,
+		},
+		{
+			name:     "global scheduler resources should require auth",
+			path:     "/global-scheduler/resources",
+			method:   "GET",
 			expected: false,
 		},
 	}
@@ -251,11 +262,12 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 	tests := []struct {
 		name               string
 		path               string
+		routePath          string
 		method             string
 		enableAuth         bool
 		authHeader         string
-		mockParseJWT       func(string) (*jwtauth.ParsedJWT, error)
-		mockValidateIAM    func(string, string) error
+		iamAddr            string
+		isInvokeURL        bool
 		expectedStatusCode int
 		shouldCallNext     bool
 	}{
@@ -278,97 +290,89 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 			shouldCallNext:     true,
 		},
 		{
-			name:               "non-whitelisted path without auth header",
-			path:               "/serverless/v1/posix/instance/invoke",
-			method:             "POST",
-			enableAuth:         true,
-			authHeader:         "",
+			name:       "non-whitelisted path without auth header should be rejected",
+			path:       "/serverless/v1/posix/instance/invoke",
+			method:     "POST",
+			enableAuth: true,
+			authHeader: "",
+			// Global middleware only skips configured whitelist/public-function paths.
+			// Non-whitelisted paths require a JWT when EnableFuncTokenAuth=true.
 			expectedStatusCode: http.StatusUnauthorized,
 			shouldCallNext:     false,
 		},
 		{
-			name:               "terminal path now requires auth",
-			path:               "/terminal/ws",
-			method:             "GET",
-			enableAuth:         true,
-			authHeader:         "",
-			expectedStatusCode: http.StatusOK, // No auth header but optional auth
-			shouldCallNext:     true,
-		},
-		{
-			name:       "invoke URL with RoleUser should be allowed",
-			path:       "/serverless/v1/functions/urn-tenant1-ns1-func1-v1/invocations",
-			method:     "POST",
+			name:       "terminal websocket path is whitelisted",
+			path:       "/terminal/ws",
+			method:     "GET",
 			enableAuth: true,
-			authHeader: "valid-jwt-user",
-			mockParseJWT: func(token string) (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Role: jwtauth.RoleUser,
-						Sub:  "tenant1",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(token, traceID string) error {
-				return nil
-			},
-			expectedStatusCode: http.StatusUnauthorized,
-			shouldCallNext:     false,
-		},
-		{
-			name:       "invoke URL with RoleDeveloper should be allowed",
-			path:       "/serverless/v1/functions/urn-tenant1-ns1-func1-v1/invocations",
-			method:     "POST",
-			enableAuth: true,
-			authHeader: "valid-jwt-developer",
-			mockParseJWT: func(token string) (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Role: jwtauth.RoleDeveloper,
-						Sub:  "tenant1",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(token, traceID string) error {
-				return nil
-			},
+			authHeader: "",
+			// /terminal/ws is explicitly whitelisted because the handler performs its own authentication.
 			expectedStatusCode: http.StatusOK,
 			shouldCallNext:     true,
 		},
 		{
-			name:       "short invoke URL with RoleUser should be allowed",
-			path:       "/tenant1/namespace1/function1/",
-			method:     "POST",
-			enableAuth: true,
-			authHeader: "valid-jwt-user",
-			mockParseJWT: func(token string) (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Role: jwtauth.RoleUser,
-						Sub:  "tenant1",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(token, traceID string) error {
-				return nil
-			},
-			expectedStatusCode: http.StatusUnauthorized,
-			shouldCallNext:     false,
+			name:               "plaintext tunnel path should skip auth",
+			path:               "/tunnel/sandbox-demo",
+			method:             "GET",
+			enableAuth:         true,
+			authHeader:         "",
+			expectedStatusCode: http.StatusOK,
+			shouldCallNext:     true,
 		},
 		{
-			name:       "non-invoke URL with RoleUser should be rejected",
-			path:       "/serverless/v1/posix/instance/create",
-			method:     "POST",
-			enableAuth: true,
-			authHeader: "valid-jwt-user",
-			mockParseJWT: func(token string) (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Role: jwtauth.RoleUser,
-						Sub:  "tenant1",
-					},
-				}, nil
-			},
+			name:               "tls tunnel path should also skip auth",
+			path:               "/tunnel/sandbox-demo",
+			method:             "GET",
+			enableAuth:         true,
+			authHeader:         "",
+			expectedStatusCode: http.StatusOK,
+			shouldCallNext:     true,
+		},
+		{
+			name:        "invoke URL with RoleUser should be allowed",
+			path:        "/serverless/v1/functions/tenant1:namespace1:func1:v1/invocations",
+			routePath:   "/serverless/v1/functions/:function-urn/invocations",
+			method:      "POST",
+			enableAuth:  true,
+			authHeader:  testJWT("tenant1", jwtauth.RoleUser),
+			isInvokeURL: true,
+			// Empty IAM address exercises the real ValidateWithIamServer skip path after role checks pass.
+			iamAddr:            "",
+			expectedStatusCode: http.StatusOK,
+			shouldCallNext:     true,
+		},
+		{
+			name:        "invoke URL with RoleDeveloper should be allowed",
+			path:        "/serverless/v1/functions/tenant1:namespace1:func1:v1/invocations",
+			routePath:   "/serverless/v1/functions/:function-urn/invocations",
+			method:      "POST",
+			enableAuth:  true,
+			authHeader:  testJWT("tenant1", jwtauth.RoleDeveloper),
+			isInvokeURL: true,
+			// Empty IAM address exercises the real ValidateWithIamServer skip path after role checks pass.
+			iamAddr:            "",
+			expectedStatusCode: http.StatusOK,
+			shouldCallNext:     true,
+		},
+		{
+			name:        "short invoke URL with RoleUser should be allowed",
+			path:        "/tenant1/namespace1/function1/",
+			routePath:   "/:tenant-id/:namespace/:function/",
+			method:      "POST",
+			enableAuth:  true,
+			authHeader:  testJWT("tenant1", jwtauth.RoleUser),
+			isInvokeURL: true,
+			// Empty IAM address exercises the real ValidateWithIamServer skip path after role checks pass.
+			iamAddr:            "",
+			expectedStatusCode: http.StatusOK,
+			shouldCallNext:     true,
+		},
+		{
+			name:               "non-invoke URL with RoleUser should be rejected",
+			path:               "/serverless/v1/posix/instance/create",
+			method:             "POST",
+			enableAuth:         true,
+			authHeader:         testJWT("tenant1", jwtauth.RoleUser),
 			expectedStatusCode: http.StatusUnauthorized,
 			shouldCallNext:     false,
 		},
@@ -377,18 +381,9 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 			path:       "/serverless/v1/posix/instance/create",
 			method:     "POST",
 			enableAuth: true,
-			authHeader: "valid-jwt-developer",
-			mockParseJWT: func(token string) (*jwtauth.ParsedJWT, error) {
-				return &jwtauth.ParsedJWT{
-					Payload: &jwtauth.JWTPayload{
-						Role: jwtauth.RoleDeveloper,
-						Sub:  "tenant1",
-					},
-				}, nil
-			},
-			mockValidateIAM: func(token, traceID string) error {
-				return nil
-			},
+			authHeader: testJWT("tenant1", jwtauth.RoleDeveloper),
+			// Empty IAM address exercises the real ValidateWithIamServer skip path after role checks pass.
+			iamAddr:            "",
 			expectedStatusCode: http.StatusOK,
 			shouldCallNext:     true,
 		},
@@ -397,37 +392,39 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Setup config
+			origIAMAddr := config.GetConfig().IamConfig.Addr
 			config.GetConfig().IamConfig.EnableFuncTokenAuth = tt.enableAuth
-
-			// Setup patches
-			patches := make([]*gomonkey.Patches, 0)
-			if tt.mockParseJWT != nil {
-				patch := gomonkey.ApplyFunc(jwtauth.ParseJWT, tt.mockParseJWT)
-				patches = append(patches, patch)
-			}
-			if tt.mockValidateIAM != nil {
-				patch := gomonkey.ApplyFunc(jwtauth.ValidateWithIamServer, tt.mockValidateIAM)
-				patches = append(patches, patch)
-			}
+			config.GetConfig().IamConfig.Addr = tt.iamAddr
 			defer func() {
-				for _, p := range patches {
-					p.Reset()
-				}
+				config.GetConfig().IamConfig.Addr = origIAMAddr
 			}()
 
 			// Create test router
 			router := gin.New()
 			nextCalled := false
-			// Apply both middleware in the correct order
-			router.Use(InvokePreprocessMiddleware())
+			router.Use(func(c *gin.Context) {
+				if tt.isInvokeURL {
+					// GlobalJWTAuthMiddleware relies on InvokePreprocessMiddleware to set this marker in production.
+					// This test focuses on role selection inside GlobalJWTAuthMiddleware, not metadata loading.
+					c.Set(isInvokeURLKey, true)
+				}
+				c.Next()
+			})
 			router.Use(GlobalJWTAuthMiddleware())
-			router.Handle(tt.method, tt.path, func(c *gin.Context) {
+			routePath := tt.routePath
+			if routePath == "" {
+				routePath = tt.path
+			}
+			router.Handle(tt.method, routePath, func(c *gin.Context) {
 				nextCalled = true
 				c.Status(http.StatusOK)
 			})
 
 			// Create request
 			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if tt.name == "tls tunnel path should also skip auth" {
+				req.Header.Set("X-Forwarded-Proto", "https")
+			}
 			if tt.authHeader != "" {
 				req.Header.Set(jwtauth.HeaderXAuth, tt.authHeader)
 			}
@@ -443,4 +440,30 @@ func TestGlobalJWTAuthMiddleware(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDirectSandboxInvokeAllowsUserRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origIAMAddr := config.GetConfig().IamConfig.Addr
+	origEnableAuth := config.GetConfig().IamConfig.EnableFuncTokenAuth
+	config.GetConfig().IamConfig.EnableFuncTokenAuth = true
+	config.GetConfig().IamConfig.Addr = ""
+	defer func() {
+		config.GetConfig().IamConfig.Addr = origIAMAddr
+		config.GetConfig().IamConfig.EnableFuncTokenAuth = origEnableAuth
+	}()
+
+	router := gin.New()
+	router.Use(InvokePreprocessMiddleware())
+	router.Use(GlobalJWTAuthMiddleware())
+	router.POST("/direct/:sandbox/invoke", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/direct/default-demo/invoke", nil)
+	req.Header.Set(jwtauth.HeaderXAuth, testJWT("tenant1", jwtauth.RoleUser))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 }

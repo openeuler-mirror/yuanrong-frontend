@@ -31,6 +31,7 @@ import (
 	"frontend/pkg/common/faas_common/tls"
 	"frontend/pkg/common/faas_common/types"
 	wisecloudTypes "frontend/pkg/common/faas_common/wisecloudtool/types"
+	sandboxconfig "frontend/pkg/frontend/sandboxrouter/config"
 )
 
 // FunctionRequestInfo function response info
@@ -90,30 +91,31 @@ type InitResp struct {
 
 // Config is the config used by faas frontend function
 type Config struct {
-	InstanceNum             int                        `json:"instanceNum"`
-	CPU                     float64                    `json:"cpu" valid:"optional"`
-	Memory                  float64                    `json:"memory" valid:"optional"`
-	SLAQuota                int                        `json:"slaQuota" valid:"optional"`
-	Runtime                 RuntimeConfig              `json:"runtime" valid:"optional"`
-	LocalAuth               *localauth.AuthConfig      `json:"localAuth"`
-	MetaEtcd                etcd3.EtcdConfig           `json:"metaEtcd" valid:"required"`
-	DataSystemEtcd          etcd3.EtcdConfig           `json:"dataSystemEtcd" valid:"optional"`
-	CAEMetaEtcd             etcd3.EtcdConfig           `json:"caeMetaEtcd" valid:"optional"`
-	RouterEtcd              etcd3.EtcdConfig           `json:"routerEtcd" valid:"required"`
-	RedisConfig             RedisConfig                `json:"redisConfig" valid:"optional"`
-	HTTPConfig              *FrontendHTTP              `json:"http" valid:"optional"`
-	HTTPSConfig             *tls.InternalHTTPSConfig   `json:"httpsConfig" valid:"optional"`
-	DataSystemConfig        *types.DataSystemConfig    `json:"dataSystemConfig" valid:"optional"`
-	StreamEnable            bool                       `json:"streamEnable"  valid:"optional"`
-	StateDisable            bool                       `json:"stateDisable"  valid:"optional"`
-	BusinessType            int                        `json:"businessType"`
-	FunctionInvokeBackend   int                        `json:"functionInvokeBackend" valid:"optional"`
-	SccConfig               crypto.SccConfig           `json:"sccConfig" valid:"optional"`
-	Image                   string                     `json:"image" valid:"optional"`
-	SchedulerKeyPrefixType  string                     `json:"schedulerKeyPrefixType" valid:"optional"`
-	MemoryControlConfig     *types.MemoryControlConfig `json:"memoryControlConfig" valid:"optional"`
-	MemoryEvaluatorConfig   *MemoryEvaluatorConfig     `json:"memoryEvaluatorConfig" valid:"optional"`
-	DefaultTenantLimitQuota int                        `json:"defaultTenantLimitQuota" valid:"optional"`
+	InstanceNum             int                                `json:"instanceNum"`
+	CPU                     float64                            `json:"cpu" valid:"optional"`
+	Memory                  float64                            `json:"memory" valid:"optional"`
+	SLAQuota                int                                `json:"slaQuota" valid:"optional"`
+	Runtime                 RuntimeConfig                      `json:"runtime" valid:"optional"`
+	LocalAuth               *localauth.AuthConfig              `json:"localAuth"`
+	MetaEtcd                etcd3.EtcdConfig                   `json:"metaEtcd" valid:"required"`
+	DataSystemEtcd          etcd3.EtcdConfig                   `json:"dataSystemEtcd" valid:"optional"`
+	CAEMetaEtcd             etcd3.EtcdConfig                   `json:"caeMetaEtcd" valid:"optional"`
+	RouterEtcd              etcd3.EtcdConfig                   `json:"routerEtcd" valid:"required"`
+	RedisConfig             RedisConfig                        `json:"redisConfig" valid:"optional"`
+	SandboxRouter           *sandboxconfig.SandboxRouterConfig `json:"sandboxRouter" valid:"optional"`
+	HTTPConfig              *FrontendHTTP                      `json:"http" valid:"optional"`
+	HTTPSConfig             *tls.InternalHTTPSConfig           `json:"httpsConfig" valid:"optional"`
+	DataSystemConfig        *types.DataSystemConfig            `json:"dataSystemConfig" valid:"optional"`
+	StreamEnable            bool                               `json:"streamEnable"  valid:"optional"`
+	StateDisable            bool                               `json:"stateDisable"  valid:"optional"`
+	BusinessType            int                                `json:"businessType"`
+	FunctionInvokeBackend   int                                `json:"functionInvokeBackend" valid:"optional"`
+	SccConfig               crypto.SccConfig                   `json:"sccConfig" valid:"optional"`
+	Image                   string                             `json:"image" valid:"optional"`
+	SchedulerKeyPrefixType  string                             `json:"schedulerKeyPrefixType" valid:"optional"`
+	MemoryControlConfig     *types.MemoryControlConfig         `json:"memoryControlConfig" valid:"optional"`
+	MemoryEvaluatorConfig   *MemoryEvaluatorConfig             `json:"memoryEvaluatorConfig" valid:"optional"`
+	DefaultTenantLimitQuota int                                `json:"defaultTenantLimitQuota" valid:"optional"`
 	// frontend pool
 	DynamicPoolEnable bool `json:"dynamicPoolEnable" valid:"optional"`
 	// CaaS config
