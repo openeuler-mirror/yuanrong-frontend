@@ -384,3 +384,20 @@ func Test_convertCommonInvokeOption(t *testing.T) {
 		})
 	})
 }
+
+func TestConvertAcquireOption(t *testing.T) {
+	Convey("Test convertAcquireOption", t, func() {
+		req := commontype.AcquireOption{
+			TraceID:       "id3",
+			TraceParent:   "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01",
+			SchedulerID:   "scheduler-id",
+			ResourceSpecs: map[string]int64{"cpu": 1},
+			Timeout:       60,
+		}
+
+		res := convertAcquireOption(req)
+		So(res.TraceID, ShouldEqual, req.TraceID)
+		So(res.CustomExtensions, ShouldNotBeNil)
+		So(res.CustomExtensions[traceParentExtensionKey], ShouldEqual, req.TraceParent)
+	})
+}

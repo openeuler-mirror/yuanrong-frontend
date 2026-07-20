@@ -44,6 +44,7 @@ import (
 	"frontend/pkg/frontend/metrics"
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/responsehandler"
+	"frontend/pkg/frontend/sandboxrouter"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/server"
 	"frontend/pkg/frontend/state"
@@ -201,6 +202,11 @@ func SignalHandlerLibruntime(signal int, payload []byte) error {
 	return nil
 }
 
+// HealthCheckHandlerLibruntime reports the frontend control-plane function health to libruntime.
+func HealthCheckHandlerLibruntime() (api.HealthType, error) {
+	return api.Healthy, nil
+}
+
 func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct{}) error {
 	util.SetAPIClientLibruntime(rt)
 	schedulerproxy.Proxy.RTAPI = rt
@@ -239,6 +245,10 @@ func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct
 		} else {
 			log.GetLogger().Infof("Prometheus metrics server started on port %d", cfg.HTTPConfig.PrometheusMetricsPort)
 		}
+	}
+
+	if err := sandboxrouter.StartIfEnabled(config.GetConfig().SandboxRouter, stopCh); err != nil {
+		return err
 	}
 
 	return nil

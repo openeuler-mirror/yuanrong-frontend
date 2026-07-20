@@ -174,12 +174,6 @@ func TestPublicFunctionJWTSkipMiddleware(t *testing.T) {
 				}
 
 				defer patches.Reset()
-			} else {
-				// For non-invoke URLs, mock isInvokeURL to return false
-				patches = gomonkey.ApplyFunc(isInvokeURL, func(path string) bool {
-					return false
-				})
-				defer patches.Reset()
 			}
 
 			// Create test context

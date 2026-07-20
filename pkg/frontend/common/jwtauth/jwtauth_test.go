@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,9 +32,10 @@ import (
 )
 
 const (
-	jwtExpirationDeltaSeconds = 60
-	extraExpiredCacheEntries  = 100
-	maxCacheSizeAfterCleanup  = 2
+	jwtTestTTLSeconds       = 60
+	iamCacheExpiryTTL       = 10 * time.Millisecond
+	iamCacheExpiryWait      = 20 * time.Millisecond
+	iamCacheLRUTestCapacity = 2
 )
 
 // createValidJWT 创建一个有效的JWT token用于测试
@@ -98,11 +98,8 @@ func TestParseJWT(t *testing.T) {
 		},
 		{
 			name: "header base64解码失败",
-			authHeader: createValidJWT(
-				"invalid-base64!!!",
-				encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}),
-				"signature",
-			),
+			authHeader: createValidJWT("invalid-base64!!!",
+				encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: time.Now().Unix()}), "signature"),
 			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
@@ -111,9 +108,10 @@ func TestParseJWT(t *testing.T) {
 			},
 		},
 		{
-			name:       "payload base64解码失败",
-			authHeader: createValidJWT(encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}), "invalid-base64!!!", "sig"),
-			wantErr:    true,
+			name: "payload base64解码失败",
+			authHeader: createValidJWT(
+				encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}), "invalid-base64!!!", "sig"),
+			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
 				assert.Error(t, err)
@@ -124,9 +122,7 @@ func TestParseJWT(t *testing.T) {
 			name: "header JSON解析失败",
 			authHeader: createValidJWT(
 				base64.RawURLEncoding.EncodeToString([]byte("invalid json")),
-				encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: uint64(time.Now().Unix())}),
-				"signature",
-			),
+				encodeBase64URL(JWTPayload{Sub: "tenant1", Exp: time.Now().Unix()}), "signature"),
 			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
@@ -136,11 +132,8 @@ func TestParseJWT(t *testing.T) {
 		},
 		{
 			name: "payload JSON解析失败",
-			authHeader: createValidJWT(
-				encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}),
-				base64.RawURLEncoding.EncodeToString([]byte("invalid json")),
-				"signature",
-			),
+			authHeader: createValidJWT(encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}),
+				base64.RawURLEncoding.EncodeToString([]byte("invalid json")), "signature"),
 			wantErr: true,
 			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
 				assert.Nil(t, jwt)
@@ -164,7 +157,7 @@ func TestParseJWT(t *testing.T) {
 				assert.Equal(t, "JWT", jwt.Header.Typ)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant123", jwt.Payload.Sub)
-				assert.Equal(t, uint64(1234567890), jwt.Payload.Exp)
+				assert.Equal(t, int64(1234567890), jwt.Payload.Exp)
 				assert.Equal(t, "developer", jwt.Payload.Role)
 				assert.Equal(t, "signature123", jwt.Signature)
 			},
@@ -185,7 +178,7 @@ func TestParseJWT(t *testing.T) {
 				assert.Equal(t, "JWT", jwt.Header.Typ)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant456", jwt.Payload.Sub)
-				assert.Equal(t, uint64(9876543210), jwt.Payload.Exp)
+				assert.Equal(t, int64(9876543210), jwt.Payload.Exp)
 				assert.Equal(t, "user", jwt.Payload.Role)
 				assert.Equal(t, "signature456", jwt.Signature)
 			},
@@ -203,7 +196,7 @@ func TestParseJWT(t *testing.T) {
 				assert.NotNil(t, jwt)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant789", jwt.Payload.Sub)
-				assert.Equal(t, uint64(1111111111), jwt.Payload.Exp)
+				assert.Equal(t, int64(1111111111), jwt.Payload.Exp)
 				assert.Equal(t, "", jwt.Payload.Role)
 			},
 		},
@@ -220,7 +213,24 @@ func TestParseJWT(t *testing.T) {
 				assert.NotNil(t, jwt)
 				assert.NotNil(t, jwt.Payload)
 				assert.Equal(t, "tenant-permanent", jwt.Payload.Sub)
-				assert.Equal(t, uint64(0), jwt.Payload.Exp)
+				assert.Equal(t, int64(0), jwt.Payload.Exp)
+				assert.Equal(t, "developer", jwt.Payload.Role)
+			},
+		},
+		{
+			name: "有效的JWT token-exp为-1表示永不过期",
+			authHeader: createValidJWT(
+				encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"}),
+				base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"tenant-ttl-minus-one","exp":-1,"role":"developer"}`)),
+				"signature-minus-one",
+			),
+			wantErr: false,
+			checkResult: func(t *testing.T, jwt *ParsedJWT, err error) {
+				assert.NoError(t, err)
+				assert.NotNil(t, jwt)
+				assert.NotNil(t, jwt.Payload)
+				assert.Equal(t, "tenant-ttl-minus-one", jwt.Payload.Sub)
+				assert.Equal(t, int64(-1), jwt.Payload.Exp)
 				assert.Equal(t, "developer", jwt.Payload.Role)
 			},
 		},
@@ -307,13 +317,18 @@ func TestJWTPayloadIsExpired(t *testing.T) {
 			want:    false,
 		},
 		{
+			name:    "exp minus one never expires",
+			payload: &JWTPayload{Exp: -1},
+			want:    false,
+		},
+		{
 			name:    "future exp is valid",
-			payload: &JWTPayload{Exp: uint64(now.Unix() + jwtExpirationDeltaSeconds)},
+			payload: &JWTPayload{Exp: now.Unix() + jwtTestTTLSeconds},
 			want:    false,
 		},
 		{
 			name:    "past exp is expired",
-			payload: &JWTPayload{Exp: uint64(now.Unix() - jwtExpirationDeltaSeconds)},
+			payload: &JWTPayload{Exp: now.Unix() - jwtTestTTLSeconds},
 			want:    true,
 		},
 	}
@@ -331,6 +346,16 @@ func setupIamTest(t *testing.T) {
 	cfg := config.GetConfig()
 	cfg.IamConfig.Addr = "127.0.0.1:31112"
 	resetIamCache()
+}
+
+func useIAMValidationCacheForTest(t *testing.T, capacity int, ttl time.Duration) {
+	t.Helper()
+	origCache := iamValidationCache
+	iamValidationCache = newIAMValidationLRUCache(capacity, ttl)
+	t.Cleanup(func() {
+		iamValidationCache = origCache
+		resetIamCache()
+	})
 }
 
 func TestValidateWithIamServerCacheHit(t *testing.T) {
@@ -356,6 +381,7 @@ func TestValidateWithIamServerCacheHit(t *testing.T) {
 
 func TestValidateWithIamServerCacheExpiry(t *testing.T) {
 	setupIamTest(t)
+	useIAMValidationCacheForTest(t, 32, iamCacheExpiryTTL)
 	var callCount atomic.Int32
 	origValidator := iamValidator
 	iamValidator = func(token, traceID string) error {
@@ -369,10 +395,7 @@ func TestValidateWithIamServerCacheExpiry(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int32(1), callCount.Load())
 
-	// Force cache entry to expire
-	iamCacheMu.Lock()
-	iamCache["token-expiry"] = time.Now().Add(-iamCacheTTL - time.Second)
-	iamCacheMu.Unlock()
+	time.Sleep(iamCacheExpiryWait)
 
 	// Should call IAM again
 	err = ValidateWithIamServer("token-expiry", "trace2")
@@ -457,31 +480,29 @@ func TestValidateWithIamServerDifferentTokens(t *testing.T) {
 	assert.Equal(t, int32(2), callCount.Load(), "both tokens should be cached now")
 }
 
-func TestValidateWithIamServerCacheCleanup(t *testing.T) {
+func TestValidateWithIamServerLRUEvictsLeastRecentlyUsed(t *testing.T) {
 	setupIamTest(t)
+	useIAMValidationCacheForTest(t, iamCacheLRUTestCapacity, time.Minute)
+	var callCount atomic.Int32
 	origValidator := iamValidator
 	iamValidator = func(token, traceID string) error {
+		callCount.Add(1)
 		return nil
 	}
 	defer func() { iamValidator = origValidator }()
 
-	// Fill cache with expired entries beyond cleanup threshold
-	iamCacheMu.Lock()
-	expired := time.Now().Add(-iamCacheTTL - time.Second)
-	for i := 0; i < iamCacheCleanupThreshold+extraExpiredCacheEntries; i++ {
-		iamCache[fmt.Sprintf("expired-token-%d", i)] = expired
-	}
-	iamCacheMu.Unlock()
+	assert.NoError(t, ValidateWithIamServer("token-a", "trace-a1"))
+	assert.NoError(t, ValidateWithIamServer("token-b", "trace-b1"))
+	assert.Equal(t, int32(2), callCount.Load())
 
-	// Trigger a new validation (will succeed and trigger cleanup)
-	err := ValidateWithIamServer("trigger-cleanup", "trace1")
-	assert.NoError(t, err)
+	assert.NoError(t, ValidateWithIamServer("token-a", "trace-a2"))
+	assert.Equal(t, int32(2), callCount.Load(), "recently used token should stay cached")
 
-	// Check that expired entries were cleaned up
-	iamCacheMu.RLock()
-	size := len(iamCache)
-	iamCacheMu.RUnlock()
-	assert.LessOrEqual(t, size, maxCacheSizeAfterCleanup, "cleanup should have removed expired entries")
+	assert.NoError(t, ValidateWithIamServer("token-c", "trace-c1"))
+	assert.Equal(t, int32(3), callCount.Load())
+
+	assert.NoError(t, ValidateWithIamServer("token-b", "trace-b2"))
+	assert.Equal(t, int32(4), callCount.Load(), "least recently used token should be evicted")
 }
 
 func TestValidateWithIamServerSkipWhenNoAddr(t *testing.T) {
@@ -510,7 +531,7 @@ func TestParseJWTConvey(t *testing.T) {
 	convey.Convey("测试ParseJWT函数", t, func() {
 		convey.Convey("当输入有效的JWT token时", func() {
 			header := encodeBase64URL(JWTHeader{Alg: "HS256", Typ: "JWT"})
-			payload := encodeBase64URL(JWTPayload{Sub: "test-tenant", Exp: uint64(time.Now().Unix()), Role: "developer"})
+			payload := encodeBase64URL(JWTPayload{Sub: "test-tenant", Exp: time.Now().Unix(), Role: "developer"})
 			authHeader := createValidJWT(header, payload, "test-signature")
 
 			jwt, err := ParseJWT(authHeader)

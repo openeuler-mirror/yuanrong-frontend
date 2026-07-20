@@ -43,6 +43,14 @@ func InvokePreprocessMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 
+		// Sandbox /direct is an authenticated invoke fast path. Mark it before
+		// metadata lookup so user and developer roles follow invoke policy.
+		if isSandboxDirectURL(path) {
+			c.Set(isInvokeURLKey, true)
+			c.Next()
+			return
+		}
+
 		// Check if this is an invoke URL
 		if isInvokeURL(path) {
 
@@ -82,6 +90,10 @@ func PublicFunctionJWTSkipMiddleware() gin.HandlerFunc {
 }
 
 // isInvokeURL checks if the path matches invoke URL patterns
+func isSandboxDirectURL(path string) bool {
+	return path == "/direct" || strings.HasPrefix(path, "/direct/")
+}
+
 func isInvokeURL(path string) bool {
 	// Check for standard invoke URL: /serverless/v1/functions/{urn}/invocations
 	if strings.HasPrefix(path, "/serverless/v1/functions/") && strings.HasSuffix(path, "/invocations") {

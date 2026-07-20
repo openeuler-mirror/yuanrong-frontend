@@ -247,6 +247,14 @@ func (c *fakeClient) CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api
 	InstanceID := ""
 	return InstanceID, nil
 }
+func (c *fakeClient) InvokeInstanceByLibRtAndGet(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) ([]byte, error) {
+	return nil, nil
+}
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }

@@ -18,6 +18,7 @@
 package jwtauth
 
 import (
+	"container/list"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -49,7 +50,7 @@ type JWTHeader struct {
 // JWTPayload represents the JWT payload structure
 type JWTPayload struct {
 	Sub  string `json:"sub"`            // Subject: tenant ID (required)
-	Exp  uint64 `json:"exp"`            // Expiration: timestamp (required)
+	Exp  int64  `json:"exp"`            // Expiration: unix timestamp, or -1/0 for non-expiring IAM tokens
 	Role string `json:"role,omitempty"` // Role: user role (optional)
 }
 
@@ -66,7 +67,7 @@ func (payload *JWTPayload) IsExpired(now time.Time) bool {
 	if payload == nil || payload.Exp <= 0 {
 		return false
 	}
-	return now.Unix() > int64(payload.Exp)
+	return now.Unix() > payload.Exp
 }
 
 // ParseJWT parses the X-Auth header value which is in the format Header.Payload.Signature
@@ -128,8 +129,92 @@ func (jwt *ParsedJWT) ValidateTenantID(expectedTenantID string) error {
 // iamCacheTTL is the time-to-live for cached IAM validation results.
 const iamCacheTTL = 30 * time.Second
 
-// iamCacheCleanupThreshold triggers lazy cleanup when cache size exceeds this.
-const iamCacheCleanupThreshold = 1000
+// iamValidationCacheSize is the maximum number of successfully validated tokens cached locally.
+const iamValidationCacheSize = 4096
+
+type iamValidationLRUCache struct {
+	mu       sync.Mutex
+	capacity int
+	ttl      time.Duration
+	items    map[string]*list.Element
+	order    *list.List
+}
+
+type iamValidationCacheEntry struct {
+	token       string
+	validatedAt time.Time
+}
+
+func newIAMValidationLRUCache(capacity int, ttl time.Duration) *iamValidationLRUCache {
+	return &iamValidationLRUCache{
+		capacity: capacity,
+		ttl:      ttl,
+		items:    make(map[string]*list.Element),
+		order:    list.New(),
+	}
+}
+
+func (c *iamValidationLRUCache) get(token string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	element, ok := c.items[token]
+	if !ok {
+		return false
+	}
+	entry, ok := element.Value.(*iamValidationCacheEntry)
+	if !ok {
+		c.order.Remove(element)
+		delete(c.items, token)
+		return false
+	}
+	if now.Sub(entry.validatedAt) >= c.ttl {
+		c.order.Remove(element)
+		delete(c.items, token)
+		return false
+	}
+	c.order.MoveToFront(element)
+	return true
+}
+
+func (c *iamValidationLRUCache) add(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if element, ok := c.items[token]; ok {
+		if entry, ok := element.Value.(*iamValidationCacheEntry); ok {
+			entry.validatedAt = time.Now()
+			c.order.MoveToFront(element)
+			return
+		}
+		c.order.Remove(element)
+		delete(c.items, token)
+	}
+	entry := &iamValidationCacheEntry{
+		token:       token,
+		validatedAt: time.Now(),
+	}
+	element := c.order.PushFront(entry)
+	c.items[token] = element
+	if c.order.Len() <= c.capacity {
+		return
+	}
+	last := c.order.Back()
+	if last == nil {
+		return
+	}
+	c.order.Remove(last)
+	if entry, ok := last.Value.(*iamValidationCacheEntry); ok {
+		delete(c.items, entry.token)
+	}
+}
+
+func (c *iamValidationLRUCache) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = make(map[string]*list.Element)
+	c.order.Init()
+}
 
 // iamFlight represents an in-flight IAM validation request (singleflight).
 type iamFlight struct {
@@ -138,8 +223,7 @@ type iamFlight struct {
 }
 
 var (
-	iamCacheMu sync.RWMutex
-	iamCache   = make(map[string]time.Time) // token -> validated_at
+	iamValidationCache = newIAMValidationLRUCache(iamValidationCacheSize, iamCacheTTL)
 
 	iamFlightMu sync.Mutex
 	iamFlights  = make(map[string]*iamFlight)
@@ -158,69 +242,40 @@ func ValidateWithIamServer(authHeader string, traceID string) error {
 		return nil
 	}
 
-	if isIamTokenCached(authHeader) {
+	// 1. Check cache
+	if iamValidationCache.get(authHeader, time.Now()) {
 		return nil
 	}
 
-	f, waitExisting := getOrCreateIamFlight(authHeader)
-	if waitExisting {
-		f.wait()
-		return f.err
-	}
-
-	err := iamValidator(authHeader, traceID)
-	if err == nil {
-		cacheIamToken(authHeader)
-	}
-	completeIamFlight(authHeader, f, err)
-	return err
-}
-
-func isIamTokenCached(authHeader string) bool {
-	iamCacheMu.RLock()
-	defer iamCacheMu.RUnlock()
-	validatedAt, ok := iamCache[authHeader]
-	return ok && time.Since(validatedAt) < iamCacheTTL
-}
-
-func cacheIamToken(authHeader string) {
-	iamCacheMu.Lock()
-	defer iamCacheMu.Unlock()
-	iamCache[authHeader] = time.Now()
-	if len(iamCache) <= iamCacheCleanupThreshold {
-		return
-	}
-	now := time.Now()
-	for token, validatedAt := range iamCache {
-		if now.Sub(validatedAt) >= iamCacheTTL {
-			delete(iamCache, token)
-		}
-	}
-}
-
-func getOrCreateIamFlight(authHeader string) (*iamFlight, bool) {
+	// 2. Singleflight: if another goroutine is already validating this token, wait for it
 	iamFlightMu.Lock()
-	defer iamFlightMu.Unlock()
 	if f, ok := iamFlights[authHeader]; ok {
-		return f, true
+		iamFlightMu.Unlock()
+		f.wg.Wait()
+		return f.err
 	}
 	f := &iamFlight{}
 	f.wg.Add(1)
 	iamFlights[authHeader] = f
-	return f, false
-}
+	iamFlightMu.Unlock()
 
-func completeIamFlight(authHeader string, f *iamFlight, err error) {
+	// 3. Call IAM server
+	err := iamValidator(authHeader, traceID)
+
+	// 4. Cache successful result
+	if err == nil {
+		iamValidationCache.add(authHeader)
+	}
+
+	// 5. Complete singleflight
 	f.err = err
 	f.wg.Done()
 
 	iamFlightMu.Lock()
-	defer iamFlightMu.Unlock()
 	delete(iamFlights, authHeader)
-}
+	iamFlightMu.Unlock()
 
-func (f *iamFlight) wait() {
-	f.wg.Wait()
+	return err
 }
 
 // doValidateWithIamServer performs the actual HTTP call to the IAM server.
@@ -244,9 +299,7 @@ func doValidateWithIamServer(authHeader string, traceID string) error {
 
 // resetIamCache clears the IAM validation cache. Used in tests.
 func resetIamCache() {
-	iamCacheMu.Lock()
-	iamCache = make(map[string]time.Time)
-	iamCacheMu.Unlock()
+	iamValidationCache.reset()
 
 	iamFlightMu.Lock()
 	iamFlights = make(map[string]*iamFlight)

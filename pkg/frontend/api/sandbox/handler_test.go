@@ -2,29 +2,61 @@ package sandbox
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/ugorji/go/codec"
 	"yuanrong.org/kernel/runtime/libruntime/api"
 
 	"frontend/pkg/common/faas_common/constant"
 	"frontend/pkg/common/faas_common/resspeckey"
 	"frontend/pkg/common/job"
+	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
+	"frontend/pkg/frontend/sandboxrouter/execendpoint"
 )
+
+const (
+	invokeEnvelopeArgCount     = 4
+	packedArgPairSize          = 2
+	customCreateTimeoutSeconds = 37
+	testCPULimit               = 2000
+	testMemoryLimit            = 4096
+)
+
+type sandboxTimeoutTestCase struct {
+	name             string
+	createTimeout    int
+	scheduleTimeout  int
+	wantCreate       int
+	wantSchedule     int
+	wantErrorMessage string
+}
 
 type runtimeStub struct {
 	createInstance func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error)
-	kill           func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error
+	invokeInstance func(
+		funcMeta api.FunctionMeta,
+		instanceID string,
+		args []api.Arg,
+		invokeOpt api.InvokeOptions,
+	) (string, error)
+	getAsync func(objectID string, cb api.GetAsyncCallback)
+	kill     func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error
 }
 
 func (r *runtimeStub) CreateInstance(
-	funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions,
+	funcMeta api.FunctionMeta,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
 ) (string, error) {
 	if r.createInstance != nil {
 		return r.createInstance(funcMeta, args, invokeOpt)
@@ -33,25 +65,38 @@ func (r *runtimeStub) CreateInstance(
 }
 
 func (r *runtimeStub) InvokeByInstanceId(
-	funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions,
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
 ) (string, error) {
+	if r.invokeInstance != nil {
+		return r.invokeInstance(funcMeta, instanceID, args, invokeOpt)
+	}
 	return "", nil
 }
 
 func (r *runtimeStub) InvokeByFunctionName(
-	funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions,
+	funcMeta api.FunctionMeta,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
 ) (string, error) {
 	return "", nil
 }
 
 func (r *runtimeStub) AcquireInstance(
-	state string, funcMeta api.FunctionMeta, acquireOpt api.InvokeOptions,
+	state string,
+	funcMeta api.FunctionMeta,
+	acquireOpt api.InvokeOptions,
 ) (api.InstanceAllocation, error) {
 	return api.InstanceAllocation{}, nil
 }
 
 func (r *runtimeStub) ReleaseInstance(
-	allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions,
+	allocation api.InstanceAllocation,
+	stateID string,
+	abnormal bool,
+	option api.InvokeOptions,
 ) {
 }
 
@@ -126,7 +171,11 @@ func (r *runtimeStub) GDecreaseRef(objectIDs []string, remoteClientID ...string)
 	return nil, nil
 }
 
-func (r *runtimeStub) GetAsync(objectID string, cb api.GetAsyncCallback) {}
+func (r *runtimeStub) GetAsync(objectID string, cb api.GetAsyncCallback) {
+	if r.getAsync != nil {
+		r.getAsync(objectID, cb)
+	}
+}
 
 func (r *runtimeStub) GetEvent(objectID string, cb api.GetEventCallback) {}
 
@@ -229,10 +278,14 @@ func TestCreateHandlerFallsBackToBodyTenant(t *testing.T) {
 		Name:      "sandbox-b",
 		Namespace: "sandbox",
 		Tenant:    "body-tenant",
+		CpuLimit:  testCPULimit,
+		MemLimit:  testMemoryLimit,
 	})
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -241,8 +294,43 @@ func TestCreateHandlerFallsBackToBodyTenant(t *testing.T) {
 	require.Equal(t, sandboxCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	require.Equal(t, "body-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
+	require.Equal(t, strconv.Itoa(testCPULimit), capturedInvokeOpt.CustomExtensions["CPU_LIMIT"])
+	require.Equal(t, strconv.Itoa(testMemoryLimit), capturedInvokeOpt.CustomExtensions["Memory_LIMIT"])
+	require.Equal(t, testCPULimit, capturedInvokeOpt.CpuLimit)
+	require.Equal(t, testMemoryLimit, capturedInvokeOpt.MemoryLimit)
 	require.Empty(t, capturedInvokeOpt.CreateOpt[constant.SchedulerIDNote])
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
+}
+
+func TestCreateHandlerAttributesTenantFromTokenClaim(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(_ api.FunctionMeta, _ []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-from-token", nil
+		},
+	})
+
+	encode := func(value interface{}) string {
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	token := encode(jwtauth.JWTHeader{Alg: "none", Typ: "JWT"}) + "." +
+		encode(jwtauth.JWTPayload{Sub: "token-tenant"}) + ".sig"
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateRequest{Name: "sandbox-token", Namespace: "sandbox"})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set(jwtauth.HeaderXAuth, token)
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "token-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 }
 
 func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *testing.T) {
@@ -264,14 +352,7 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 		waitForSandboxInstanceRunning = oldWaitForSandboxInstanceRunning
 	}()
 
-	util.SetAPIClientLibruntime(&runtimeStub{
-		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
-			return "instance-created-late", api.ErrorInfo{
-				Code: createInstanceTimeoutCode,
-				Err:  fmt.Errorf("create instance timeout"),
-			}
-		},
-	})
+	installCreateTimeoutRuntimeStub()
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -283,29 +364,47 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
-	require.Equal(t, http.StatusOK, recorder.Code)
+	assertCreateTimeoutResponse(t, recorder, waitCalled)
+}
 
+func installCreateTimeoutRuntimeStub() {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			return "instance-created-late", api.ErrorInfo{
+				Code: createTimeoutSuccessCode,
+				Err:  fmt.Errorf("create instance timeout"),
+			}
+		},
+	})
+}
+
+func assertCreateTimeoutResponse(
+	t *testing.T,
+	recorder *httptest.ResponseRecorder,
+	waitCalled bool,
+) {
+	t.Helper()
+	require.Equal(t, http.StatusOK, recorder.Code)
 	var resp job.Response
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
 	require.Equal(t, http.StatusOK, resp.Code)
 
 	var data map[string]string
 	require.NoError(t, json.Unmarshal(resp.Data, &data))
-	instanceID, ok := data["instance_id"]
-	require.True(t, ok)
-	require.Equal(t, "instance-created-late", instanceID)
+	require.Equal(t, "instance-created-late", requireStringMapValue(t, data, "instance_id"))
 	require.True(t, waitCalled)
 }
 
 func TestSandboxFunctionIDUsesRuntime(t *testing.T) {
 	tests := []struct {
-		name      string
-		runtime   string
-		wantFunc  string
-		wantError string
+		name     string
+		runtime  string
+		wantFunc string
 	}{
 		{
 			name:     "python310",
@@ -323,33 +422,40 @@ func TestSandboxFunctionIDUsesRuntime(t *testing.T) {
 			wantFunc: "default/0-defaultservice-py310/$latest",
 		},
 		{
-			name:     "empty uses default",
-			runtime:  "",
-			wantFunc: "default/0-defaultservice-py310/$latest",
+			name:     "rust",
+			runtime:  "rust",
+			wantFunc: "default/0-defaultservice-rrt/$latest",
 		},
 		{
-			name:      "unsupported",
-			runtime:   "python3.11",
-			wantError: "unsupported sandbox runtime",
+			name:     "rrt",
+			runtime:  "rrt",
+			wantFunc: "default/0-defaultservice-rrt/$latest",
+		},
+		{
+			name:     "empty uses default (rust)",
+			runtime:  "",
+			wantFunc: "default/0-defaultservice-rrt/$latest",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := sandboxFunctionIDForRuntime(tt.runtime)
-			if tt.wantError != "" {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tt.wantError)
-				return
-			}
 			require.NoError(t, err)
 			require.Equal(t, tt.wantFunc, got)
 		})
 	}
 }
 
-func TestDefaultSandboxFunctionIDUsesBuiltInPy310Service(t *testing.T) {
-	require.Equal(t, "default/0-defaultservice-py310/$latest", defaultSandboxFunctionID)
+func TestSandboxFunctionIDRejectsUnsupportedRuntime(t *testing.T) {
+	_, err := sandboxFunctionIDForRuntime("python3.11")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported sandbox runtime")
+}
+
+func TestDefaultSandboxFunctionIDUsesRustService(t *testing.T) {
+	// Default sandbox backend is the dedicated Rust (rrt) slot.
+	require.Equal(t, "default/0-defaultservice-rrt/$latest", defaultSandboxFunctionID)
 }
 
 func TestCreateHandlerUsesRequestedRuntime(t *testing.T) {
@@ -374,6 +480,8 @@ func TestCreateHandlerUsesRequestedRuntime(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -401,6 +509,8 @@ func TestCreateHandlerRejectsUnsupportedRuntime(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -435,10 +545,17 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
+	assertSchedulerCreateOptions(t, capturedInvokeOpt)
+}
+
+func assertSchedulerCreateOptions(t *testing.T, capturedInvokeOpt api.InvokeOptions) {
+	t.Helper()
 	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
 	require.Equal(t, sandboxConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
 	require.Equal(t, "reserved", capturedInvokeOpt.CreateOpt[constant.InstanceTypeNote])
@@ -446,15 +563,15 @@ func TestCreateHandlerAddsSchedulerCreateOptions(t *testing.T) {
 	require.False(t, hasStaticOwner)
 	require.Equal(t, fmt.Sprintf("%d", sandboxCreateTimeoutSeconds), capturedInvokeOpt.CreateOpt["call_timeout"])
 	require.Equal(t, "305", capturedInvokeOpt.CreateOpt["init_call_timeout"])
-	require.Equal(t, "900", capturedInvokeOpt.CreateOpt["GRACEFUL_SHUTDOWN_TIME"])
+	require.Equal(t, "5", capturedInvokeOpt.CreateOpt["GRACEFUL_SHUTDOWN_TIME"])
 	require.Equal(t, "/tmp", capturedInvokeOpt.CreateOpt["DELEGATE_DIRECTORY_INFO"])
 	require.Equal(t, "512", capturedInvokeOpt.CreateOpt["DELEGATE_DIRECTORY_QUOTA"])
 	require.Equal(t, "1", capturedInvokeOpt.CreateOpt["ConcurrentNum"])
 
 	var resSpec resspeckey.ResourceSpecification
 	require.NoError(t, json.Unmarshal([]byte(capturedInvokeOpt.CreateOpt[constant.ResourceSpecNote]), &resSpec))
-	require.EqualValues(t, defaultSandboxCPU, resSpec.CPU)
-	require.EqualValues(t, defaultSandboxMemory, resSpec.Memory)
+	require.EqualValues(t, sandboxDefaultCPU, resSpec.CPU)
+	require.EqualValues(t, sandboxDefaultMemory, resSpec.Memory)
 	require.Equal(t, "", resSpec.InvokeLabel)
 	require.Empty(t, capturedInvokeOpt.SchedulerInstanceIDs)
 }
@@ -486,6 +603,8 @@ func TestCreateHandlerPassesRootfsToSandboxCustomExtensions(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -520,6 +639,8 @@ func TestCreateHandlerAcceptsImageAliasForRootfs(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
@@ -549,18 +670,25 @@ func TestCreateHandlerPassesPortForwardingsToNetworkCreateOption(t *testing.T) {
 	body, err := json.Marshal(CreateRequest{
 		Name:      "sandbox-ports",
 		Namespace: "sandbox",
-		Ports:     []string{"8080", "udp:9090"},
+		Ports:     []string{"8080", "https:9090"},
 	})
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(
 		t,
-		`{"portForwardings":[{"port":8080,"protocol":"TCP"},{"port":9090,"protocol":"UDP"}]}`,
+		`{
+			"portForwardings": [
+				{"port": 8080, "protocol": "http", "routeKind": "public"},
+				{"port": 9090, "protocol": "https", "routeKind": "public"}
+			]
+		}`,
 		capturedInvokeOpt.CreateOpt["network"],
 	)
 }
@@ -583,11 +711,13 @@ func TestCreateHandlerRejectsInvalidPortForwarding(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "protocol must be TCP or UDP")
+	require.Contains(t, recorder.Body.String(), "port scheme must be http or https")
 }
 
 func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
@@ -619,11 +749,25 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	require.NoError(t, err)
 	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/create", bytes.NewReader(body))
 	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-create")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-123e4567e89b12d3a456426614174000-0123456789abcdef-01")
 
 	CreateHandler(ctx)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
+	assertBuiltinDetachedSandboxRequest(t, capturedFuncMeta, capturedInvokeOpt, recorder)
+}
+
+func assertBuiltinDetachedSandboxRequest(
+	t *testing.T,
+	capturedFuncMeta api.FunctionMeta,
+	capturedInvokeOpt api.InvokeOptions,
+	recorder *httptest.ResponseRecorder,
+) {
+	t.Helper()
 	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
+	require.Equal(t, "yr.sandbox.sandbox", capturedFuncMeta.ModuleName)
+	require.Equal(t, "SandboxInstance", capturedFuncMeta.ClassName)
 	require.Equal(t, api.Python, capturedFuncMeta.Language)
 	require.Equal(t, api.ActorApi, capturedFuncMeta.Api)
 	require.NotNil(t, capturedFuncMeta.Name)
@@ -633,8 +777,13 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 
 	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
 	require.Equal(t, sandboxConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
-	require.Equal(t, "yr.sandbox.sandbox", capturedInvokeOpt.CreateOpt["moduleName"])
-	require.Equal(t, "SandboxInstance", capturedInvokeOpt.CreateOpt["className"])
+	require.Equal(t, "trace-create", capturedInvokeOpt.TraceID)
+	require.Equal(
+		t,
+		"00-123e4567e89b12d3a456426614174000-0123456789abcdef-01",
+		capturedInvokeOpt.CustomExtensions["traceparent"],
+	)
+	require.Equal(t, "trace-create", recorder.Header().Get(constant.HeaderTraceID))
 	require.Equal(t, "contract-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 	require.Equal(t, defaultSandboxFunctionID, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	_, hasStaticOwner := capturedInvokeOpt.CreateOpt["resource.owner"]
@@ -643,6 +792,435 @@ func TestCreateHandlerBuildsBuiltinDetachedSandboxRequest(t *testing.T) {
 	require.Empty(t, capturedInvokeOpt.CreateOpt[constant.SchedulerIDNote])
 }
 
+func TestCreateV1HandlerDefaultsAndReturnsSandboxID(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	var capturedFuncMeta api.FunctionMeta
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInvokeOpt = invokeOpt
+			return "sandbox-v1", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Image:              "ubuntu:22.04",
+		IdleTimeoutSeconds: 123,
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, defaultSandboxFunctionID, capturedFuncMeta.FuncID)
+	require.NotNil(t, capturedFuncMeta.Name)
+	require.NotEmpty(t, *capturedFuncMeta.Name)
+	require.NotNil(t, capturedFuncMeta.Namespace)
+	require.Equal(t, "default", *capturedFuncMeta.Namespace)
+	require.Equal(t, "123", capturedInvokeOpt.CustomExtensions["idle_timeout"])
+	require.JSONEq(
+		t,
+		`{"runtime":"runsc","type":"image","imageurl":"ubuntu:22.04"}`,
+		capturedInvokeOpt.CustomExtensions["rootfs"],
+	)
+
+	var resp job.Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	var data map[string]string
+	require.NoError(t, json.Unmarshal(resp.Data, &data))
+	require.Equal(t, "sandbox-v1", requireStringMapValue(t, data, "sandboxId"))
+	require.Equal(t, "running", requireStringMapValue(t, data, "status"))
+}
+
+func TestCreateV1HandlerSSEUsesRequestedTimeoutAndReturnsFinal(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "sandbox-sse", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Name:                 "sandbox-sse",
+		Namespace:            "default",
+		Image:                "ubuntu:22.04",
+		CreateTimeoutSeconds: customCreateTimeoutSeconds,
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set("Accept", "text/event-stream")
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+	require.Contains(t, recorder.Body.String(), "event: accepted")
+	require.Contains(t, recorder.Body.String(), `"status":"creating"`)
+	require.Contains(t, recorder.Body.String(), "event: final")
+	require.Contains(t, recorder.Body.String(), `"sandboxId":"sandbox-sse"`)
+	require.Contains(t, recorder.Body.String(), `"status":"running"`)
+	require.Equal(t, customCreateTimeoutSeconds, capturedInvokeOpt.Timeout)
+	expectedScheduleMs := int64(customCreateTimeoutSeconds-sandboxScheduleBufferSeconds) * millisecondsPerSecond
+	require.Equal(t, expectedScheduleMs, capturedInvokeOpt.ScheduleTimeoutMs)
+	require.Equal(t, strconv.Itoa(customCreateTimeoutSeconds), capturedInvokeOpt.CreateOpt["call_timeout"])
+}
+
+var timeoutTestCases = []sandboxTimeoutTestCase{
+	{
+		name:         "default create derives schedule",
+		wantCreate:   60,
+		wantSchedule: 30,
+	},
+	{
+		name:          "create derives schedule",
+		createTimeout: 120,
+		wantCreate:    120,
+		wantSchedule:  90,
+	},
+	{
+		name:            "schedule derives create",
+		scheduleTimeout: 90,
+		wantCreate:      120,
+		wantSchedule:    90,
+	},
+	{
+		name:             "create must exceed buffer",
+		createTimeout:    30,
+		wantErrorMessage: "createTimeoutSeconds must be greater than 30",
+	},
+	{
+		name:             "create must be positive",
+		createTimeout:    -1,
+		wantErrorMessage: "createTimeoutSeconds must be a positive integer",
+	},
+	{
+		name:             "schedule must be positive",
+		scheduleTimeout:  -1,
+		wantErrorMessage: "scheduleTimeoutSeconds must be a positive integer",
+	},
+	{
+		name:             "schedule must not exceed create",
+		createTimeout:    60,
+		scheduleTimeout:  70,
+		wantErrorMessage: "scheduleTimeoutSeconds must be less than or equal to createTimeoutSeconds",
+	},
+	{
+		name:             "explicit timeouts must reserve buffer",
+		createTimeout:    60,
+		scheduleTimeout:  45,
+		wantErrorMessage: "createTimeoutSeconds - scheduleTimeoutSeconds must be at least 30",
+	},
+	{
+		name:            "explicit timeouts preserve caller budgets",
+		createTimeout:   120,
+		scheduleTimeout: 80,
+		wantCreate:      120,
+		wantSchedule:    80,
+	},
+}
+
+func TestResolveSandboxCreateTimeouts(t *testing.T) {
+	t.Setenv("YR_SANDBOX_CREATE_TIMEOUT", "")
+	for _, tt := range timeoutTestCases {
+		t.Run(tt.name, func(t *testing.T) {
+			createTimeout, scheduleTimeout, err := resolveSandboxCreateTimeouts(
+				tt.createTimeout, tt.scheduleTimeout,
+			)
+			if tt.wantErrorMessage != "" {
+				require.EqualError(t, err, tt.wantErrorMessage)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantCreate, createTimeout)
+			require.Equal(t, tt.wantSchedule, scheduleTimeout)
+		})
+	}
+}
+
+func TestCreateV1HandlerSSEDoesNotReportUnconfirmedTimeoutAsRunning(t *testing.T) {
+	oldWaitForSandboxInstanceRunning := waitForSandboxInstanceRunning
+	waitForSandboxInstanceRunning = func(instanceID, functionID, resourceSpecNote string) bool {
+		return false
+	}
+	defer func() { waitForSandboxInstanceRunning = oldWaitForSandboxInstanceRunning }()
+
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			return "sandbox-timeout", api.ErrorInfo{Code: 3002, Err: fmt.Errorf("create instance timeout")}
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{Name: "sandbox-timeout", Namespace: "default"})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+	ctx.Request.Header.Set("Accept", "text/event-stream")
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "event: final")
+	require.Contains(t, recorder.Body.String(), `"sandboxId":"sandbox-timeout"`)
+	require.Contains(t, recorder.Body.String(), `"status":"timeout"`)
+	require.Contains(t, recorder.Body.String(), `"errorCode":3002`)
+	require.NotContains(t, recorder.Body.String(), `"status":"running"`)
+}
+
+func TestCreateV1HandlerFrontendOwnsTunnelSetup(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "default/sandbox_demo.1", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Image: "ubuntu:22.04",
+		Env: map[string]string{
+			"RRT_HTTP_PORT":      "19000",
+			"RRT_TUNNEL_WS_PORT": "19001",
+			"USER_ENV":           "ok",
+		},
+		Tunnel: TunnelSpec{Enabled: true},
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assertTunnelCreateOptions(t, capturedInvokeOpt)
+	assertTunnelResponse(t, recorder)
+}
+
+func assertTunnelCreateOptions(t *testing.T, capturedInvokeOpt api.InvokeOptions) {
+	t.Helper()
+	require.JSONEq(
+		t,
+		`{
+			"portForwardings":[
+				{"port":50090,"protocol":"http","routeKind":"direct"},
+				{"port":8765,"protocol":"http","routeKind":"tunnel"},
+				{"port":8766,"protocol":"http","routeKind":"direct"}
+			]
+		}`,
+		capturedInvokeOpt.CreateOpt["network"],
+	)
+	require.JSONEq(
+		t,
+		`{"RRT_HTTP_PORT":"50090","RRT_TUNNEL_WS_PORT":"8765","RRT_TUNNEL_HTTP_PORT":"8766","USER_ENV":"ok"}`,
+		capturedInvokeOpt.CreateOpt[constant.DelegateEnvVar],
+	)
+}
+
+func assertTunnelResponse(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	var resp job.Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	var data map[string]interface{}
+	require.NoError(t, json.Unmarshal(resp.Data, &data))
+	tunnelValue := requireInterfaceMapValue(t, data, "tunnel")
+	tunnel, ok := tunnelValue.(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, "/tunnel/default-sandbox-demo-1", tunnel["url"])
+	require.Equal(t, "/tunnel/default-sandbox-demo-1", tunnel["path"])
+	require.Equal(t, "http://127.0.0.1:8766", tunnel["proxyUrl"])
+}
+
+func TestCreateV1HandlerDoesNotInjectRRTPortForPythonRuntime(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "default/sandbox_python.1", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(CreateV1Request{
+		Runtime: "python3.9",
+		Image:   "aio-yr-runtime:latest",
+		Env:     map[string]string{"USER_ENV": "ok"},
+	})
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/sandbox/v1/sandboxes", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	CreateV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NotContains(t, capturedInvokeOpt.CreateOpt, "network")
+	require.JSONEq(
+		t,
+		`{"USER_ENV":"ok"}`,
+		capturedInvokeOpt.CreateOpt[constant.DelegateEnvVar],
+	)
+}
+
+func TestNormalizeJSONValuePreservesFractionalAndConvertsIntegers(t *testing.T) {
+	normalized := normalizeJSONValue(map[string]interface{}{
+		"pid":     float64(123),
+		"timeout": float64(0.5),
+		"nested":  []interface{}{float64(7)},
+	})
+	got, ok := normalized.(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, int64(123), got["pid"])
+	require.Equal(t, float64(0.5), got["timeout"])
+	nested, ok := got["nested"].([]interface{})
+	require.True(t, ok)
+	require.Equal(t, int64(7), nested[0])
+}
+
+func TestInvokeV1HandlerRoutesEnvelopeToRRTSandboxInvoke(t *testing.T) {
+	capture := setupInvokeV1RuntimeStub(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "sandboxID", Value: "sandbox-123"}}
+	body := []byte(`{"action":"process.exec","args":{"cmd":"echo hi","cwd":"/tmp"}}`)
+	var err error
+	ctx.Request, err = http.NewRequest(
+		http.MethodPost,
+		"/api/sandbox/v1/sandboxes/sandbox-123/invoke",
+		bytes.NewReader(body),
+	)
+	require.NoError(t, err)
+	ctx.Request.Header.Set(constant.HeaderTraceID, "trace-invoke")
+	ctx.Request.Header.Set(constant.HeaderTraceParent, "00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01")
+
+	InvokeV1Handler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "sandbox-123", capture.instanceID)
+	require.Equal(t, "sandbox_invoke", capture.funcMeta.FuncName)
+	require.Equal(t, api.ActorApi, capture.funcMeta.Api)
+	require.Equal(t, "trace-invoke", capture.invokeOpt.TraceID)
+	require.Equal(
+		t,
+		"00-abcdefabcdefabcdefabcdefabcdefab-0123456789abcdef-01",
+		capture.invokeOpt.CustomExtensions["traceparent"],
+	)
+	require.Equal(t, "trace-invoke", recorder.Header().Get(constant.HeaderTraceID))
+	require.Equal(t, sandboxCreateTimeoutSeconds, capture.invokeOpt.Timeout)
+	require.True(t, capture.invokeOpt.BypassDataSystem)
+	require.Len(t, capture.args, invokeEnvelopeArgCount)
+	decodedArgs := decodeInvokeArgs(t, capture.args)
+	require.Equal(t, "process.exec", decodedArgs["action"])
+	require.Equal(t, map[string]interface{}{
+		"cmd": "echo hi",
+		"cwd": "/tmp",
+	}, decodedArgs["args"])
+
+	var resp job.Response
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.JSONEq(t, `{"ok":true}`, string(resp.Data))
+}
+
+type invokeV1Capture struct {
+	funcMeta   api.FunctionMeta
+	instanceID string
+	args       []api.Arg
+	invokeOpt  api.InvokeOptions
+}
+
+func setupInvokeV1RuntimeStub(t *testing.T) *invokeV1Capture {
+	t.Helper()
+	capture := &invokeV1Capture{}
+	util.SetAPIClientLibruntime(&runtimeStub{
+		invokeInstance: func(
+			funcMeta api.FunctionMeta,
+			instanceID string,
+			args []api.Arg,
+			invokeOpt api.InvokeOptions,
+		) (string, error) {
+			capture.funcMeta = funcMeta
+			capture.instanceID = instanceID
+			capture.args = append([]api.Arg(nil), args...)
+			capture.invokeOpt = invokeOpt
+			return "object-1", nil
+		},
+		getAsync: func(objectID string, cb api.GetAsyncCallback) {
+			require.Equal(t, "object-1", objectID)
+			result, err := encodeMsgpack(map[string]interface{}{"ok": true})
+			require.NoError(t, err)
+			cb(append(make([]byte, constant.LibruntimeHeaderSize), result...), nil)
+		},
+	})
+	return capture
+}
+
+func decodePackedArg(data []byte) (interface{}, error) {
+	if len(data) < constant.LibruntimeHeaderSize {
+		return nil, fmt.Errorf("arg too short: %d", len(data))
+	}
+	var out interface{}
+	dec := codec.NewDecoderBytes(data[constant.LibruntimeHeaderSize:], &msgpackHandle)
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	return normalizeMsgpack(out), nil
+}
+
+func decodeInvokeArgs(t *testing.T, args []api.Arg) map[string]interface{} {
+	t.Helper()
+	decodedArgs := make(map[string]interface{}, len(args)/packedArgPairSize)
+	for i := 0; i+1 < len(args); i += packedArgPairSize {
+		key, err := decodePackedArg(args[i].Data)
+		require.NoError(t, err)
+		value, err := decodePackedArg(args[i+1].Data)
+		require.NoError(t, err)
+		decodedArgs[fmt.Sprint(key)] = value
+	}
+	return decodedArgs
+}
+
+func requireStringMapValue(t *testing.T, data map[string]string, key string) string {
+	t.Helper()
+	value, ok := data[key]
+	require.True(t, ok)
+	return value
+}
+
+func requireInterfaceMapValue(t *testing.T, data map[string]interface{}, key string) interface{} {
+	t.Helper()
+	value, ok := data[key]
+	require.True(t, ok)
+	return value
+}
+
+func TestInvokeV1HandlerRejectsMissingAction(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "sandboxID", Value: "sandbox-123"}}
+	var err error
+	ctx.Request, err = http.NewRequest(
+		http.MethodPost,
+		"/api/sandbox/v1/sandboxes/sandbox-123/invoke",
+		bytes.NewReader([]byte(`{"args":{}}`)),
+	)
+	require.NoError(t, err)
+
+	InvokeV1Handler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "action is required")
+}
 func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 	var (
 		capturedInstanceID string
@@ -679,9 +1257,7 @@ func TestDeleteHandlerDeletesSandboxInstance(t *testing.T) {
 
 	var data map[string]string
 	require.NoError(t, json.Unmarshal(resp.Data, &data))
-	status, ok := data["status"]
-	require.True(t, ok)
-	require.Equal(t, "deleted", status)
+	require.Equal(t, "deleted", requireStringMapValue(t, data, "status"))
 }
 
 func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {
@@ -702,4 +1278,92 @@ func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "failed to delete sandbox")
+}
+
+func setupDeleteTenantSummary(t *testing.T) string {
+	t.Helper()
+	targetInstance := "sandbox-delete-rbac-target"
+	execendpoint.Default().PutSummary(execendpoint.Summary{
+		InstanceID: targetInstance,
+		TenantID:   "tenant-owner",
+	})
+	t.Cleanup(func() { execendpoint.Default().Delete(targetInstance) })
+	return targetInstance
+}
+
+func deleteTestContext(t *testing.T, targetInstance, sub, role string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
+	ctx.Set("jwt_sub", sub)
+	ctx.Set("jwt_role", role)
+	req, err := http.NewRequest(http.MethodDelete, "/api/sandbox/"+targetInstance, nil)
+	require.NoError(t, err)
+	ctx.Request = req
+	return ctx, recorder
+}
+
+func TestDeleteHandlerRejectsCrossTenant(t *testing.T) {
+	targetInstance := setupDeleteTenantSummary(t)
+	killCalled := false
+	util.SetAPIClientLibruntime(&runtimeStub{kill: func(string, int, []byte, api.InvokeOptions) error {
+		killCalled = true
+		return nil
+	}})
+	ctx, recorder := deleteTestContext(t, targetInstance, "tenant-other", jwtauth.RoleDeveloper)
+	DeleteHandler(ctx)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.False(t, killCalled)
+}
+
+func TestDeleteHandlerAllowsSameTenant(t *testing.T) {
+	targetInstance := setupDeleteTenantSummary(t)
+	killCalled := false
+	util.SetAPIClientLibruntime(&runtimeStub{kill: func(instanceID string, _ int, _ []byte, _ api.InvokeOptions) error {
+		killCalled = true
+		require.Equal(t, targetInstance, instanceID)
+		return nil
+	}})
+	ctx, recorder := deleteTestContext(t, targetInstance, "tenant-owner", jwtauth.RoleDeveloper)
+	DeleteHandler(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.True(t, killCalled)
+}
+
+func TestDeleteHandlerEnforcesHeaderWithoutMiddleware(t *testing.T) {
+	targetInstance := setupDeleteTenantSummary(t)
+	killCalled := false
+	util.SetAPIClientLibruntime(&runtimeStub{kill: func(string, int, []byte, api.InvokeOptions) error {
+		killCalled = true
+		return nil
+	}})
+	ctx, recorder := deleteTestContext(t, targetInstance, "", "")
+	ctx.Request.Header.Set(jwtauth.HeaderXAuth, testJWT("tenant-other", jwtauth.RoleDeveloper))
+	DeleteHandler(ctx)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.False(t, killCalled)
+}
+
+func TestDeleteHandlerAllowsSystemTenantDeveloper(t *testing.T) {
+	targetInstance := setupDeleteTenantSummary(t)
+	killCalled := false
+	util.SetAPIClientLibruntime(&runtimeStub{kill: func(instanceID string, _ int, _ []byte, _ api.InvokeOptions) error {
+		killCalled = true
+		require.Equal(t, targetInstance, instanceID)
+		return nil
+	}})
+	ctx, recorder := deleteTestContext(t, targetInstance, "0", jwtauth.RoleDeveloper)
+	DeleteHandler(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.True(t, killCalled)
+}
+
+func testJWT(sub, role string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(
+		`{"sub":%q,"role":%q,"exp":%d}`,
+		sub, role, time.Now().Add(time.Hour).Unix(),
+	)))
+	return header + "." + payload + ".signature"
 }

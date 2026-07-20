@@ -1,4 +1,5 @@
 {
+    "_copyright": "Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.",
     "instanceNum": 1,
     "azID": "1",
     "cpu": 500,
@@ -43,6 +44,15 @@
         "applicationID": "com.huawei.cloud_enhance_device",
         "serviceID": "com.huawei.hmscorecameracloudenhanceservice"
       }
+    },
+    "sandboxRouter": {
+      "enabled": {sandboxRouterEnable},
+      "listenIP": "0.0.0.0",
+      "listenPort": {sandboxRouterListenPort},
+      "routeBackend": "instanceinfo-watch",
+      "enableJWTAuth": {sandboxRouterEnableJwt},
+      "validateIAM": {sandboxRouterValidateIam},
+      "rrtPort": {sandboxRouterRrtPort}
     },
     "http": {
       "resptimeout": 5,

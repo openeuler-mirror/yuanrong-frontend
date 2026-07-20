@@ -144,6 +144,8 @@ type Client interface {
 	KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error)
 	CreateInstanceByLibRt(funcMeta api.FunctionMeta, args []api.Arg,
 		invokeOpt api.InvokeOptions) (instanceID string, err error)
+	InvokeInstanceByLibRtAndGet(funcMeta api.FunctionMeta, instanceID string, args []api.Arg,
+		invokeOpt api.InvokeOptions) ([]byte, error)
 	KillByLibRt(instanceID string, signal int, payload []byte) (err error)
 	IsHealth() bool
 	IsDsHealth() bool
@@ -179,11 +181,12 @@ func (c *defaultClient) AcquireInstance(functionKey string, req types.AcquireOpt
 		return nil, err
 	}
 	return &types.InstanceAllocationInfo{
-		FuncKey:       instanceAllocation.FuncKey,
-		FuncSig:       instanceAllocation.FuncSig,
-		InstanceID:    instanceAllocation.InstanceID,
-		ThreadID:      instanceAllocation.LeaseID,
-		LeaseInterval: instanceAllocation.LeaseInterval,
+		FuncKey:         instanceAllocation.FuncKey,
+		FuncSig:         instanceAllocation.FuncSig,
+		InstanceID:      instanceAllocation.InstanceID,
+		ThreadID:        instanceAllocation.LeaseID,
+		FunctionProxyID: instanceAllocation.RouteAddress,
+		LeaseInterval:   instanceAllocation.LeaseInterval,
 	}, nil
 }
 
@@ -437,6 +440,19 @@ func (c *defaultClient) CreateInstanceByLibRt(
 	invokeOpt api.InvokeOptions,
 ) (string, error) {
 	return c.clientLibruntime.CreateInstance(funcMeta, args, invokeOpt)
+}
+
+func (c *defaultClient) InvokeInstanceByLibRtAndGet(
+	funcMeta api.FunctionMeta,
+	instanceID string,
+	args []api.Arg,
+	invokeOpt api.InvokeOptions,
+) ([]byte, error) {
+	objID, err := c.clientLibruntime.InvokeByInstanceId(funcMeta, instanceID, args, invokeOpt)
+	if err != nil {
+		return nil, err
+	}
+	return c.getRes(objID, InvokeRequest{BypassDataSystem: invokeOpt.BypassDataSystem})
 }
 
 func (c *defaultClient) KillRaw(killReq []byte, option api.RawRequestOption) ([]byte, error) {
