@@ -42,6 +42,7 @@ import (
 	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/tenantauth"
 	"frontend/pkg/frontend/common/util"
+	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/instancemanager"
 	"frontend/pkg/frontend/sandboxrouter/execendpoint"
 	"frontend/pkg/frontend/sandboxrouter/route"
@@ -1236,6 +1237,9 @@ func DeleteHandler(ctx *gin.Context) {
 }
 
 func needsDeleteAuthorization(ctx *gin.Context) bool {
+	if !config.GetConfig().IamConfig.EnableFuncTokenAuth {
+		return false
+	}
 	_, hasSub := ctx.Get("jwt_sub")
 	_, hasRole := ctx.Get("jwt_role")
 	return hasSub || hasRole || ctx.GetHeader(jwtauth.HeaderXAuth) != ""
