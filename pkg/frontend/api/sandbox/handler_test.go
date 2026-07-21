@@ -21,6 +21,7 @@ import (
 	"frontend/pkg/common/job"
 	"frontend/pkg/frontend/common/jwtauth"
 	"frontend/pkg/frontend/common/util"
+	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/sandboxrouter/execendpoint"
 )
 
@@ -1293,6 +1294,11 @@ func setupDeleteTenantSummary(t *testing.T) string {
 
 func deleteTestContext(t *testing.T, targetInstance, sub, role string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
+	originalEnableAuth := config.GetConfig().IamConfig.EnableFuncTokenAuth
+	config.GetConfig().IamConfig.EnableFuncTokenAuth = true
+	t.Cleanup(func() {
+		config.GetConfig().IamConfig.EnableFuncTokenAuth = originalEnableAuth
+	})
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
@@ -1302,6 +1308,34 @@ func deleteTestContext(t *testing.T, targetInstance, sub, role string) (*gin.Con
 	require.NoError(t, err)
 	ctx.Request = req
 	return ctx, recorder
+}
+
+func TestDeleteHandlerAllowsPlaceholderTokenWhenAuthDisabled(t *testing.T) {
+	originalEnableAuth := config.GetConfig().IamConfig.EnableFuncTokenAuth
+	config.GetConfig().IamConfig.EnableFuncTokenAuth = false
+	t.Cleanup(func() {
+		config.GetConfig().IamConfig.EnableFuncTokenAuth = originalEnableAuth
+	})
+
+	targetInstance := "sandbox-delete-auth-disabled"
+	killCalled := false
+	util.SetAPIClientLibruntime(&runtimeStub{kill: func(instanceID string, _ int, _ []byte, _ api.InvokeOptions) error {
+		killCalled = true
+		require.Equal(t, targetInstance, instanceID)
+		return nil
+	}})
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "instanceId", Value: targetInstance}}
+	req, err := http.NewRequest(http.MethodDelete, "/api/sandbox/"+targetInstance, nil)
+	require.NoError(t, err)
+	req.Header.Set(jwtauth.HeaderXAuth, "ci")
+	ctx.Request = req
+
+	DeleteHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.True(t, killCalled)
 }
 
 func TestDeleteHandlerRejectsCrossTenant(t *testing.T) {

@@ -288,6 +288,7 @@ func TestKillHandlerTenantAuthorization(t *testing.T) {
 		addHeaderKillAuthorizationCase(t, mock)
 		addAllowedTenantKillCase(t, mock, "user1", "owned-by-user1")
 		addAllowedTenantKillCase(t, mock, "0", "owned-by-user2")
+		addKillAllInstancesCase(t, mock)
 		addMissingInstanceKillCase(t, mock)
 	})
 }
@@ -363,6 +364,32 @@ func addMissingInstanceKillCase(t testing.TB, mock *mockUtils.FakeLibruntimeSdkC
 		ctx, recorder := newAuthorizedKillContext(t, "user1", "missing-for-auth")
 		KillHandler(ctx)
 		convey.So(recorder.Code, convey.ShouldEqual, http.StatusNotFound)
+		convey.So(called, convey.ShouldBeFalse)
+	})
+}
+
+func addKillAllInstancesCase(t testing.TB, mock *mockUtils.FakeLibruntimeSdkClient) {
+	convey.Convey("authenticated driver can finalize a job not stored in the instance cache", func() {
+		called := false
+		util.SetAPIClientLibruntime(killTrackingClient(mock, &called, &core.KillResponse{}))
+		ctx, recorder := newKillHandlerContext(
+			t, `{"instanceID":"job-finalize","signal":2}`, "application/json")
+		ctx.Request.Header.Set(constant.HeaderRemoteClientId, "job-finalize")
+		ctx.Set("jwt_sub", "user1")
+		ctx.Set("jwt_role", jwtauth.RoleDeveloper)
+		KillHandler(ctx)
+		convey.So(recorder.Code, convey.ShouldEqual, http.StatusOK)
+		convey.So(called, convey.ShouldBeTrue)
+	})
+	convey.Convey("kill-all job must match the remote client", func() {
+		called := false
+		util.SetAPIClientLibruntime(killTrackingClient(mock, &called, nil))
+		ctx, recorder := newKillHandlerContext(
+			t, `{"instanceID":"job-other","signal":2}`, "application/json")
+		ctx.Set("jwt_sub", "user1")
+		ctx.Set("jwt_role", jwtauth.RoleDeveloper)
+		KillHandler(ctx)
+		convey.So(recorder.Code, convey.ShouldEqual, http.StatusForbidden)
 		convey.So(called, convey.ShouldBeFalse)
 	})
 }

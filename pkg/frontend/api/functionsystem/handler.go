@@ -45,6 +45,7 @@ import (
 	"frontend/pkg/frontend/serverstatus"
 
 	"yuanrong.org/kernel/runtime/libruntime/api"
+	libruntimeconfig "yuanrong.org/kernel/runtime/libruntime/config"
 )
 
 var (
@@ -393,6 +394,16 @@ func authorizeKillRequest(ctx *gin.Context, killReq *core.KillRequest) (int, err
 	instanceID := killReq.GetInstanceID()
 	if instanceID == "" {
 		return http.StatusBadRequest, errors.New("missing instanceID")
+	}
+	// KillAllInstances overloads instanceID with the driver job ID. Job IDs are
+	// not entries in the frontend's RUNNING-instance cache, so applying the
+	// single-instance ownership check would reject every driver Finalize call.
+	if killReq.GetSignal() == int32(libruntimeconfig.KillAllInstances) {
+		remoteClientID, _ := getHeaderPrams(ctx)
+		if remoteClientID == "" || remoteClientID != instanceID {
+			return http.StatusForbidden, errors.New("job ID does not match remote client ID")
+		}
+		return http.StatusOK, nil
 	}
 	summary, ok := execendpoint.Default().GetSummary(instanceID)
 	if !ok {
