@@ -64,6 +64,28 @@ var (
 	defaultCols    int32    = 80
 )
 
+const (
+	ptyProtocolV1      = "sandbox.pty.v1"
+	ptyProtocolVersion = 1
+)
+
+type terminalControlEvent struct {
+	Version   int    `json:"version"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+	ExitCode  *int32 `json:"exit_code,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+func parseTerminalProtocol(value string) (string, error) {
+	switch value {
+	case "", ptyProtocolV1:
+		return value, nil
+	default:
+		return "", fmt.Errorf("unsupported terminal protocol %q", value)
+	}
+}
+
 // grpcConnPool maintains shared gRPC connections keyed by proxy address.
 // All sessions to the same proxy reuse a single HTTP/2 TCP connection so that
 // closing one ExecStream RPC only tears down its HTTP/2 stream, NOT the
@@ -139,9 +161,40 @@ type wsSession struct {
 	ws         *websocket.Conn
 	grpcStream exec_service.ExecService_ExecStreamClient
 	sessionID  string
+	protocol   string
 	ctx        context.Context
 	cancel     context.CancelFunc
 	mu         sync.Mutex
+}
+
+func (s *wsSession) writeControl(eventType string, exitCode *int32, message string) error {
+	if s.protocol != ptyProtocolV1 {
+		return nil
+	}
+	event := terminalControlEvent{
+		Version:   ptyProtocolVersion,
+		Type:      eventType,
+		SessionID: s.sessionID,
+		ExitCode:  exitCode,
+		Message:   message,
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ws.WriteMessage(websocket.TextMessage, payload)
+}
+
+func (s *wsSession) writeClose(code int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ws.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(code, ""),
+		time.Now().Add(time.Second),
+	)
 }
 
 // InstanceStatus defines instance status structure
@@ -648,6 +701,11 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// copy/exec client can observe a successfully upgraded connection that closes
 	// without running anything and treat the operation as a success.
 	query := r.URL.Query()
+	protocol, err := parseTerminalProtocol(query.Get("protocol"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	instance := query.Get("instance")
 
 	// Resolve and connect to executor backend before upgrading. This turns cache
@@ -729,6 +787,7 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		ws:         conn,
 		grpcStream: stream,
 		sessionID:  sessionID,
+		protocol:   protocol,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -809,6 +868,12 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.GetLogger().Infof("Failed to send start request: %v", err)
+		if controlErr := session.writeControl("error", nil, err.Error()); controlErr != nil {
+			log.GetLogger().Infof("Failed to send terminal error event: %v", controlErr)
+		}
+		if session.protocol == ptyProtocolV1 {
+			_ = session.writeClose(websocket.CloseInternalServerErr)
+		}
 		return
 	}
 
@@ -823,6 +888,12 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			log.GetLogger().Infof("Session %s: failed to replay early input: %v", sessionID, err)
+			if controlErr := session.writeControl("error", nil, err.Error()); controlErr != nil {
+				log.GetLogger().Infof("Failed to send terminal error event: %v", controlErr)
+			}
+			if session.protocol == ptyProtocolV1 {
+				_ = session.writeClose(websocket.CloseInternalServerErr)
+			}
 			return
 		}
 	}
@@ -845,10 +916,22 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			msg, err := stream.Recv()
 			if err == io.EOF {
 				log.GetLogger().Infof("Session %s: gRPC stream closed", sessionID)
+				if controlErr := session.writeControl("error", nil, "exec stream closed before terminal status"); controlErr != nil {
+					log.GetLogger().Infof("Failed to send terminal error event: %v", controlErr)
+				}
+				if session.protocol == ptyProtocolV1 {
+					_ = session.writeClose(websocket.CloseInternalServerErr)
+				}
 				return
 			}
 			if err != nil {
 				log.GetLogger().Infof("Session %s: gRPC recv error: %v", sessionID, err)
+				if controlErr := session.writeControl("error", nil, err.Error()); controlErr != nil {
+					log.GetLogger().Infof("Failed to send terminal error event: %v", controlErr)
+				}
+				if session.protocol == ptyProtocolV1 {
+					_ = session.writeClose(websocket.CloseInternalServerErr)
+				}
 				return
 			}
 
@@ -866,15 +949,39 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				log.GetLogger().Infof("Session %s: status=%v, exit_code=%d, error=%s",
 					sessionID, payload.Status.Status, payload.Status.ExitCode, payload.Status.ErrorMessage)
 
-				if payload.Status.Status == exec_service.ExecStatusResponse_EXITED ||
-					payload.Status.Status == exec_service.ExecStatusResponse_ERROR {
-					// Notify WebSocket client that process has exited
-					session.mu.Lock()
-					conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Process exited]\r\n"))
-					conn.WriteControl(websocket.CloseMessage,
-						websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-						time.Now().Add(time.Second))
-					session.mu.Unlock()
+				switch payload.Status.Status {
+				case exec_service.ExecStatusResponse_STARTED:
+					if err := session.writeControl("started", nil, ""); err != nil {
+						log.GetLogger().Infof("Failed to send terminal started event: %v", err)
+						return
+					}
+				case exec_service.ExecStatusResponse_EXITED:
+					if session.protocol == ptyProtocolV1 {
+						exitCode := payload.Status.ExitCode
+						if err := session.writeControl("exited", &exitCode, ""); err != nil {
+							log.GetLogger().Infof("Failed to send terminal exited event: %v", err)
+							return
+						}
+					} else {
+						session.mu.Lock()
+						_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Process exited]\r\n"))
+						session.mu.Unlock()
+					}
+					_ = session.writeClose(websocket.CloseNormalClosure)
+					return
+				case exec_service.ExecStatusResponse_ERROR:
+					if session.protocol == ptyProtocolV1 {
+						if err := session.writeControl("error", nil, payload.Status.ErrorMessage); err != nil {
+							log.GetLogger().Infof("Failed to send terminal error event: %v", err)
+							return
+						}
+						_ = session.writeClose(websocket.CloseInternalServerErr)
+					} else {
+						session.mu.Lock()
+						_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[Process exited]\r\n"))
+						session.mu.Unlock()
+						_ = session.writeClose(websocket.CloseNormalClosure)
+					}
 					return
 				}
 			}

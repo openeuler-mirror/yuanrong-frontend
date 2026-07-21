@@ -166,6 +166,48 @@ func TestParseCommandSplitsArguments(t *testing.T) {
 	}
 }
 
+func TestParseTerminalProtocol(t *testing.T) {
+	for _, value := range []string{"", ptyProtocolV1} {
+		got, err := parseTerminalProtocol(value)
+		if err != nil {
+			t.Fatalf("parseTerminalProtocol(%q) returned error: %v", value, err)
+		}
+		if got != value {
+			t.Fatalf("parseTerminalProtocol(%q) = %q", value, got)
+		}
+	}
+
+	if _, err := parseTerminalProtocol("unknown"); err == nil {
+		t.Fatal("unsupported terminal protocol should fail")
+	}
+}
+
+func TestTerminalControlEventJSON(t *testing.T) {
+	exitCode := int32(7)
+	event := terminalControlEvent{
+		Version:   ptyProtocolVersion,
+		Type:      "exited",
+		SessionID: "session-1",
+		ExitCode:  &exitCode,
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal terminal event: %v", err)
+	}
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal terminal event: %v", err)
+	}
+	if got["version"] != float64(1) || got["type"] != "exited" ||
+		got["session_id"] != "session-1" || got["exit_code"] != float64(7) {
+		t.Fatalf("unexpected terminal event: %s", payload)
+	}
+	if _, ok := got["message"]; ok {
+		t.Fatalf("empty message should be omitted: %s", payload)
+	}
+}
+
 func TestHandleInstancesIncludesTenantID(t *testing.T) {
 	defer installLocalSummaryLookupForTest(t, sandboxInstanceSummaryForTest())()
 
