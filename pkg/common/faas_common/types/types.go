@@ -317,6 +317,20 @@ type FuncSpec struct {
 	ResourceMetaData  ResourceMetaData `json:"resourceMetaData" valid:",optional"`
 	InstanceMetaData  InstanceMetaData `json:"instanceMetaData" valid:",optional"`
 	ExtendedMetaData  ExtendedMetaData `json:"extendedMetaData" valid:",optional"`
+	RootfsSpecMeta    RootfsSpecMeta   `json:"rootfs" valid:",optional"`
+	SandboxType       string           `json:"sandboxType" valid:"optional"`
+}
+
+// RootfsSpecMeta defines rootfs specification metadata
+type RootfsSpecMeta struct {
+	Runtime    string   `json:"runtime" valid:",optional"`
+	Type       string   `json:"type" valid:",optional"`
+	ImageURL   string   `json:"imageurl" valid:",optional"`
+	User       string   `json:"user" valid:",optional"`
+	Ports      []string `json:"ports" valid:",optional"`
+	Path       string   `json:"path" valid:",optional"`
+	ReadOnly   bool     `json:"readonly" valid:",optional"`
+	MountPoint string   `json:"mountpoint" valid:",optional"`
 }
 
 // FunctionMetaInfo define function meta info for FunctionGraph
@@ -329,6 +343,8 @@ type FunctionMetaInfo struct {
 	ResourceMetaData ResourceMetaData `json:"resourceMetaData" valid:",optional"`
 	InstanceMetaData InstanceMetaData `json:"instanceMetaData" valid:",optional"`
 	ExtendedMetaData ExtendedMetaData `json:"extendedMetaData" valid:",optional"`
+	RootfsSpecMeta   RootfsSpecMeta   `json:"rootfs" valid:",optional"`
+	SandboxType      string           `json:"sandboxType" valid:"optional"`
 }
 
 // FuncMetaData define meta data of functions

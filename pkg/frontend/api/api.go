@@ -28,6 +28,7 @@ import (
 	"frontend/pkg/common/constants"
 	"frontend/pkg/common/faas_common/tracer"
 	commonJob "frontend/pkg/common/job"
+	"frontend/pkg/frontend/api/agent"
 	"frontend/pkg/frontend/api/app"
 	"frontend/pkg/frontend/api/auth"
 	"frontend/pkg/frontend/api/datasystem"
@@ -194,6 +195,13 @@ func InitRoute(r *gin.Engine) {
 		sandboxV1Group.POST("", sandboxTraceHandler(sandbox.CreateV1Handler))
 		sandboxV1Group.DELETE("/:sandboxID", sandboxTraceHandler(sandbox.DeleteHandler))
 		sandboxV1Group.POST("/:sandboxID/invoke", sandboxTraceHandler(sandbox.InvokeV1Handler))
+	}
+
+	// agent management (create/kill by user function URN, with workspace/user/userid)
+	agentGroup := r.Group("/api/agent")
+	{
+		agentGroup.POST("", agent.CreateHandler)
+		agentGroup.DELETE("/:instanceId", agent.DeleteHandler)
 	}
 
 	// web terminal

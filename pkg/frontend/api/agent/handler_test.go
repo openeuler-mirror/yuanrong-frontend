@@ -1,0 +1,617 @@
+package agent
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/agiledragon/gomonkey/v2"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	"yuanrong.org/kernel/runtime/libruntime/api"
+
+	"frontend/pkg/common/faas_common/constant"
+	"frontend/pkg/common/faas_common/resspeckey"
+	"frontend/pkg/common/faas_common/types"
+	"frontend/pkg/frontend/common/util"
+	"frontend/pkg/frontend/functionmeta"
+)
+
+// runtimeStub is a minimal invokerLibruntime implementation for unit tests.
+// Only CreateInstance and Kill are exercised; the rest are no-ops to satisfy
+// the interface (mirrors sandbox/handler_test.go).
+type runtimeStub struct {
+	createInstance func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error)
+	kill           func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error
+}
+
+func (r *runtimeStub) CreateInstance(
+	funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions,
+) (string, error) {
+	if r.createInstance != nil {
+		return r.createInstance(funcMeta, args, invokeOpt)
+	}
+	return "", nil
+}
+
+func (r *runtimeStub) InvokeByInstanceId(
+	funcMeta api.FunctionMeta, instanceID string, args []api.Arg, invokeOpt api.InvokeOptions,
+) (string, error) {
+	return "", nil
+}
+
+func (r *runtimeStub) InvokeByFunctionName(
+	funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions,
+) (string, error) {
+	return "", nil
+}
+
+func (r *runtimeStub) AcquireInstance(
+	state string, funcMeta api.FunctionMeta, acquireOpt api.InvokeOptions,
+) (api.InstanceAllocation, error) {
+	return api.InstanceAllocation{}, nil
+}
+
+func (r *runtimeStub) ReleaseInstance(
+	allocation api.InstanceAllocation, stateID string, abnormal bool, option api.InvokeOptions,
+) {
+}
+
+func (r *runtimeStub) Kill(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+	if r.kill != nil {
+		return r.kill(instanceID, signal, payload, invokeOpt)
+	}
+	return nil
+}
+
+func (r *runtimeStub) CreateInstanceRaw(createReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) InvokeByInstanceIdRaw(invokeReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) KillRaw(killReqRaw []byte, option api.RawRequestOption) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) SaveState(state []byte) (string, error) {
+	return "", nil
+}
+
+func (r *runtimeStub) LoadState(checkpointID string) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) Exit(code int, message string) {}
+
+func (r *runtimeStub) KVSet(key string, value []byte, param api.SetParam) error {
+	return nil
+}
+
+func (r *runtimeStub) KVSetWithoutKey(value []byte, param api.SetParam) (string, error) {
+	return "", nil
+}
+
+func (r *runtimeStub) KVGet(key string, timeoutms uint) ([]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) KVGetMulti(keys []string, timeoutms uint) ([][]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) KVDel(key string) error {
+	return nil
+}
+
+func (r *runtimeStub) KVDelMulti(keys []string) ([]string, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) SetTraceID(traceID string) {}
+
+func (r *runtimeStub) Put(objectID string, value []byte, param api.PutParam, nestedObjectIDs ...string) error {
+	return nil
+}
+
+func (r *runtimeStub) Get(objectIDs []string, timeoutMs int) ([][]byte, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) GIncreaseRef(objectIDs []string, remoteClientID ...string) ([]string, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) GDecreaseRef(objectIDs []string, remoteClientID ...string) ([]string, error) {
+	return nil, nil
+}
+
+func (r *runtimeStub) GetAsync(objectID string, cb api.GetAsyncCallback) {}
+
+func (r *runtimeStub) GetEvent(objectID string, cb api.GetEventCallback) {}
+
+func (r *runtimeStub) DeleteGetEventCallback(objectID string) {}
+
+func (r *runtimeStub) GetFormatLogger() api.FormatLogger {
+	return nil
+}
+
+func (r *runtimeStub) GetCredential() api.Credential {
+	return api.Credential{}
+}
+
+func (r *runtimeStub) SetTenantID(tenantID string) error {
+	return nil
+}
+
+func (r *runtimeStub) IsHealth() bool {
+	return true
+}
+
+func (r *runtimeStub) IsDsHealth() bool {
+	return true
+}
+
+func (r *runtimeStub) GetActiveMasterAddr() string {
+	return ""
+}
+
+// stubFuncSpec patches functionmeta.LoadFuncSpec so unit tests do not hit etcd (whose client is
+// nil in unit tests → nil-pointer panic in fetchMetaEtcdWithSingleFlight). The stub returns a
+// deterministic funcSpec (runtime=python3.11 + rootfs/sandboxType) that CreateHandler maps to the
+// faas system executor function key. Callers must run it via `defer stubFuncSpec(t).Reset()`.
+func stubFuncSpec(t *testing.T) *gomonkey.Patches {
+	t.Helper()
+	return gomonkey.ApplyFunc(functionmeta.LoadFuncSpec, func(funcKey string) (*types.FuncSpec, bool) {
+		return &types.FuncSpec{
+			FuncMetaData: types.FuncMetaData{Runtime: "python3.11"},
+			RootfsSpecMeta: types.RootfsSpecMeta{
+				Type: "image", ImageURL: "yr-docker-runtime:v0", User: "agentos", Ports: []string{"tcp:22"},
+			},
+			SandboxType: "docker",
+		}, true
+	})
+}
+
+// validAgentURN is a URN accepted by urnutils.FunctionURN.ParseFrom.
+// Format: ProductID:RegionID:BusinessID:TenantID:TypeSign:FuncName:Version.
+// CombineFunctionKey parses it into the funcKey "agentTenant/agentFunc/1".
+const validAgentURN = "urn:sn:default:agentTenant:sign:agentFunc:1"
+
+// newAgentCreateRecorder builds a gin test context with a JSON CreateRequest body.
+func newAgentCreateRecorder(t *testing.T, req CreateRequest) (*httptest.ResponseRecorder, *gin.Context) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	ctx.Request, err = http.NewRequest(http.MethodPost, "/api/agent", bytes.NewReader(body))
+	require.NoError(t, err)
+	return recorder, ctx
+}
+
+func TestCreateHandlerBuildsAgentFuncMetaFromURN(t *testing.T) {
+	var capturedFuncMeta api.FunctionMeta
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInvokeOpt = invokeOpt
+			return "instance-urn", nil
+		},
+	})
+	// agent reuses the faas system executor function as FuncID; the runtime to map comes from the
+	// frontend-watched funcSpecMap. Mock LoadFuncSpec so the test does not hit etcd (uninitialized in
+	// unit tests → nil client panic) and returns a deterministic runtime (python3.11).
+	defer stubFuncSpec(t).Reset()
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-a",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	// FuncID is the faas system executor function key (mapped from runtime via
+	// getAgentExecutorFuncKey), not the URN string nor the user funcKey.
+	require.NotEqual(t, validAgentURN, capturedFuncMeta.FuncID)
+	require.Contains(t, capturedFuncMeta.FuncID, "0-system-faasExecutorPython3.11")
+	require.Equal(t, api.Python, capturedFuncMeta.Language)
+	require.Equal(t, api.ActorApi, capturedFuncMeta.Api)
+	// Name intentionally left empty so function_proxy generates a random UUID instance_id.
+	require.Nil(t, capturedFuncMeta.Name)
+	require.NotNil(t, capturedFuncMeta.Namespace)
+	require.Equal(t, "agent-ns", *capturedFuncMeta.Namespace)
+	// The URN is propagated as the function key note for downstream routing.
+	require.Equal(t, validAgentURN, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
+
+	// Response is direct JSON (not base64-wrapped job.Response).
+	var resp struct {
+		Code       int    `json:"code"`
+		InstanceID string `json:"instance_id"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.Equal(t, http.StatusOK, resp.Code)
+	require.Equal(t, "instance-urn", resp.InstanceID)
+}
+
+func TestCreateHandlerReturnsInstanceIDDirectly(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			return "0b6c6322-6533-4901-8000-00000000bb0b", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-uuid",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}`, recorder.Body.String())
+}
+
+func TestCreateHandlerRejectsInvalidURN(t *testing.T) {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called for an invalid URN")
+			return "", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-bad",
+		Urn:       "not-a-valid-urn",
+		Workspace: "/home/snuser/workspaceA",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "invalid urn")
+}
+
+func TestCreateHandlerRejectsMissingRequiredFields(t *testing.T) {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called for an invalid request body")
+			return "", nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	req, err := http.NewRequest(http.MethodPost, "/api/agent", bytes.NewReader([]byte("{}")))
+	require.NoError(t, err)
+	ctx.Request = req
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "invalid request body")
+}
+
+func TestCreateHandlerSetsDetachedAndReservedCreateOptions(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-opts", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-opts",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+	})
+	ctx.Request.Header.Set(constant.HeaderTenantID, "header-tenant")
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
+	require.Equal(t, agentConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
+	require.Equal(t, agentInstanceType, capturedInvokeOpt.CreateOpt[constant.InstanceTypeNote])
+	require.Equal(t, validAgentURN, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
+	require.Equal(t, "header-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
+	createOpts := capturedInvokeOpt.CreateOpt
+	require.Equal(t, fmt.Sprintf("%d", agentCreateTimeoutSeconds), createOpts["call_timeout"])
+	require.Equal(t, fmt.Sprintf("%d", agentInitTimeoutSeconds), createOpts["init_call_timeout"])
+	require.Equal(t, fmt.Sprintf("%d", agentGracefulShutdownSeconds),
+		createOpts["GRACEFUL_SHUTDOWN_TIME"])
+	require.Equal(t, agentDelegateDirectory, createOpts["DELEGATE_DIRECTORY_INFO"])
+	require.Equal(t, fmt.Sprintf("%d", agentDirectoryQuotaMB), createOpts["DELEGATE_DIRECTORY_QUOTA"])
+	require.Equal(t, agentConcurrency, createOpts["ConcurrentNum"])
+
+	var resSpec resspeckey.ResourceSpecification
+	require.NoError(t, json.Unmarshal([]byte(capturedInvokeOpt.CreateOpt[constant.ResourceSpecNote]), &resSpec))
+	require.EqualValues(t, defaultAgentCPU, resSpec.CPU)
+	require.EqualValues(t, defaultAgentMemory, resSpec.Memory)
+}
+
+func TestCreateHandlerMountsWorkspaceAndCustomMounts(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-mounts", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-mounts",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+		Mounts: []Mount{
+			{Source: "/home/snuser/workspaceB", Target: "/mnt/workspaceB", ReadOnly: true},
+		},
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	// host_user is transparently passed by frontend from funcMeta.rootfs.user (proxy does not
+	// merge funcMeta). The stub funcSpec sets rootfs.user=agentos.
+	require.Equal(t, "agentos", capturedInvokeOpt.CreateOpt["host_user"])
+	// rootfs JSON carries workspace + custom mounts + the image (type/imageurl merged by
+	// applyAgentFuncMeta from funcMeta.rootfs.imageurl); the workspace target placeholder
+	// (__AGENT_USER__) is replaced by frontend with funcMeta.rootfs.user.
+	require.JSONEq(t,
+		`{"mounts":[
+			{"source":"/home/snuser/workspaceA","target":"/home/agentos","readonly":false},
+			{"source":"/home/snuser/workspaceB","target":"/mnt/workspaceB","readonly":true}],
+			"type":"image","imageurl":"yr-docker-runtime:v0"}`,
+		capturedInvokeOpt.CreateOpt["rootfs"],
+	)
+}
+
+func TestCreateHandlerRejectsUnsafeWorkspace(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called for an unsafe workspace path")
+			return "", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-unsafe",
+		Urn:       validAgentURN,
+		Workspace: "/etc",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "unsafe workspace")
+}
+
+func TestCreateHandlerRejectsRelativeWorkspace(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called for a relative workspace path")
+			return "", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-rel",
+		Urn:       validAgentURN,
+		Workspace: "relative/path",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "absolute path")
+}
+
+func TestCreateHandlerSinksDynamicEnvVars(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-env", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-env",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+		EnvVars:   map[string]string{"userid": "u-123", "TRACE_ID": "trace-456"},
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"userid":"u-123","TRACE_ID":"trace-456"}`, capturedInvokeOpt.CreateOpt["DELEGATE_ENV_VAR"])
+}
+
+func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	oldWaitForRunning := waitForAgentInstanceRunning
+	waitCalled := false
+	waitForAgentInstanceRunning = func(instanceID, functionID, resourceSpecNote string) bool {
+		waitCalled = true
+		require.Equal(t, "instance-created-late", instanceID)
+		require.NotEmpty(t, functionID)
+		require.NotEmpty(t, resourceSpecNote)
+		return true
+	}
+	defer func() {
+		waitForAgentInstanceRunning = oldWaitForRunning
+	}()
+
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			return "instance-created-late", api.ErrorInfo{
+				Code: agentCreateTimeoutCode,
+				Err:  fmt.Errorf("create instance timeout"),
+			}
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-late",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.True(t, waitCalled)
+	require.JSONEq(t, `{"code":200,"instance_id":"instance-created-late"}`, recorder.Body.String())
+}
+
+func TestCreateHandlerReturns500WhenCreateFails(t *testing.T) {
+	defer stubFuncSpec(t).Reset()
+	oldWaitForRunning := waitForAgentInstanceRunning
+	// Non-timeout error must not trigger the wait-for-running path.
+	waitForAgentInstanceRunning = func(instanceID, functionID, resourceSpecNote string) bool {
+		t.Fatalf("wait should not be called for a non-timeout create error")
+		return false
+	}
+	defer func() {
+		waitForAgentInstanceRunning = oldWaitForRunning
+	}()
+
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			return "", fmt.Errorf("scheduler refused")
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-fail",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+	})
+
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "failed to create agent")
+}
+
+func TestShouldTreatCreateTimeoutAsSuccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		instanceID string
+		err        error
+		want       bool
+	}{
+		{
+			name:       "timeout with instance id",
+			instanceID: "inst-1",
+			err:        api.ErrorInfo{Code: agentCreateTimeoutCode},
+			want:       true,
+		},
+		{name: "non-timeout error", instanceID: "inst-1", err: api.ErrorInfo{Code: 5000}, want: false},
+		{name: "empty instance id", instanceID: "", err: api.ErrorInfo{Code: agentCreateTimeoutCode}, want: false},
+		{name: "nil error", instanceID: "inst-1", err: nil, want: false},
+		{name: "non-errorinfo error", instanceID: "inst-1", err: fmt.Errorf("plain"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, shouldTreatCreateTimeoutAsSuccess(tt.instanceID, tt.err))
+		})
+	}
+}
+
+func TestIsSafeBindSource(t *testing.T) {
+	for _, p := range []string{"/", "/etc", "/proc", "/sys", "/dev", "/boot"} {
+		require.False(t, isSafeBindSource(p), "expected %s to be unsafe", p)
+	}
+	for _, p := range []string{
+		"/home/agentos", "/home/snuser/workspaceA", "/tmp/workspace", "/mnt/data",
+	} {
+		require.True(t, isSafeBindSource(p), "expected %s to be safe", p)
+	}
+	// path traversal and docker socket must be rejected
+	require.False(t, isSafeBindSource("/home/../etc"))
+	require.False(t, isSafeBindSource("/var/run/docker.sock"))
+}
+
+func TestDeleteHandlerDeletesAgentInstance(t *testing.T) {
+	var (
+		capturedInstanceID string
+		capturedSignal     int
+		capturedPayload    []byte
+		capturedInvokeOpt  api.InvokeOptions
+	)
+	util.SetAPIClientLibruntime(&runtimeStub{
+		kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+			capturedInstanceID = instanceID
+			capturedSignal = signal
+			capturedPayload = append([]byte(nil), payload...)
+			capturedInvokeOpt = invokeOpt
+			return nil
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "instanceId", Value: "0b6c6322-6533-4901-8000-00000000bb0b"}}
+	req, err := http.NewRequest(http.MethodDelete, "/api/agent/0b6c6322-6533-4901-8000-00000000bb0b", nil)
+	require.NoError(t, err)
+	ctx.Request = req
+
+	DeleteHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "0b6c6322-6533-4901-8000-00000000bb0b", capturedInstanceID)
+	require.Equal(t, agentKillInstanceSignal, capturedSignal)
+	require.Equal(t, []byte("agent deleted"), capturedPayload)
+	// KillByLibRt always passes an empty InvokeOptions to the libruntime client.
+	require.Equal(t, api.InvokeOptions{}, capturedInvokeOpt)
+	require.JSONEq(t, `{"code":200,"status":"deleted"}`, recorder.Body.String())
+}
+
+func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		kill: func(instanceID string, signal int, payload []byte, invokeOpt api.InvokeOptions) error {
+			return fmt.Errorf("kill failed")
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "instanceId", Value: "agent-delete-fail"}}
+	req, err := http.NewRequest(http.MethodDelete, "/api/agent/agent-delete-fail", nil)
+	require.NoError(t, err)
+	ctx.Request = req
+
+	DeleteHandler(ctx)
+
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "failed to delete agent")
+}
