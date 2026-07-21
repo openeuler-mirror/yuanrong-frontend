@@ -184,8 +184,15 @@ func stubFuncSpec(t *testing.T) *gomonkey.Patches {
 // CombineFunctionKey parses it into the funcKey "agentTenant/agentFunc/1".
 const validAgentURN = "urn:sn:default:agentTenant:sign:agentFunc:1"
 
-// newAgentCreateRecorder builds a gin test context with a JSON CreateRequest body.
-func newAgentCreateRecorder(t *testing.T, req CreateRequest) (*httptest.ResponseRecorder, *gin.Context) {
+const (
+	// testAgentCPU/testAgentMemory are the resource values stubbed into funcMeta and asserted
+	// in resource-sinking tests (registered mode sinks them from funcMeta.ResourceMetaData).
+	testAgentCPU    = 600
+	testAgentMemory = 512
+)
+
+// newAgentCreateRecorder builds a gin test context with a JSON CreateAgentRequest body.
+func newAgentCreateRecorder(t *testing.T, req CreateAgentRequest) (*httptest.ResponseRecorder, *gin.Context) {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -211,7 +218,7 @@ func TestCreateHandlerBuildsAgentFuncMetaFromURN(t *testing.T) {
 	// unit tests → nil client panic) and returns a deterministic runtime (python3.11).
 	defer stubFuncSpec(t).Reset()
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-a",
 		Urn:       validAgentURN,
@@ -252,7 +259,7 @@ func TestCreateHandlerReturnsInstanceIDDirectly(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-uuid",
 		Urn:       validAgentURN,
@@ -273,7 +280,7 @@ func TestCreateHandlerRejectsInvalidURN(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-bad",
 		Urn:       "not-a-valid-urn",
@@ -316,7 +323,7 @@ func TestCreateHandlerSetsDetachedAndReservedCreateOptions(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-opts",
 		Urn:       validAgentURN,
@@ -347,6 +354,39 @@ func TestCreateHandlerSetsDetachedAndReservedCreateOptions(t *testing.T) {
 	require.EqualValues(t, defaultAgentMemory, resSpec.Memory)
 }
 
+func TestCreateHandlerRegisteredSinksFuncMetaResources(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-res", nil
+		},
+	})
+	// stub funcSpec with CPU/Memory so registered mode sinks them from funcMeta.
+	defer gomonkey.ApplyFunc(functionmeta.LoadFuncSpec, func(funcKey string) (*types.FuncSpec, bool) {
+		return &types.FuncSpec{
+			FuncMetaData:     types.FuncMetaData{Runtime: "python3.11"},
+			RootfsSpecMeta:   types.RootfsSpecMeta{ImageURL: "yr-docker-runtime:v0", User: "agentos"},
+			SandboxType:      "docker",
+			ResourceMetaData: types.ResourceMetaData{CPU: testAgentCPU, Memory: testAgentMemory},
+		}, true
+	}).Reset()
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-res",
+		Urn:       validAgentURN,
+		Workspace: "/home/snuser/workspaceA",
+	})
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var resSpec resspeckey.ResourceSpecification
+	require.NoError(t, json.Unmarshal([]byte(capturedInvokeOpt.CreateOpt[constant.ResourceSpecNote]), &resSpec))
+	require.EqualValues(t, testAgentCPU, resSpec.CPU)
+	require.EqualValues(t, testAgentMemory, resSpec.Memory)
+}
+
 func TestCreateHandlerMountsWorkspaceAndCustomMounts(t *testing.T) {
 	defer stubFuncSpec(t).Reset()
 	var capturedInvokeOpt api.InvokeOptions
@@ -357,7 +397,7 @@ func TestCreateHandlerMountsWorkspaceAndCustomMounts(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-mounts",
 		Urn:       validAgentURN,
@@ -394,7 +434,7 @@ func TestCreateHandlerRejectsUnsafeWorkspace(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-unsafe",
 		Urn:       validAgentURN,
@@ -416,7 +456,7 @@ func TestCreateHandlerRejectsRelativeWorkspace(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-rel",
 		Urn:       validAgentURN,
@@ -439,7 +479,7 @@ func TestCreateHandlerSinksDynamicEnvVars(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-env",
 		Urn:       validAgentURN,
@@ -477,7 +517,7 @@ func TestCreateHandlerReturnsInstanceIDWhenCreateTimesOutAfterScheduling(t *test
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-late",
 		Urn:       validAgentURN,
@@ -509,7 +549,7 @@ func TestCreateHandlerReturns500WhenCreateFails(t *testing.T) {
 		},
 	})
 
-	recorder, ctx := newAgentCreateRecorder(t, CreateRequest{
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
 		Namespace: "agent-ns",
 		Name:      "agent-fail",
 		Urn:       validAgentURN,
@@ -614,4 +654,142 @@ func TestDeleteHandlerReturns500WhenKillFails(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "failed to delete agent")
+}
+
+// inlineRootfsReq is an inline-mode CreateAgentRequest (RuntimeSpec set, no Urn) used by the
+// inline-mode tests below. Mirrors the stubFuncSpec spec (python3.11 / docker / agentos) so
+// expectations line up with the registered-mode equivalents.
+func inlineRootfsReq() CreateAgentRequest {
+	return CreateAgentRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-inline",
+		RuntimeSpec: &RuntimeSpec{
+			Runtime:     "python3.11",
+			SandboxType: "docker",
+			Rootfs: &RootfsSpec{
+				ImageURL: "yr-docker-runtime:v0",
+				User:     "agentos",
+				Ports:    []string{"tcp:22"},
+			},
+		},
+		Workspace: "/home/snuser/workspaceA",
+	}
+}
+
+func TestCreateHandlerInlineBuildsFuncMeta(t *testing.T) {
+	var capturedFuncMeta api.FunctionMeta
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInvokeOpt = invokeOpt
+			return "instance-inline", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, inlineRootfsReq())
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, capturedFuncMeta.FuncID, "0-system-faasExecutorPython3.11")
+	require.Equal(t, api.Python, capturedFuncMeta.Language)
+	require.Equal(t, api.ActorApi, capturedFuncMeta.Api)
+	require.Nil(t, capturedFuncMeta.Name)
+	require.Equal(t, "agent-ns", *capturedFuncMeta.Namespace)
+	// inline mode: FunctionKeyNote is the composed funcKey, not a URN.
+	require.Equal(t, "default/agent-inline/latest", capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
+	// container config comes straight from the request.
+	require.Equal(t, "docker", capturedInvokeOpt.CreateOpt["sandbox_type"])
+	require.Equal(t, "agentos", capturedInvokeOpt.CreateOpt["host_user"])
+	require.JSONEq(t,
+		`{"mounts":[{"source":"/home/snuser/workspaceA","target":"/home/agentos","readonly":false}],
+		  "type":"image","imageurl":"yr-docker-runtime:v0"}`,
+		capturedInvokeOpt.CreateOpt["rootfs"])
+	require.JSONEq(t, `{"portForwardings":[{"port":22,"protocol":"TCP"}]}`,
+		capturedInvokeOpt.CreateOpt["network"])
+}
+
+func TestCreateHandlerInlineEmptyUserFallsBackToDefaultTarget(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-inline-nouser", nil
+		},
+	})
+
+	req := inlineRootfsReq()
+	req.RuntimeSpec.Rootfs.User = "" // optional field omitted
+	recorder, ctx := newAgentCreateRecorder(t, req)
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	// no host_user when User is empty; workspace target falls back to /workspace (not literal __AGENT_USER__).
+	_, hasHostUser := capturedInvokeOpt.CreateOpt["host_user"]
+	require.False(t, hasHostUser)
+	require.NotContains(t, capturedInvokeOpt.CreateOpt["rootfs"], agentUserPlaceholder)
+	require.Contains(t, capturedInvokeOpt.CreateOpt["rootfs"], `"/workspace"`)
+}
+
+func TestCreateHandlerInlineSinksEnvVars(t *testing.T) {
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedInvokeOpt = invokeOpt
+			return "instance-inline-env", nil
+		},
+	})
+
+	req := inlineRootfsReq()
+	req.EnvVars = map[string]string{"AGENT_MODE": "prod", "userid": "u-9f3a"}
+	recorder, ctx := newAgentCreateRecorder(t, req)
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"AGENT_MODE":"prod","userid":"u-9f3a"}`,
+		capturedInvokeOpt.CreateOpt["DELEGATE_ENV_VAR"])
+}
+
+func TestCreateHandlerRejectsMissingInlineAndUrn(t *testing.T) {
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			t.Fatalf("createInstance should not be called when neither inline nor urn is set")
+			return "", nil
+		},
+	})
+
+	recorder, ctx := newAgentCreateRecorder(t, CreateAgentRequest{
+		Namespace: "agent-ns",
+		Name:      "agent-none",
+		Workspace: "/home/snuser/workspaceA",
+	})
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "runtime_spec")
+	require.Contains(t, recorder.Body.String(), "urn")
+}
+
+func TestCreateHandlerInlineOverridesUrn(t *testing.T) {
+	var capturedFuncMeta api.FunctionMeta
+	var capturedInvokeOpt api.InvokeOptions
+	util.SetAPIClientLibruntime(&runtimeStub{
+		createInstance: func(funcMeta api.FunctionMeta, args []api.Arg, invokeOpt api.InvokeOptions) (string, error) {
+			capturedFuncMeta = funcMeta
+			capturedInvokeOpt = invokeOpt
+			return "instance-both", nil
+		},
+	})
+	// stubFuncSpec still applied: inline fields must win, LoadFuncSpec result must be ignored.
+	defer stubFuncSpec(t).Reset()
+
+	req := inlineRootfsReq()
+	req.Urn = validAgentURN // both set → inline wins
+	recorder, ctx := newAgentCreateRecorder(t, req)
+	CreateHandler(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	// FuncID from inline runtime (python3.11), FunctionKeyNote from inline funcKey (not URN).
+	require.Contains(t, capturedFuncMeta.FuncID, "0-system-faasExecutorPython3.11")
+	require.Equal(t, "default/agent-inline/latest", capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 }

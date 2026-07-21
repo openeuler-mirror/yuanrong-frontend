@@ -44,9 +44,14 @@ import (
 	"frontend/pkg/frontend/schedulerproxy"
 )
 
-// agentUserPlaceholder is the workspace mount target placeholder. It is replaced
-// with funcMeta.rootfs.user (from the watched funcSpecMap) in applyAgentFuncMeta.
-const agentUserPlaceholder = "__AGENT_USER__"
+// agentUserPlaceholder is the workspace mount target placeholder. It is replaced with
+// rootfs.user (registered: from funcSpecMap; inline: from req.Rootfs.User) in
+// applyAgentFuncMeta / applyAgentInlineMeta. When rootfs.user is empty, the placeholder is
+// replaced with agentDefaultWorkspaceTarget so the mount target is a real path, not a literal.
+const (
+	agentUserPlaceholder        = "__AGENT_USER__"
+	agentDefaultWorkspaceTarget = "/workspace"
+)
 
 // agentExecutorFormat is the system executor function funcKey pattern. agent reuses the
 // faas system executor function (loaded into function_proxy's funcMetaMap_ at startup from
@@ -131,16 +136,31 @@ var waitForAgentInstanceRunning = func(instanceID, functionID, resourceSpecNote 
 	return isAgentInstanceRunning(instanceID, functionID, resourceSpecNote)
 }
 
-// CreateRequest holds the parameters for POST /api/agent.
-// Run-as user and container ports come from the function meta (rootfs.user /
-// rootfs.ports), so they are NOT create params.
-type CreateRequest struct {
-	Namespace string            `json:"namespace" binding:"required"`
-	Name      string            `json:"name" binding:"required"`
-	Urn       string            `json:"urn" binding:"required"`
-	Workspace string            `json:"workspace" binding:"required"`
-	EnvVars   map[string]string `json:"env_vars,omitempty"`
-	Mounts    []Mount           `json:"mounts,omitempty"`
+// CreateAgentRequest holds the parameters for POST /api/agent.
+type CreateAgentRequest struct {
+	Namespace   string            `json:"namespace" binding:"required"`
+	Name        string            `json:"name" binding:"required"`
+	Urn         string            `json:"urn,omitempty"`
+	RuntimeSpec *RuntimeSpec      `json:"runtime_spec,omitempty"`
+	Workspace   string            `json:"workspace" binding:"required"`
+	EnvVars     map[string]string `json:"env_vars,omitempty"`
+	Mounts      []Mount           `json:"mounts,omitempty"`
+}
+
+// RuntimeSpec carries inline container config (inline mode).
+type RuntimeSpec struct {
+	Runtime     string      `json:"runtime,omitempty"`
+	SandboxType string      `json:"sandbox_type,omitempty"`
+	Rootfs      *RootfsSpec `json:"rootfs,omitempty"`
+	CPU         int         `json:"cpu,omitempty"`
+	Memory      int         `json:"memory,omitempty"`
+}
+
+// RootfsSpec carries the inline container rootfs config.
+type RootfsSpec struct {
+	ImageURL string   `json:"imageurl" binding:"required"`
+	User     string   `json:"user,omitempty"`
+	Ports    []string `json:"ports,omitempty"`
 }
 
 // Mount defines a custom bind mount.
@@ -151,47 +171,50 @@ type Mount struct {
 }
 
 // CreateHandler handles POST /api/agent.
-// It calls CreateInstanceByLibRt with the user function URN (FuncID=funcKey, no fallback),
-// mounts workspace to /home/${rootfs.user} (placeholder replaced by function_proxy), and
-// sinks the dynamic env vars (incl. userid) via createOptions["DELEGATE_ENV_VAR"]. Static env,
-// run-as user, and container ports travel with the function meta, not here.
+// Inline mode (Runtime/Rootfs set): container config from the request, bypasses meta_service.
+// Registered mode (Urn set): config looked up from funcSpecMap. Inline takes precedence.
 func CreateHandler(ctx *gin.Context) {
-	var req CreateRequest
+	var req CreateAgentRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("invalid request body: %v", err))
 		return
 	}
 
-	// libruntime routes by funcKey (tenant/funcName/version), not the URN string.
-	// Parse the URN and combine into a funcKey before setting FuncID.
-	funcUrn := &urnutils.FunctionURN{}
-	if err := funcUrn.ParseFrom(req.Urn); err != nil {
-		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("invalid urn: %v", err))
+	inline := isInlineMode(req)
+	if !inline && req.Urn == "" {
+		app.SetCtxResponse(ctx, nil, http.StatusBadRequest,
+			fmt.Errorf("either runtime_spec (inline) or urn (registered) is required"))
 		return
 	}
-	funcKey := urnutils.CombineFunctionKey(funcUrn.TenantID, funcUrn.FuncName, funcUrn.FuncVersion)
-	// agent reuses the faas system executor function as the CreateInstance FuncID (see
-	// getAgentExecutorFuncKey). function_proxy's funcMetaMap_ has these system functions
-	// preloaded at startup (from executor-meta/*_meta.json), so GetFuncMeta(funcKey) hits —
-	// avoids "invalid function (1015)" since agent's user funcKey is never registered into
-	// proxy's /yr/functions watch. The user function's real config (imageurl/user/ports/
-	// sandboxType) is looked up from the frontend-watched funcSpecMap by funcKey and sunk
-	// via createOptions; proxy does not need the user funcMeta.
-	runtime := ""
-	if spec, ok := functionmeta.LoadFuncSpec(funcKey); ok && spec != nil {
-		runtime = spec.FuncMetaData.Runtime
+
+	var funcKey, executorFuncKey, runtime string
+	if inline {
+		tenantID := httputil.GetCompatibleGinHeader(ctx.Request, constant.HeaderTenantID, "tenantId")
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		funcKey = urnutils.CombineFunctionKey(tenantID, req.Name, urnutils.DefaultURNVersion)
+		runtime = req.RuntimeSpec.Runtime
+	} else {
+		funcUrn := &urnutils.FunctionURN{}
+		if err := funcUrn.ParseFrom(req.Urn); err != nil {
+			app.SetCtxResponse(ctx, nil, http.StatusBadRequest, fmt.Errorf("invalid urn: %v", err))
+			return
+		}
+		funcKey = urnutils.CombineFunctionKey(funcUrn.TenantID, funcUrn.FuncName, funcUrn.FuncVersion)
+		if spec, ok := functionmeta.LoadFuncSpec(funcKey); ok && spec != nil {
+			runtime = spec.FuncMetaData.Runtime
+		}
 	}
-	executorFuncKey := getAgentExecutorFuncKey(runtime)
-	// Name intentionally left empty: when FunctionMeta.Name is empty, libruntime SDK
-	// does not set designatedInstanceID, and function_proxy's instance_control_view
-	// generates a random UUID as instance_id — avoiding namespace-name collisions.
+	executorFuncKey = getAgentExecutorFuncKey(runtime)
+
 	funcMeta := api.FunctionMeta{
 		FuncID:    executorFuncKey,
 		Language:  api.Python,
 		Api:       api.ActorApi,
 		Namespace: &req.Namespace,
 	}
-	invokeOpts, err := buildAgentInvokeOptions(ctx, req, funcKey)
+	invokeOpts, err := buildAgentInvokeOptions(ctx, req, funcKey, inline)
 	if err != nil {
 		app.SetCtxResponse(ctx, nil, http.StatusBadRequest, err)
 		return
@@ -199,13 +222,28 @@ func CreateHandler(ctx *gin.Context) {
 	createAgentInstance(ctx, req, funcMeta, invokeOpts)
 }
 
+// isInlineMode reports whether req carries inline container config (runtime + rootfs.imageurl).
+func isInlineMode(req CreateAgentRequest) bool {
+	return req.RuntimeSpec != nil && req.RuntimeSpec.Runtime != "" &&
+		req.RuntimeSpec.Rootfs != nil && req.RuntimeSpec.Rootfs.ImageURL != ""
+}
+
 // buildAgentInvokeOptions builds the invoke options for agent create.
-// funcKey is used to look up the watched funcMeta (rootfs.user/ports/sandboxType/imageurl)
-// and transparently pass them into createOptions — proxy does not need to merge funcMeta.
-func buildAgentInvokeOptions(ctx *gin.Context, req CreateRequest, funcKey string) (api.InvokeOptions, error) {
+// inline=true: container config from req; inline=false: from funcSpecMap by funcKey.
+func buildAgentInvokeOptions(ctx *gin.Context, req CreateAgentRequest, funcKey string, inline bool,
+) (api.InvokeOptions, error) {
+	cpu, memory := defaultAgentCPU, defaultAgentMemory
+	if inline && req.RuntimeSpec != nil {
+		if req.RuntimeSpec.CPU > 0 {
+			cpu = req.RuntimeSpec.CPU
+		}
+		if req.RuntimeSpec.Memory > 0 {
+			memory = req.RuntimeSpec.Memory
+		}
+	}
 	invokeOpts := api.InvokeOptions{
-		Cpu:              defaultAgentCPU,
-		Memory:           defaultAgentMemory,
+		Cpu:              cpu,
+		Memory:           memory,
 		Timeout:          agentCreateTimeoutSeconds,
 		CreateOpt:        map[string]string{},
 		CustomExtensions: map[string]string{"lifecycle": "detached", "Concurrency": agentConcurrency},
@@ -215,31 +253,36 @@ func buildAgentInvokeOptions(ctx *gin.Context, req CreateRequest, funcKey string
 		return api.InvokeOptions{}, err
 	}
 	applyAgentDynamicEnv(&invokeOpts, req)
-	applyAgentFuncMeta(&invokeOpts, funcKey)
-	applyAgentCreateOpts(&invokeOpts, ctx, req)
+	if inline {
+		applyAgentInlineMeta(&invokeOpts, req)
+	} else {
+		applyAgentFuncMeta(&invokeOpts, funcKey)
+	}
+	applyAgentCreateOpts(&invokeOpts, ctx, req, inline, funcKey)
 	return invokeOpts, nil
 }
 
 // applyAgentFuncMeta looks up the watched funcMeta by funcKey and transparently passes
-// rootfs (imageurl/user/ports) and sandboxType into createOptions. This way proxy does not
-// need to merge funcMeta — frontend gives proxy everything it needs to create the container.
+// rootfs (imageurl/user/ports), sandboxType, and cpu/memory into createOptions (registered mode).
 func applyAgentFuncMeta(invokeOpts *api.InvokeOptions, funcKey string) {
 	spec, ok := functionmeta.LoadFuncSpec(funcKey)
 	if !ok || spec == nil {
 		log.GetLogger().Warnf("agent funcMeta not found in cache for funcKey %s, skip funcMeta sinking", funcKey)
 		return
 	}
+	if spec.ResourceMetaData.CPU > 0 {
+		invokeOpts.Cpu = int(spec.ResourceMetaData.CPU)
+	}
+	if spec.ResourceMetaData.Memory > 0 {
+		invokeOpts.Memory = int(spec.ResourceMetaData.Memory)
+	}
 	if spec.SandboxType != "" {
 		invokeOpts.CreateOpt["sandbox_type"] = spec.SandboxType
 	}
 	if spec.RootfsSpecMeta.User != "" {
 		invokeOpts.CreateOpt["host_user"] = spec.RootfsSpecMeta.User
-		// Replace workspace target placeholder with real user.
-		if rootfsStr, exists := invokeOpts.CreateOpt["rootfs"]; exists && rootfsStr != "" {
-			rootfsStr = strings.ReplaceAll(rootfsStr, agentUserPlaceholder, spec.RootfsSpecMeta.User)
-			invokeOpts.CreateOpt["rootfs"] = rootfsStr
-		}
 	}
+	replaceAgentUserPlaceholder(invokeOpts, spec.RootfsSpecMeta.User)
 	if spec.RootfsSpecMeta.ImageURL != "" {
 		rootfsJSON, err := json.Marshal(map[string]interface{}{
 			"type": "image", "imageurl": spec.RootfsSpecMeta.ImageURL, "mounts": []interface{}{},
@@ -253,28 +296,83 @@ func applyAgentFuncMeta(invokeOpts *api.InvokeOptions, funcKey string) {
 		}
 	}
 	if len(spec.RootfsSpecMeta.Ports) > 0 {
-		portForwardings := make([]map[string]interface{}, 0, len(spec.RootfsSpecMeta.Ports))
-		for _, p := range spec.RootfsSpecMeta.Ports {
-			protocol := "TCP"
-			portStr := p
-			if idx := strings.Index(p, ":"); idx >= 0 {
-				protocol = strings.ToUpper(p[:idx])
-				portStr = p[idx+1:]
-			}
-			port, err := strconv.Atoi(portStr)
-			if err != nil {
-				continue
-			}
-			portForwardings = append(portForwardings, map[string]interface{}{"port": port, "protocol": protocol})
-		}
-		networkJSON, err := json.Marshal(map[string]interface{}{"portForwardings": portForwardings})
-		if err != nil {
-			log.GetLogger().Warnf("failed to marshal agent network portForwardings: %v", err)
-		} else {
-			invokeOpts.CreateOpt["network"] = string(networkJSON)
-		}
+		applyAgentPorts(invokeOpts, spec.RootfsSpecMeta.Ports)
 	}
 	mergeAgentStaticEnv(invokeOpts, spec)
+}
+
+// applyAgentInlineMeta passes container config from req.RuntimeSpec into createOptions (inline mode).
+func applyAgentInlineMeta(invokeOpts *api.InvokeOptions, req CreateAgentRequest) {
+	c := req.RuntimeSpec
+	if c == nil {
+		return
+	}
+	if c.SandboxType != "" {
+		invokeOpts.CreateOpt["sandbox_type"] = c.SandboxType
+	}
+	if c.Rootfs == nil {
+		return
+	}
+	if c.Rootfs.User != "" {
+		invokeOpts.CreateOpt["host_user"] = c.Rootfs.User
+	}
+	replaceAgentUserPlaceholder(invokeOpts, c.Rootfs.User)
+	if c.Rootfs.ImageURL != "" {
+		rootfsJSON, err := json.Marshal(map[string]interface{}{
+			"type": "image", "imageurl": c.Rootfs.ImageURL, "mounts": []interface{}{},
+		})
+		if err != nil {
+			log.GetLogger().Warnf("failed to marshal agent rootfs imageurl: %v", err)
+		} else if existing, exists := invokeOpts.CreateOpt["rootfs"]; exists && existing != "" {
+			invokeOpts.CreateOpt["rootfs"] = mergeRootfsJSON(existing, string(rootfsJSON))
+		} else {
+			invokeOpts.CreateOpt["rootfs"] = string(rootfsJSON)
+		}
+	}
+	if len(c.Rootfs.Ports) > 0 {
+		applyAgentPorts(invokeOpts, c.Rootfs.Ports)
+	}
+}
+
+// replaceAgentUserPlaceholder replaces the workspace target placeholder in createOptions["rootfs"]
+// with a real path. When user is non-empty, /home/__AGENT_USER__ → /home/<user>; when empty,
+// the whole /home/__AGENT_USER__ falls back to agentDefaultWorkspaceTarget (e.g. /workspace),
+// so the mount target is never a literal placeholder.
+func replaceAgentUserPlaceholder(invokeOpts *api.InvokeOptions, user string) {
+	rootfsStr, exists := invokeOpts.CreateOpt["rootfs"]
+	if !exists || rootfsStr == "" {
+		return
+	}
+	if user != "" {
+		invokeOpts.CreateOpt["rootfs"] = strings.ReplaceAll(rootfsStr, agentUserPlaceholder, user)
+		return
+	}
+	invokeOpts.CreateOpt["rootfs"] = strings.ReplaceAll(
+		rootfsStr, "/home/"+agentUserPlaceholder, agentDefaultWorkspaceTarget)
+}
+
+// applyAgentPorts builds createOptions["network"] portForwardings from rootfs.ports.
+func applyAgentPorts(invokeOpts *api.InvokeOptions, ports []string) {
+	portForwardings := make([]map[string]interface{}, 0, len(ports))
+	for _, p := range ports {
+		protocol := "TCP"
+		portStr := p
+		if idx := strings.Index(p, ":"); idx >= 0 {
+			protocol = strings.ToUpper(p[:idx])
+			portStr = p[idx+1:]
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			continue
+		}
+		portForwardings = append(portForwardings, map[string]interface{}{"port": port, "protocol": protocol})
+	}
+	networkJSON, err := json.Marshal(map[string]interface{}{"portForwardings": portForwardings})
+	if err != nil {
+		log.GetLogger().Warnf("failed to marshal agent network portForwardings: %v", err)
+		return
+	}
+	invokeOpts.CreateOpt["network"] = string(networkJSON)
 }
 
 // mergeAgentStaticEnv merges the function's static environment (funcSpec.EnvMetaData.Environment,
@@ -345,7 +443,7 @@ func mergeRootfsJSON(existing, imageJSON string) string {
 // applyAgentRootfsMounts builds rootfs.mounts from the workspace and custom mounts,
 // writes it into CreateOpt["rootfs"]. rootfs goes into CreateOpt (not CustomExtensions)
 // so docker executor's BuildBindMounts (which reads deployOptions["rootfs"]) can parse it.
-func applyAgentRootfsMounts(invokeOpts *api.InvokeOptions, req CreateRequest) error {
+func applyAgentRootfsMounts(invokeOpts *api.InvokeOptions, req CreateAgentRequest) error {
 	var rootfsMounts []map[string]interface{}
 	if req.Workspace != "" {
 		if err := validateBindSource(req.Workspace, "workspace"); err != nil {
@@ -377,7 +475,7 @@ func applyAgentRootfsMounts(invokeOpts *api.InvokeOptions, req CreateRequest) er
 // applyAgentDynamicEnv sinks dynamic env vars (incl. userid) via createOptions["DELEGATE_ENV_VAR"]
 // (JSON), which the runtime merges into sandbox userenvs. Static env travels with the
 // function meta (EnvMetaData), not here.
-func applyAgentDynamicEnv(invokeOpts *api.InvokeOptions, req CreateRequest) {
+func applyAgentDynamicEnv(invokeOpts *api.InvokeOptions, req CreateAgentRequest) {
 	if len(req.EnvVars) == 0 {
 		return
 	}
@@ -390,12 +488,18 @@ func applyAgentDynamicEnv(invokeOpts *api.InvokeOptions, req CreateRequest) {
 }
 
 // applyAgentCreateOpts sets the common createOptions shared across agent instances.
-func applyAgentCreateOpts(invokeOpts *api.InvokeOptions, ctx *gin.Context, req CreateRequest) {
+// funcKeyNote: inline mode uses funcKey; registered mode uses urn.
+func applyAgentCreateOpts(invokeOpts *api.InvokeOptions, ctx *gin.Context, req CreateAgentRequest,
+	inline bool, funcKey string) {
 	tenantID := httputil.GetCompatibleGinHeader(ctx.Request, constant.HeaderTenantID, "tenantId")
 	if tenantID != "" {
 		invokeOpts.CreateOpt["tenantId"] = tenantID
 	}
-	invokeOpts.CreateOpt[constant.FunctionKeyNote] = req.Urn
+	if inline {
+		invokeOpts.CreateOpt[constant.FunctionKeyNote] = funcKey
+	} else {
+		invokeOpts.CreateOpt[constant.FunctionKeyNote] = req.Urn
+	}
 	invokeOpts.CreateOpt[constant.InstanceTypeNote] = agentInstanceType
 	invokeOpts.CreateOpt["call_timeout"] = strconv.Itoa(agentCreateTimeoutSeconds)
 	invokeOpts.CreateOpt["init_call_timeout"] = strconv.Itoa(agentInitTimeoutSeconds)
@@ -421,7 +525,7 @@ func validateBindSource(path, label string) error {
 }
 
 func createAgentInstance(
-	ctx *gin.Context, req CreateRequest, funcMeta api.FunctionMeta, invokeOpts api.InvokeOptions,
+	ctx *gin.Context, req CreateAgentRequest, funcMeta api.FunctionMeta, invokeOpts api.InvokeOptions,
 ) {
 	instanceID, err := util.NewClient().CreateInstanceByLibRt(funcMeta, []api.Arg{}, invokeOpts)
 	if err != nil {
