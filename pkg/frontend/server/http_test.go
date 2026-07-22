@@ -35,7 +35,6 @@ import (
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/types"
-	"frontend/pkg/frontend/watcher"
 )
 
 func TestStart(t *testing.T) {
@@ -59,9 +58,6 @@ func TestStart(t *testing.T) {
 		stopCh := make(chan struct{})
 		convey.Convey("success", func() {
 			patches := []*gomonkey.Patches{
-				gomonkey.ApplyFunc(watcher.StartWatch, func(stopCh <-chan struct{}) error {
-					return nil
-				}),
 				gomonkey.ApplyMethod(reflect.TypeOf(&http.Server{}), "ListenAndServe",
 					func(_ *http.Server) error {
 						return nil
@@ -78,9 +74,6 @@ func TestStart(t *testing.T) {
 
 		convey.Convey(" start https server success", func() {
 			patches := []*gomonkey.Patches{
-				gomonkey.ApplyFunc(watcher.StartWatch, func(stopCh <-chan struct{}) error {
-					return nil
-				}),
 				gomonkey.ApplyMethod(reflect.TypeOf(&http.Server{}), "ListenAndServeTLS",
 					func(_ *http.Server, certFile, keyFile string) error {
 						return nil
@@ -119,9 +112,6 @@ func TestStart(t *testing.T) {
 
 		convey.Convey("server failed", func() {
 			patches := []*gomonkey.Patches{
-				gomonkey.ApplyFunc(watcher.StartWatch, func(stopCh <-chan struct{}) error {
-					return nil
-				}),
 				gomonkey.ApplyMethod(reflect.TypeOf(&http.Server{}), "ListenAndServe",
 					func(_ *http.Server) error {
 						return errors.New("server error")
@@ -140,9 +130,6 @@ func TestStart(t *testing.T) {
 			rt := &mockUtils.FakeLibruntimeSdkClient{}
 			exit := false
 			patches := []*gomonkey.Patches{
-				gomonkey.ApplyFunc(watcher.StartWatch, func(stopCh <-chan struct{}) error {
-					return nil
-				}),
 				gomonkey.ApplyMethod(reflect.TypeOf(&http.Server{}), "ListenAndServe",
 					func(_ *http.Server) error {
 						return errors.New("server error")

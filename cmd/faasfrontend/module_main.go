@@ -30,6 +30,7 @@ import (
 	"frontend/pkg/common/faas_common/tracer"
 	"frontend/pkg/common/faas_common/urnutils"
 	"frontend/pkg/frontend/asyncinvocation"
+	"frontend/pkg/frontend/common/util"
 	"frontend/pkg/frontend/config"
 	"frontend/pkg/frontend/functiontask"
 	"frontend/pkg/frontend/invocation"
@@ -38,12 +39,18 @@ import (
 	"frontend/pkg/frontend/responsehandler"
 	"frontend/pkg/frontend/sandboxrouter"
 	"frontend/pkg/frontend/server"
+	"frontend/pkg/frontend/sshproxy"
 	"frontend/pkg/frontend/stream"
+	"frontend/pkg/frontend/watcher"
 )
 
 const (
 	logFileName = "frontend"
 )
+
+func configureRuntimeBackend() error {
+	return util.SetAPIClientRuntimeBackend(config.GetConfig().FunctionInvokeBackend, nil)
+}
 
 func main() {
 	defer func() {
@@ -69,12 +76,20 @@ func main() {
 		logAndPrintError(fmt.Sprintf("init module config error: %s", err.Error()))
 		return
 	}
+	if err = configureRuntimeBackend(); err != nil {
+		logAndPrintError(fmt.Sprintf("invalid runtime backend config: %s", err.Error()))
+		return
+	}
 	// Fix Critical #4: Load async invocation config
 	asyncinvocation.LoadConfigFromMain(config.GetConfig())
 	urnutils.SetSeparator(config.GetConfig().FunctionNameSeparator)
 	stopCh := signals.WaitForSignal()
 	if err = config.InitEtcd(stopCh); err != nil {
 		logAndPrintError(fmt.Sprintf("init etcd error: %s", err.Error()))
+		return
+	}
+	if err = watcher.StartWatch(stopCh); err != nil {
+		logAndPrintError(fmt.Sprintf("start etcd watcher error: %s", err.Error()))
 		return
 	}
 
@@ -84,15 +99,22 @@ func main() {
 		logAndPrintError(fmt.Sprintf("setup module frontend error: %s", err.Error()))
 		return
 	}
+	if err = sshproxy.Start(stopCh); err != nil {
+		logAndPrintError(fmt.Sprintf("start SSH frontend error: %s", err.Error()))
+		return
+	}
 	// 流监听
 	if err := stream.StartListenFrontendResponseStream(stopCh); err != nil {
 		log.GetLogger().Warnf("failed to listen frontend response stream, err: %s", err.Error())
 	}
+	startModuleHTTPServer(stopCh)
+}
+
+func startModuleHTTPServer(stopCh <-chan struct{}) {
 	errChan := make(chan error, 1)
 	httpServer := server.CreateHTTPServer()
 	go func() {
-		err = server.Start(httpServer, stopCh)
-		if err != nil {
+		if err := server.Start(httpServer, stopCh); err != nil {
 			errChan <- err
 			logAndPrintError(fmt.Sprintf("start http server error: %s", err.Error()))
 		}

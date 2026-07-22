@@ -45,6 +45,7 @@ func StartWatch(stopCh <-chan struct{}) error {
 	go startWatchAlias(stopCh)
 	go startWatchTenantQOS(stopCh)
 	go startWatchInstanceInfo(stopCh)
+	go startWatchFrontendProxyEndpoint(stopCh)
 	go startWatchInstanceConfig(stopCh)
 	return nil
 }

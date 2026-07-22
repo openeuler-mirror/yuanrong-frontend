@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -122,6 +123,45 @@ func GetClientTLSConfig() *tls.Config {
 		Renegotiation:            tlsConfig.Renegotiation,
 	}
 	return newCfg
+}
+
+// NewComponentClientTLSConfig loads the YuanRong component identity and
+// verifies peers against the configured component CA without host-role matching.
+func NewComponentClientTLSConfig(config InternalHTTPSConfig) (*tls.Config, error) {
+	basePath := config.SSLBasePath
+	caData, err := os.ReadFile(filepath.Join(basePath, config.RootCAFile))
+	if err != nil {
+		return nil, fmt.Errorf("read component CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caData) {
+		return nil, fmt.Errorf("component CA contains no certificates")
+	}
+	certificates, err := LoadServerTLSCertificate(filepath.Join(basePath, config.ModuleCertFile),
+		filepath.Join(basePath, config.ModuleKeyFile), "", config.SSLDecryptTool, true)
+	if err != nil {
+		return nil, fmt.Errorf("load component certificate: %w", err)
+	}
+	return &tls.Config{
+		Certificates:       certificates,
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true, // VerifyConnection validates the YuanRong trust chain.
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return fmt.Errorf("peer did not provide a component certificate")
+			}
+			intermediates := x509.NewCertPool()
+			for _, cert := range state.PeerCertificates[1:] {
+				intermediates.AddCert(cert)
+			}
+			_, verifyErr := state.PeerCertificates[0].Verify(x509.VerifyOptions{
+				Roots:         roots,
+				Intermediates: intermediates,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			})
+			return verifyErr
+		},
+	}, nil
 }
 
 func loadCerts(path string, filename string) string {

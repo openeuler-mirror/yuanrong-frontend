@@ -113,6 +113,16 @@ func (c *fakeClient) InvokeInstanceByLibRtAndGet(
 	return nil, nil
 }
 
+func (c *fakeClient) CreateRuntimeInstance(funcMeta api.FunctionMeta, args []api.Arg,
+	invokeOpt api.InvokeOptions) (string, error) {
+	return c.CreateInstanceByLibRt(funcMeta, args, invokeOpt)
+}
+
+func (c *fakeClient) KillInstance(funcMeta api.FunctionMeta, instanceID string, signal int, payload []byte,
+	invokeOpt api.InvokeOptions) error {
+	return c.KillByLibRt(instanceID, signal, payload)
+}
+
 func (c *fakeClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
 	return nil
 }
@@ -230,6 +240,16 @@ func (c *fakeFailedClient) InvokeInstanceByLibRtAndGet(
 	invokeOpt api.InvokeOptions,
 ) ([]byte, error) {
 	return nil, errors.New("runtime initialization timed out after 3s")
+}
+
+func (c *fakeFailedClient) CreateRuntimeInstance(funcMeta api.FunctionMeta, args []api.Arg,
+	invokeOpt api.InvokeOptions) (string, error) {
+	return c.CreateInstanceByLibRt(funcMeta, args, invokeOpt)
+}
+
+func (c *fakeFailedClient) KillInstance(funcMeta api.FunctionMeta, instanceID string, signal int, payload []byte,
+	invokeOpt api.InvokeOptions) error {
+	return c.KillByLibRt(instanceID, signal, payload)
 }
 
 func (c *fakeFailedClient) KillByLibRt(instanceID string, signal int, payload []byte) error {
@@ -391,7 +411,6 @@ func Test_InvokeHandler(t *testing.T) {
 			}).Reset()
 		defer gomonkey.ApplyFunc(config.GetConfig, func() *types.Config {
 			return &types.Config{
-				FunctionInvokeBackend: constant.BackendTypeKernel,
 				MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 					RequestMemoryEvaluator: 2,
 				},
@@ -450,7 +469,6 @@ func Test_InvokeHandler(t *testing.T) {
 			}).Reset()
 		defer gomonkey.ApplyFunc(config.GetConfig, func() *types.Config {
 			return &types.Config{
-				FunctionInvokeBackend: constant.BackendTypeKernel,
 				MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 					RequestMemoryEvaluator: 2,
 				},
@@ -550,7 +568,6 @@ func testFgStreamException(t *testing.T, funcNameDemo string, reqBody string) {
 func mockFgStreamReqConfig() func() *types.Config {
 	return func() *types.Config {
 		return &types.Config{
-			FunctionInvokeBackend: constant.BackendTypeKernel,
 			MemoryEvaluatorConfig: &types.MemoryEvaluatorConfig{
 				RequestMemoryEvaluator: 2,
 			},
