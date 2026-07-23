@@ -254,7 +254,7 @@ func processAddEvent(event *etcd3.Event, logger api.FormatLogger) error {
 	if err != nil {
 		log.GetLogger().Warnf("failed to parse dataSystemValue, err: %s", err.Error())
 	}
-	localDataSystemStatusCache.SetLocalDataSystemStatus(ip, status)
+	initDataSystemHealthCheck(ip, status)
 	readyStatus := map[string]struct{}{
 		dataSystemStatusReady: struct{}{}, // only ready status can add
 	}
@@ -286,7 +286,6 @@ func processDeleteEvent(event *etcd3.Event, logger api.FormatLogger) error {
 	if !ok {
 		return errors.New("dataSystem cache is invalid")
 	}
-	localDataSystemStatusCache.SetLocalDataSystemStatus(ip, "")
 	cache.deleteNode(ip, logger)
 	if cache.isEmpty() {
 		dataSystemCache.Delete(az)

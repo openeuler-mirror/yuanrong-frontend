@@ -47,14 +47,12 @@ const (
 )
 
 var (
-	// localDataSystemStatusCache 存储本节点数据系统状态
-	localDataSystemStatusCache = &LocalDataSystemStatusCache{}
 	// shutdownFlag 防止并发触发destroy()动作
 	shutdownFlag = atomic.Bool{}
 	// streamEnable 识别是否是流场景，可开启监听本节点数据系统状态
 	streamEnable = atomic.Bool{}
-	// etcdStatusReady 记录etcd中本节点数据系统状态是否ready，识别升级场景需要重启frontend
-	etcdStatusReady = atomic.Bool{}
+	// startHealthCheck 记录健康检查任务启动，允许通过 IsLocalDataSystemStatusReady() 获取检查结果
+	startHealthCheck = atomic.Bool{}
 	// healthCheckResult 保存libruntime接口返回的数据系统状态
 	healthCheckResult = atomic.Bool{}
 	// healthCheckOnce 本节点数据系统ready后，启动监听动作，防止重复启动
@@ -69,21 +67,7 @@ type LocalDataSystemStatusCache struct {
 	lock   sync.RWMutex
 }
 
-// IsStatusReady -
-func (d *LocalDataSystemStatusCache) IsStatusReady() bool {
-	d.lock.RLock()
-	defer d.lock.RUnlock()
-	if d.status != dataSystemStatusReady {
-		log.GetLogger().Debugf("data system status is not ready, status: %s", d.status)
-		return false
-	}
-	return true
-}
-
-// SetLocalDataSystemStatus -
-func (d *LocalDataSystemStatusCache) SetLocalDataSystemStatus(ip, status string) {
-	d.lock.Lock()
-	defer d.lock.Unlock()
+func initDataSystemHealthCheck(ip, status string) {
 	localNode := os.Getenv("NODE_IP")
 	if localNode == "" {
 		log.GetLogger().Debugf("get local node is empty")
@@ -93,42 +77,22 @@ func (d *LocalDataSystemStatusCache) SetLocalDataSystemStatus(ip, status string)
 		log.GetLogger().Debugf("node[%s] is not local data system node[%s]", ip, localNode)
 		return
 	}
-	log.GetLogger().Infof("save local data system node[%s] status[%s]", ip, status)
 	if status == dataSystemStatusReady {
-		// 首次启动或重启后，数据系统状态可能长时间非ready，需要首次ready后才开启协程检查healthCheck接口的调用，防止造成反复重启
+		// 首次启动或重启后，数据系统状态可能长时间非 ready， 需要首次 ready 后才开启协程检查 healthCheck 接口的调用，防止造成反复重启
 		healthCheckOnce.Do(func() {
-			etcdStatusReady.Store(true)
+			startHealthCheck.Store(true)
 			go dataSystemHealthCheck()
 		})
 	}
-	d.status = status
-}
-
-// GetLocalDataSystemStatus -
-func (d *LocalDataSystemStatusCache) GetLocalDataSystemStatus() string {
-	d.lock.RLock()
-	defer d.lock.RUnlock()
-	return d.status
 }
 
 // IsLocalDataSystemStatusReady -
 func IsLocalDataSystemStatusReady() bool {
-	//先判断etcdStatusReady状态,etcd监听到ready之前，健康检查应该是一直非ready的；
-	// 首次ready之后，再遇到非ready之后始终返回false，保证摘流和触发重启
-	if !etcdStatusReady.Load() {
-		atomic.AddInt32(&readinessFailureThreshold, 1)
+	if !startHealthCheck.Load() {
+		// 未启动健康检查协程时，默认异常
 		return false
 	}
-	if !localDataSystemStatusCache.IsStatusReady() {
-		etcdStatusReady.Store(false)
-	}
-	if healthCheckResult.Load() {
-		atomic.SwapInt32(&readinessFailureThreshold, 0)
-		return true
-	} else {
-		atomic.AddInt32(&readinessFailureThreshold, 1)
-		return false
-	}
+	return healthCheckResult.Load()
 }
 
 // SetStreamEnable -
@@ -145,6 +109,12 @@ func isShutdownFronted() bool {
 	if !streamEnable.Load() {
 		log.GetLogger().Infof("it's not stream scenario, skip shutdown frontend")
 		return false
+	}
+	// 健康检查正常，则重置失败次数；若健康检查异常，则累加失败次数
+	if healthCheckResult.Load() {
+		atomic.SwapInt32(&readinessFailureThreshold, 0)
+	} else {
+		atomic.AddInt32(&readinessFailureThreshold, 1)
 	}
 	if atomic.LoadInt32(&readinessFailureThreshold) > failureThreshold {
 		log.GetLogger().Infof("readiness has failed %d times, shutdown frontend", failureThreshold)
