@@ -109,8 +109,8 @@ func (im *Manager) ClearFuncLeasePools(funcKey string) {
 	for _, leasePool := range funckeyLeasePools.leasePools {
 		utils.SafeCloseChannel(leasePool.stopCh)
 	}
-	funckeyLeasePools.Unlock()
 	delete(im.globalFuncKeyLeasePools, funcKey)
+	funckeyLeasePools.Unlock()
 }
 
 // AcquireInstance -
@@ -264,11 +264,11 @@ func (flps *FuncKeyLeasePools) acquireInstance(option *commontypes.AcquireOption
 	if err != nil {
 		return nil, err
 	}
-	flps.RLock()
+	flps.Lock()
 
 	flps.globalLeaseList[lease.ThreadID] = lease
 	flps.leaseIdToLeasePool[lease.ThreadID] = leasePool
-	flps.RUnlock()
+	flps.Unlock()
 	return lease.InstanceAllocationInfo, nil
 }
 
@@ -434,56 +434,89 @@ func (flps *FuncKeyLeasePools) setRingName(leaseId string, lease *InstanceLease)
 	}
 }
 
+type leaseRetainSnapshot struct {
+	leaseId string
+	lease   *InstanceLease
+	pool    *LeasePool
+}
+
 func (flps *FuncKeyLeasePools) doBatchRetain() {
-	funcKeyAllBatches := make(map[string]*BatchRetainLeaseInfosArr)
+	snapshots, exitLeases := flps.collectRetainSnapshots()
+	funcKeyAllBatches := flps.assembleRetainBatches(snapshots)
+	flps.processBatchLease(exitLeases, funcKeyAllBatches)
+}
+
+func (flps *FuncKeyLeasePools) collectRetainSnapshots() ([]leaseRetainSnapshot, []*InstanceLease) {
+	snapshots := make([]leaseRetainSnapshot, 0, defaultMapSize)
 	exitLeases := make([]*InstanceLease, 0, defaultMapSize)
 	flps.Lock()
 	for leaseId, lease := range flps.globalLeaseList {
+		lease.RLock()
 		logger := log.GetLogger().With(zap.Any("batchRetain", true), zap.Any("leaseId", leaseId),
 			zap.Any("ringName", lease.ringName))
+		lease.RUnlock()
 		if !leaseCanReuse(lease) || lease.exited.Load() {
 			exitLeases = append(exitLeases, lease)
 			logger.Debugf("lease exited")
 			continue
 		}
 		logger.Debugf("doBatchRetain begin")
-
 		flps.setRingName(leaseId, lease)
+		snapshots = append(snapshots, leaseRetainSnapshot{
+			leaseId: leaseId,
+			lease:   lease,
+			pool:    flps.leaseIdToLeasePool[leaseId],
+		})
+	}
+	flps.Unlock()
+	return snapshots, exitLeases
+}
+
+func (flps *FuncKeyLeasePools) assembleRetainBatches(
+	snapshots []leaseRetainSnapshot) map[string]*BatchRetainLeaseInfosArr {
+	funcKeyAllBatches := make(map[string]*BatchRetainLeaseInfosArr)
+	for _, snap := range snapshots {
+		lease := snap.lease
 		lease.RLock()
+		logger := log.GetLogger().With(zap.Any("batchRetain", true), zap.Any("leaseId", snap.leaseId),
+			zap.Any("ringName", lease.ringName))
 		schedulerInfo := flps.getSchedulerNodeInfo(lease)
 		if schedulerInfo == nil {
 			lease.RUnlock()
 			continue
 		}
 		logger = logger.With(zap.Any("scheduler", schedulerInfo.InstanceInfo.InstanceName))
-		lastIndex := -1
-		batchInfoArr, ok := funcKeyAllBatches[schedulerInfo.InstanceInfo.InstanceID]
-		if ok {
-			lastIndex = len(batchInfoArr.arr) - 1
-		} else {
-			batchInfoArr = &BatchRetainLeaseInfosArr{arr: make([]*BatchRetainLeaseInfos, 0)}
-		}
-		if !ok || len(batchInfoArr.arr[lastIndex].infos) >= maxBatchSize {
-			batchInfoArr.arr = append(batchInfoArr.arr, &BatchRetainLeaseInfos{
-				infos:            make(map[string]*BatchRetainLeaseInfo, defaultMapSize),
-				SchedulerAddress: schedulerInfo.InstanceInfo.Address,
-			})
-			lastIndex = len(batchInfoArr.arr) - 1
-			if lastIndex == 0 {
-				funcKeyAllBatches[schedulerInfo.InstanceInfo.InstanceID] = batchInfoArr
-			}
-		}
-
-		batchInfoArr.arr[lastIndex].targetName = assembleTargetName(batchInfoArr.arr[lastIndex].targetName, leaseId)
-
-		info := assembleBatchRetainLeaseInfo(flps.funcKey, flps.leaseIdToLeasePool[leaseId], lease, logger)
-		if info != nil {
-			batchInfoArr.arr[lastIndex].infos[leaseId] = info
-		}
+		info := assembleBatchRetainLeaseInfo(flps.funcKey, snap.pool, lease, logger)
 		lease.RUnlock()
+		appendRetainInfo(funcKeyAllBatches, schedulerInfo.InstanceInfo.InstanceID,
+			schedulerInfo.InstanceInfo.Address, snap.leaseId, info)
 	}
-	flps.Unlock()
-	flps.processBatchLease(exitLeases, funcKeyAllBatches)
+	return funcKeyAllBatches
+}
+
+func appendRetainInfo(funcKeyAllBatches map[string]*BatchRetainLeaseInfosArr,
+	schedulerInstanceID, schedulerAddress, leaseId string, info *BatchRetainLeaseInfo) {
+	batchInfoArr, ok := funcKeyAllBatches[schedulerInstanceID]
+	lastIndex := -1
+	if ok {
+		lastIndex = len(batchInfoArr.arr) - 1
+	} else {
+		batchInfoArr = &BatchRetainLeaseInfosArr{arr: make([]*BatchRetainLeaseInfos, 0)}
+	}
+	if !ok || len(batchInfoArr.arr[lastIndex].infos) >= maxBatchSize {
+		batchInfoArr.arr = append(batchInfoArr.arr, &BatchRetainLeaseInfos{
+			infos:            make(map[string]*BatchRetainLeaseInfo, defaultMapSize),
+			SchedulerAddress: schedulerAddress,
+		})
+		lastIndex = len(batchInfoArr.arr) - 1
+		if lastIndex == 0 {
+			funcKeyAllBatches[schedulerInstanceID] = batchInfoArr
+		}
+	}
+	batchInfoArr.arr[lastIndex].targetName = assembleTargetName(batchInfoArr.arr[lastIndex].targetName, leaseId)
+	if info != nil {
+		batchInfoArr.arr[lastIndex].infos[leaseId] = info
+	}
 }
 
 func assembleTargetName(targetName string, leaseId string) string {
@@ -616,7 +649,9 @@ func (flps *FuncKeyLeasePools) processErrBatchResponse(batch *BatchRetainLeaseIn
 		pool.Lock()
 		lease, ok := pool.leaseMap[leaseId]
 		if ok {
+			lease.Lock()
 			lease.reacquire = true
+			lease.Unlock()
 		}
 		pool.Unlock()
 	}
@@ -910,17 +945,15 @@ func (ip *LeasePool) acquireInstanceLease(option *commontypes.AcquireOption) (*I
 		return nil, snError
 	}
 	lease.claim()
-	ip.RLock()
-	_, exist := ip.leaseMap[lease.ThreadID]
-	ip.RUnlock()
-	if exist {
+	ip.Lock()
+	if _, exist := ip.leaseMap[lease.ThreadID]; exist {
 		ip.inFlightCount.Add(-1)
+		ip.Unlock()
 		log.GetLogger().Errorf("acquired lease %s already exist for function %s traceID %s", lease.ThreadID,
 			ip.funcKey, option.TraceID)
 		// acquired a repeated lease, should acquire a new lease
 		return nil, snerror.New(constant.InsAcquireLeaseExistErrorCode, "lease already exist")
 	}
-	ip.Lock()
 	ip.leaseMap[lease.ThreadID] = lease
 	ip.inFlightCount.Add(-1)
 	ip.Unlock()
