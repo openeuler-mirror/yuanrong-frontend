@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -74,6 +75,9 @@ const (
 	agentRunningPollTimeout      = 5 * time.Second
 	agentRunningPollInterval     = 200 * time.Millisecond
 	agentCreateTimeoutCode       = 3002
+	sshEnableEnv                 = "YR_FRONTEND_SSH_ENABLE"
+	sshPublicKeyDirectoryEnv     = "YR_SSH_BACKEND_PUBLIC_KEY_DIR"
+	sshContainerMountDirectory   = "/run/openyuanrong/ssh"
 )
 
 // getAgentExecutorFuncKey maps the user function runtime to the faas system executor function
@@ -461,6 +465,11 @@ func applyAgentRootfsMounts(invokeOpts *api.InvokeOptions, req CreateAgentReques
 			"source": m.Source, "target": m.Target, "readonly": m.ReadOnly,
 		})
 	}
+	var err error
+	rootfsMounts, err = appendPlatformSSHMount(rootfsMounts)
+	if err != nil {
+		return err
+	}
 	if len(rootfsMounts) == 0 {
 		return nil
 	}
@@ -470,6 +479,32 @@ func applyAgentRootfsMounts(invokeOpts *api.InvokeOptions, req CreateAgentReques
 	}
 	invokeOpts.CreateOpt["rootfs"] = string(rootfsJSON)
 	return nil
+}
+
+func appendPlatformSSHMount(mounts []map[string]interface{}) ([]map[string]interface{}, error) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv(sshEnableEnv)), "true") {
+		return mounts, nil
+	}
+	source := strings.TrimSpace(os.Getenv(sshPublicKeyDirectoryEnv))
+	if err := validateBindSource(source, sshPublicKeyDirectoryEnv); err != nil {
+		return nil, err
+	}
+	for _, mount := range mounts {
+		target, _ := mount["target"].(string)
+		if pathsOverlap(target, sshContainerMountDirectory) {
+			return nil, fmt.Errorf("mount target %s overlaps reserved platform SSH path", target)
+		}
+	}
+	return append(mounts, map[string]interface{}{
+		"source": source, "target": sshContainerMountDirectory, "readonly": true,
+	}), nil
+}
+
+func pathsOverlap(first, second string) bool {
+	first = filepath.Clean(first)
+	second = filepath.Clean(second)
+	return first == second || strings.HasPrefix(first, second+string(filepath.Separator)) ||
+		strings.HasPrefix(second, first+string(filepath.Separator))
 }
 
 // applyAgentDynamicEnv sinks dynamic env vars (incl. userid) via createOptions["DELEGATE_ENV_VAR"]
@@ -501,6 +536,7 @@ func applyAgentCreateOpts(invokeOpts *api.InvokeOptions, ctx *gin.Context, req C
 		invokeOpts.CreateOpt[constant.FunctionKeyNote] = req.Urn
 	}
 	invokeOpts.CreateOpt[constant.InstanceTypeNote] = agentInstanceType
+	invokeOpts.CreateOpt[constant.SchedulerManagedNote] = strconv.FormatBool(false)
 	invokeOpts.CreateOpt["call_timeout"] = strconv.Itoa(agentCreateTimeoutSeconds)
 	invokeOpts.CreateOpt["init_call_timeout"] = strconv.Itoa(agentInitTimeoutSeconds)
 	invokeOpts.CreateOpt["GRACEFUL_SHUTDOWN_TIME"] = strconv.Itoa(agentGracefulShutdownSeconds)

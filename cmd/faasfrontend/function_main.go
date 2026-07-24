@@ -47,7 +47,9 @@ import (
 	"frontend/pkg/frontend/sandboxrouter"
 	"frontend/pkg/frontend/schedulerproxy"
 	"frontend/pkg/frontend/server"
+	"frontend/pkg/frontend/sshproxy"
 	"frontend/pkg/frontend/state"
+	"frontend/pkg/frontend/watcher"
 )
 
 var stopCh = make(chan struct{})
@@ -75,6 +77,10 @@ func InitHandlerLibruntime(args []api.Arg, rt api.LibruntimeAPI) ([]byte, error)
 	}
 	if err = config.InitEtcd(stopCh); err != nil {
 		log.GetLogger().Errorf("failed to init etcd ,err:%s", err.Error())
+		return []byte{}, err
+	}
+	if err = watcher.StartWatch(stopCh); err != nil {
+		log.GetLogger().Errorf("failed to watch etcd, err:%s", err.Error())
 		return []byte{}, err
 	}
 	state.InitState()
@@ -208,7 +214,9 @@ func HealthCheckHandlerLibruntime() (api.HealthType, error) {
 }
 
 func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct{}) error {
-	util.SetAPIClientLibruntime(rt)
+	if err := util.SetAPIClientRuntimeBackend(config.GetConfig().FunctionInvokeBackend, rt); err != nil {
+		return fmt.Errorf("invalid function invoke backend config: %w", err)
+	}
 	schedulerproxy.Proxy.RTAPI = rt
 	schedulerproxy.BlueProxy.RTAPI = rt
 	shutdown := func() {}
@@ -235,6 +243,9 @@ func setupFaaSFrontendLibruntime(rt api.LibruntimeAPI, stopChLibrt <-chan struct
 			rt.Exit(0, "")
 		}
 	}()
+	if err := sshproxy.Start(stopCh); err != nil {
+		return fmt.Errorf("start SSH frontend: %w", err)
+	}
 
 	// Start Prometheus metrics server if configured
 	if cfg.HTTPConfig != nil && cfg.HTTPConfig.PrometheusMetricsPort > 0 {

@@ -36,6 +36,7 @@ func TestStartWatch(t *testing.T) {
 			gomonkey.ApplyFunc(startWatchAlias, func(stopCh <-chan struct{}) {}),
 			gomonkey.ApplyFunc(startWatchTenantQOS, func(stopCh <-chan struct{}) {}),
 			gomonkey.ApplyFunc(startWatchInstanceInfo, func(stopCh <-chan struct{}) {}),
+			gomonkey.ApplyFunc(startWatchFrontendProxyEndpoint, func(stopCh <-chan struct{}) {}),
 			gomonkey.ApplyFunc(startWatchInstanceConfig, func(stopCh <-chan struct{}) {}),
 			gomonkey.ApplyFunc(startWatchBlueScheduler, func(stopCh <-chan struct{}) {}),
 			gomonkey.ApplyFunc(startWatchGrayConf, func(stopCh <-chan struct{}) {}),

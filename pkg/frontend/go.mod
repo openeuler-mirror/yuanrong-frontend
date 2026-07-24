@@ -20,6 +20,7 @@ require (
 	go.etcd.io/etcd/client/v3 v3.5.11
 	go.opentelemetry.io/otel v1.24.0
 	go.uber.org/zap v1.27.0
+	golang.org/x/crypto v0.29.0
 	golang.org/x/time v0.10.0
 	google.golang.org/grpc v1.67.0
 	google.golang.org/protobuf v1.36.6
@@ -96,7 +97,6 @@ require (
 	go.opentelemetry.io/proto/otlp v1.1.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/arch v0.8.0 // indirect
-	golang.org/x/crypto v0.29.0 // indirect
 	golang.org/x/net v0.31.0 // indirect
 	golang.org/x/oauth2 v0.22.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect

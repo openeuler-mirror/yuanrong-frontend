@@ -63,6 +63,7 @@ func ProcessInstanceUpdate(event *etcd3.Event) {
 		zap.Any("revisionId", event.Rev))
 	instanceId := instance.GetInstanceIDFromEtcdKey(event.Key)
 	insSpec := instance.GetInsSpecFromEtcdValue(event.Key, event.Value)
+	RemoveRouteOnlyInstance(instanceId)
 	if len(instanceId) == 0 || insSpec == nil {
 		logger.Warnf("ignoring invalid etcd key, key: %s", event.Key)
 		return
@@ -108,6 +109,7 @@ func ProcessInstanceDelete(event *etcd3.Event) {
 		zap.Any("revisionId", event.Rev))
 	instanceId := instance.GetInstanceIDFromEtcdKey(event.Key)
 	insSpec := instance.GetInsSpecFromEtcdValue(event.Key, event.PrevValue)
+	RemoveRouteOnlyInstance(instanceId)
 	if len(instanceId) == 0 || insSpec == nil {
 		logger.Warnf("ignoring invalid etcd key")
 		return

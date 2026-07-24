@@ -337,6 +337,7 @@ func TestCreateHandlerSetsDetachedAndReservedCreateOptions(t *testing.T) {
 	require.Equal(t, "detached", capturedInvokeOpt.CustomExtensions["lifecycle"])
 	require.Equal(t, agentConcurrency, capturedInvokeOpt.CustomExtensions["Concurrency"])
 	require.Equal(t, agentInstanceType, capturedInvokeOpt.CreateOpt[constant.InstanceTypeNote])
+	require.Equal(t, "false", capturedInvokeOpt.CreateOpt[constant.SchedulerManagedNote])
 	require.Equal(t, validAgentURN, capturedInvokeOpt.CreateOpt[constant.FunctionKeyNote])
 	require.Equal(t, "header-tenant", capturedInvokeOpt.CreateOpt["tenantId"])
 	createOpts := capturedInvokeOpt.CreateOpt

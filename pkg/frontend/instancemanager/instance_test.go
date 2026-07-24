@@ -17,15 +17,71 @@
 package instancemanager
 
 import (
+	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/smartystreets/goconvey/convey"
 
 	"frontend/pkg/common/faas_common/logger/log"
 	commontype "frontend/pkg/common/faas_common/types"
 )
+
+func TestRouteOnlyInstanceExpires(t *testing.T) {
+	instanceID := "route-only-expiring"
+	recordRouteOnlyInstanceWithTTL("tenant/function/$latest", instanceID, "proxy-owner", time.Millisecond)
+
+	deadline := time.Now().Add(time.Second)
+	for SnapshotRouteOnlyInstance(instanceID).Present && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if SnapshotRouteOnlyInstance(instanceID).Present {
+		t.Fatal("route-only instance did not expire")
+	}
+}
+
+func TestRouteOnlyInstanceSnapshotIsPayloadFreeAndReadOnly(t *testing.T) {
+	instanceID := "route-snapshot-instance"
+	RecordRouteOnlyInstance("tenant/function/$latest", instanceID, "proxy-owner")
+	defer RemoveRouteOnlyInstance(instanceID)
+
+	snapshot := SnapshotRouteOnlyInstance(instanceID)
+	if !snapshot.Present || snapshot.InstanceID != instanceID ||
+		snapshot.Function != "tenant/function/$latest" || snapshot.FunctionProxyID != "proxy-owner" {
+		t.Fatalf("unexpected route snapshot: %+v", snapshot)
+	}
+
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal route snapshot: %v", err)
+	}
+	if string(encoded) == "" || SnapshotRouteOnlyInstance(instanceID).Present != true {
+		t.Fatalf("snapshot must remain present after read: %s", encoded)
+	}
+	if strings.Contains(string(encoded), "payload") {
+		t.Fatalf("route snapshot leaked payload field: %s", encoded)
+	}
+}
+
+func TestRemoveRouteOnlyInstanceReturnsBeforeAndAfterSnapshots(t *testing.T) {
+	instanceID := "route-remove-instance"
+	RecordRouteOnlyInstance("tenant/function/$latest", instanceID, "proxy-owner")
+
+	change := RemoveRouteOnlyInstanceWithSnapshot(instanceID)
+
+	if !change.Before.Present || change.Before.FunctionProxyID != "proxy-owner" {
+		t.Fatalf("unexpected before snapshot: %+v", change.Before)
+	}
+	if change.After.Present || change.After.InstanceID != instanceID {
+		t.Fatalf("unexpected after snapshot: %+v", change.After)
+	}
+	if SnapshotRouteOnlyInstance(instanceID).Present {
+		t.Fatal("route snapshot still present after removal")
+	}
+}
 
 func TestInstanceQueueAddInstance(t *testing.T) {
 	convey.Convey("test functionInstanceQueue addInstance", t, func() {
@@ -68,7 +124,11 @@ func TestInstanceQueueDelInstance(t *testing.T) {
 			instances: instanceMap,
 		}
 
-		for _, v := range instanceMap {
+		instances := make([]*commontype.InstanceSpecification, 0, len(instanceMap))
+		for _, instance := range instanceMap {
+			instances = append(instances, instance)
+		}
+		for _, v := range instances {
 			wg.Add(1)
 			go func(instance *commontype.InstanceSpecification) {
 				defer wg.Done()

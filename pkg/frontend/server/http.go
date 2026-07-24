@@ -45,7 +45,6 @@ import (
 	"frontend/pkg/frontend/functiontask"
 	"frontend/pkg/frontend/middleware"
 	"frontend/pkg/frontend/selfregister"
-	"frontend/pkg/frontend/watcher"
 )
 
 const (
@@ -102,16 +101,13 @@ func GetHTTPServer() *http.Server {
 	return server
 }
 
-// Start some watchers
+// Start starts the HTTP server. Process entrypoints own watcher startup.
 func Start(server *http.Server, stopCh <-chan struct{}) error {
 	// starts to listen and serve
 	if server == nil {
 		return errors.New("http server is nil")
 	}
 	log.GetLogger().Infof("FaaS-Frontend HTTP server starting on %s", server.Addr)
-	if err := watcher.StartWatch(stopCh); err != nil {
-		return err
-	}
 	if err := selfregister.RegisterFrontendInstanceToEtcd(stopCh); err != nil {
 		return err
 	}

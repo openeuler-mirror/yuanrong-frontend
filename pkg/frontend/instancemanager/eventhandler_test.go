@@ -64,8 +64,11 @@ func Test_ProcessInstanceUpdate(t *testing.T) {
 			processAppInfoUpdateTrigger = true
 		}).Reset()
 
+		RecordRouteOnlyInstance("", "5f000000-0000-4000-824c-75b4b7dae0a3", "proxy-owner")
 		ProcessInstanceUpdate(event)
 		convey.So(processAppInfoUpdateTrigger, convey.ShouldBeTrue)
+		convey.So(SnapshotRouteOnlyInstance("5f000000-0000-4000-824c-75b4b7dae0a3").Present,
+			convey.ShouldBeFalse)
 		processAppInfoUpdateTrigger = false
 
 		event.Key = "/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function/0-system-faasExecutorGo1.x/version/$latest/defaultaz/787b900780b2d80600"
@@ -132,8 +135,11 @@ func Test_ProcessInstanceDelete(t *testing.T) {
 			processAppInfoDeleteTrigger = true
 		}).Reset()
 
+		RecordRouteOnlyInstance("", "5f000000-0000-4000-824c-75b4b7dae0a3", "proxy-owner")
 		ProcessInstanceDelete(event)
 		convey.So(processAppInfoDeleteTrigger, convey.ShouldBeTrue)
+		convey.So(SnapshotRouteOnlyInstance("5f000000-0000-4000-824c-75b4b7dae0a3").Present,
+			convey.ShouldBeFalse)
 		processAppInfoDeleteTrigger = false
 
 		event.Key = "/sn/instance/business/yrk/tenant/12345678901234561234567890123456/function/0-system-faasExecutorGo1.x/version/$latest/defaultaz/787b900780b2d80600"

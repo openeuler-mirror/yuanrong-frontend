@@ -48,7 +48,7 @@ func (p *Processor) ProcessCreate(ctx context.Context, payload string, headers m
 		TraceParent: headers["X-Trace-Parent"],
 	}
 
-	resp, err := p.client.CreateInstanceRaw(rawPayload, option)
+	resp, err := util.CreateInstanceRawWithContext(ctx, p.client, rawPayload, option)
 	if err != nil {
 		return "", err
 	}
@@ -67,7 +67,7 @@ func (p *Processor) ProcessInvoke(ctx context.Context, payload string, headers m
 		TraceParent: headers["X-Trace-Parent"],
 	}
 
-	resp, err := p.client.InvokeInstanceRaw(rawPayload, option)
+	resp, err := util.InvokeInstanceRawWithContext(ctx, p.client, rawPayload, option)
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +80,7 @@ func (p *Processor) ProcessCreateRaw(ctx context.Context, payload []byte, header
 	option := api.RawRequestOption{
 		TraceParent: headers["X-Trace-Parent"],
 	}
-	return p.client.CreateInstanceRaw(payload, option)
+	return util.CreateInstanceRawWithContext(ctx, p.client, payload, option)
 }
 
 // ProcessInvokeRaw handles invoke operation with raw binary payload (no base64)
@@ -88,5 +88,5 @@ func (p *Processor) ProcessInvokeRaw(ctx context.Context, payload []byte, header
 	option := api.RawRequestOption{
 		TraceParent: headers["X-Trace-Parent"],
 	}
-	return p.client.InvokeInstanceRaw(payload, option)
+	return util.InvokeInstanceRawWithContext(ctx, p.client, payload, option)
 }
